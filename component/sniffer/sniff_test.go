@@ -67,19 +67,23 @@ func asPacket(data string) constant.PacketAdapter {
 	return pktAdp
 }
 
-func testQuicSniffer(data []string, async bool) (string, error) {
+const fakeHost = "fake.host.com"
+
+func testQuicSniffer(data []string, async bool) (string, string, error) {
 	q, err := NewQuicSniffer(SnifferConfig{})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	resultCh := make(chan *constant.Metadata, 1)
 	emptySender := &fakeSender{}
 
-	sender := q.WrapperSender(emptySender, true)
+	sender := q.WrapperSender(emptySender, func(metadata *constant.Metadata, host string) {
+		replaceDomain(metadata, host, true)
+	})
 
 	go func() {
-		meta := constant.Metadata{}
+		meta := constant.Metadata{Host: fakeHost}
 		err := sender.DoSniff(&meta)
 		if err != nil {
 			panic(err)
@@ -96,14 +100,15 @@ func testQuicSniffer(data []string, async bool) (string, error) {
 	}
 
 	meta := <-resultCh
-	return meta.SniffHost, nil
+	return meta.SniffHost, meta.Host, nil
 }
 
 func TestQuicHeaders(t *testing.T) {
 
 	cases := []struct {
-		input  []string
-		domain string
+		input   []string
+		domain  string
+		invalid bool
 	}{
 		//Normal domain quic sniff
 		{
@@ -161,16 +166,31 @@ func TestQuicHeaders(t *testing.T) {
 			},
 			domain: "www.google.com",
 		},
+		// invalid packet
+		{
+			input:   []string{"00000000000000000000"},
+			invalid: true,
+		},
 	}
 
 	for _, test := range cases {
-		data, err := testQuicSniffer(test.input, true)
+		data, host, err := testQuicSniffer(test.input, true)
 		assert.NoError(t, err)
 		assert.Equal(t, test.domain, data)
+		if test.invalid {
+			assert.Equal(t, fakeHost, host)
+		} else {
+			assert.Equal(t, test.domain, host)
+		}
 
-		data, err = testQuicSniffer(test.input, false)
+		data, host, err = testQuicSniffer(test.input, false)
 		assert.NoError(t, err)
 		assert.Equal(t, test.domain, data)
+		if test.invalid {
+			assert.Equal(t, fakeHost, host)
+		} else {
+			assert.Equal(t, test.domain, host)
+		}
 	}
 }
 

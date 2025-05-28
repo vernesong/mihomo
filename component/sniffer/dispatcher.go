@@ -72,8 +72,16 @@ func (sd *Dispatcher) UDPSniff(packet C.PacketAdapter, packetSender C.PacketSend
 				overrideDest := config.OverrideDest
 
 				if inWhitelist {
+					replaceDomain := func(metadata *C.Metadata, host string) {
+						if sd.domainCanReplace(host) {
+							replaceDomain(metadata, host, overrideDest)
+						} else {
+							log.Debugln("[Sniffer] Skip sni[%s]", host)
+						}
+					}
+
 					if wrapable, ok := current.(sniffer.MultiPacketSniffer); ok {
-						return wrapable.WrapperSender(packetSender, overrideDest)
+						return wrapable.WrapperSender(packetSender, replaceDomain)
 					}
 
 					host, err := current.SniffData(packet.Data())
@@ -81,7 +89,7 @@ func (sd *Dispatcher) UDPSniff(packet C.PacketAdapter, packetSender C.PacketSend
 						continue
 					}
 
-					replaceDomain(metadata, host, overrideDest)
+					replaceDomain(metadata, host)
 					return packetSender
 				}
 			}
@@ -128,11 +136,9 @@ func (sd *Dispatcher) TCPSniff(conn *N.BufferedConn, metadata *C.Metadata) bool 
 			return false
 		}
 
-		for _, matcher := range sd.skipDomain {
-			if matcher.MatchDomain(host) {
-				log.Debugln("[Sniffer] Skip sni[%s]", host)
-				return false
-			}
+		if !sd.domainCanReplace(host) {
+			log.Debugln("[Sniffer] Skip sni[%s]", host)
+			return false
 		}
 
 		sd.skipList.Delete(dst)
@@ -152,8 +158,18 @@ func replaceDomain(metadata *C.Metadata, host string, overrideDest bool) {
 			metadata.RemoteAddress(),
 			metadata.Host, host)
 		metadata.Host = host
+		metadata.DstIP = netip.Addr{}
 	}
 	metadata.DNSMode = C.DNSNormal
+}
+
+func (sd *Dispatcher) domainCanReplace(host string) bool {
+	for _, matcher := range sd.skipDomain {
+		if matcher.MatchDomain(host) {
+			return false
+		}
+	}
+	return true
 }
 
 func (sd *Dispatcher) Enable() bool {

@@ -74,22 +74,23 @@ func (sniffer *QuicSniffer) SniffData(b []byte) (string, error) {
 	return "", ErrorUnsupportedSniffer
 }
 
-func (sniffer *QuicSniffer) WrapperSender(packetSender constant.PacketSender, override bool) constant.PacketSender {
+func (sniffer *QuicSniffer) WrapperSender(packetSender constant.PacketSender, replaceDomain sniffer.ReplaceDomain) constant.PacketSender {
 	return &quicPacketSender{
-		PacketSender: packetSender,
-		chClose:      make(chan struct{}),
-		override:     override,
+		PacketSender:  packetSender,
+		replaceDomain: replaceDomain,
+		chClose:       make(chan struct{}),
 	}
 }
 
 var _ constant.PacketSender = (*quicPacketSender)(nil)
 
 type quicPacketSender struct {
-	lock     sync.RWMutex
-	ranges   utils.IntRanges[uint64]
-	buffer   []byte
-	result   string
-	override bool
+	lock   sync.RWMutex
+	ranges utils.IntRanges[uint64]
+	buffer []byte
+	result *string
+
+	replaceDomain sniffer.ReplaceDomain
 
 	constant.PacketSender
 
@@ -121,7 +122,10 @@ func (q *quicPacketSender) DoSniff(metadata *constant.Metadata) error {
 	select {
 	case <-q.chClose:
 		q.lock.RLock()
-		replaceDomain(metadata, q.result, q.override)
+		if q.result != nil {
+			host := *q.result
+			q.replaceDomain(metadata, host)
+		}
 		q.lock.RUnlock()
 		break
 	case <-time.After(quicWaitConn):
@@ -428,7 +432,7 @@ func (q *quicPacketSender) tryAssemble() error {
 	}
 
 	q.lock.Lock()
-	q.result = *domain
+	q.result = domain
 	q.closeLocked()
 	q.lock.Unlock()
 
