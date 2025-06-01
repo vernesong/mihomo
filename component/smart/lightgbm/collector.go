@@ -142,14 +142,11 @@ func (c *DataCollector) AddSample(input *ModelInput, metadata *C.Metadata, actua
     sample := append(featureStrings,
         input.GroupName,
         input.NodeName,
-        
         dstASN,
         host,
         dstIP,
         fmt.Sprintf("%d", metadata.DstPort),
         geoIPStr,
-        
-        // 标签和时间戳
         fmt.Sprintf("%.6f", actualWeight),
         standardizedSource,
         time.Now().Format(time.RFC3339),
@@ -178,6 +175,37 @@ func (c *DataCollector) initializeWriter() error {
     if _, err := os.Stat(c.dataPath); err == nil {
         fileExists = true
     }
+
+    // 检查旧文件是否包含hash列
+    needUpgrade := false
+    if fileExists {
+        f, err := os.Open(c.dataPath)
+        if err == nil {
+            defer f.Close()
+            reader := csv.NewReader(f)
+            headers, err := reader.Read()
+            if err == nil {
+                hasHash := false
+                for _, h := range headers {
+                    if h == "asn_hash" {
+                        hasHash = true
+                        break
+                    }
+                }
+                if !hasHash {
+                    needUpgrade = true
+                }
+            }
+        }
+    }
+
+    if needUpgrade {
+        // 备份旧文件
+        backupPath := c.dataPath + ".bak." + time.Now().Format("20060102150405")
+        os.Rename(c.dataPath, backupPath)
+        log.Infoln("[Smart] Old CSV file does not contain hash columns, backup to %s and create new file", backupPath)
+        fileExists = false
+    }
     
     file, err := os.OpenFile(c.dataPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
     if err != nil {
@@ -195,6 +223,7 @@ func (c *DataCollector) initializeWriter() error {
             "asn_feature", "country_feature",
             "address_feature", "port_feature", 
             "traffic_ratio", "traffic_density", "connection_type_feature",
+            "asn_hash", "host_hash", "ip_hash", "geoip_hash",
             "group_name", "node_name",
             "asn_raw", "host_raw", "ip_raw", "port_raw", "geoip_raw",
             "weight", "weight_source", "timestamp",

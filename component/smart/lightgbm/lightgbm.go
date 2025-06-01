@@ -507,6 +507,17 @@ func min(a, b int) int {
     return b
 }
 
+func hashStringToFloat(s string, buckets int) float64 {
+    if s == "" {
+        return 0.0
+    }
+    hash := uint32(2166136261)
+    for i := 0; i < len(s); i++ {
+        hash = (hash * 16777619) ^ uint32(s[i])
+    }
+    return float64(hash % uint32(buckets) + 1) // 0为缺省，1~N为有效
+}
+
 // 准备模型输入特征
 func prepareFeatures(input *ModelInput) []float64 {
     if input == nil {
@@ -583,6 +594,16 @@ func prepareFeatures(input *ModelInput) []float64 {
     connectionTypeFeature := deriveConnectionType(input.DestPort, addressFeature, portFeature)
     features = append(features, float64(connectionTypeFeature))
     
+    // 9. 元数据哈希特征
+    features = append(features, hashStringToFloat(input.DestIPASN, 500))
+    features = append(features, hashStringToFloat(input.Host, 1000))
+    features = append(features, hashStringToFloat(input.DestIP, 10000))
+    geoHash := 0.0
+    if len(input.DestGeoIP) > 0 {
+        geoHash = hashStringToFloat(input.DestGeoIP[0], 200)
+    }
+    features = append(features, geoHash)
+
     // 确保特征向量大小不超过模型预期
     if len(features) > MaxFeatureSize {
         features = features[:MaxFeatureSize]
