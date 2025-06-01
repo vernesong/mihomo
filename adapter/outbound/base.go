@@ -223,7 +223,7 @@ type conn struct {
 func (c *conn) RemoteDestination() string {
 	if remoteAddr := c.RemoteAddr(); remoteAddr != nil {
 		m := C.Metadata{}
-		if err := m.SetRemoteAddr(remoteAddr); err != nil {
+		if err := m.SetRemoteAddr(remoteAddr); err == nil {
 			if m.Valid() {
 				return m.String()
 			}
