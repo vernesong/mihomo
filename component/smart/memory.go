@@ -435,26 +435,24 @@ func (s *Store) AdjustCacheParameters() {
         
         switch {
         case memoryUsage > 0.9: 
-            preserveRatio = 0.2  // 只保留20%的关键数据
+            preserveRatio = 0.2
             entries = dataCache.FilterByKeyPrefix(KeyTypeNode + ":")
-            // 添加活跃的域名预计算结果
             for k, _ := range dataCache.FilterByKeyPrefix(KeyTypePrefetch + ":") {
                 if val, expires, exists := dataCache.GetWithExpire(k); exists && expires.After(time.Now()) {
                     entries[k] = val
                 }
             }
         case memoryUsage > 0.8:
-            preserveRatio = 0.4  // 保留40%的数据
+            preserveRatio = 0.4
             entries = dataCache.FilterByKeyPrefix(KeyTypeNode + ":")
-            // 保留所有预计算结果和常用节点状态
             for k, v := range dataCache.FilterByKeyPrefix(KeyTypePrefetch + ":") {
                 entries[k] = v
             }
         case memoryUsage > 0.7:
-            preserveRatio = 0.6  // 保留60%的数据
+            preserveRatio = 0.6
             entries = dataCache.FilterByKeyPrefix("")
         default:
-            preserveRatio = 0.8  // 尝试保留80%的数据
+            preserveRatio = 0.8
             entries = dataCache.FilterByKeyPrefix("")
         }
         

@@ -36,7 +36,7 @@ type AtomicStatsRecord struct {
 }
 
 type AtomicRecordManager struct {
-    records sync.Map // key: cacheKey, value: *AtomicStatsRecord
+    records sync.Map
 }
 
 var (
@@ -1003,6 +1003,8 @@ func (s *Store) GetActiveASNs(group, config string, limit int) []string {
 func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) int {
     log.Debugln("[SmartStore] Executing domain and ASN pre-calculation for policy group [%s]", group)
 
+    randomExplorationRate := 0.05
+
     blockedNodes := make(map[string]bool)
     stateData, _ := s.GetNodeStates(group, config)
     for nodeName, data := range stateData {
@@ -1038,18 +1040,46 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
     asns := s.GetActiveASNs(group, config, prefetchLimit/2)
 
     prefetchCount := 0
+    randomExplorationCount := 0
+    algorithmRandomCount := 0
     weightTypes := []string{WeightTypeTCP, WeightTypeUDP}
+
+    availableNodes := make([]string, 0, len(availableProxyMap))
+    for name := range availableProxyMap {
+        availableNodes = append(availableNodes, name)
+    }
+
+    type prefetchItem struct {
+        target     string
+        weightType string
+        bestNode   string
+        bestWeight float64
+        isAlgorithmRandom bool
+    }
+    
+    var domainItems []prefetchItem
+    var asnItems []prefetchItem
 
     for _, domain := range domains {
         for _, weightType := range weightTypes {
             bestNode, bestWeight, _, err := s.GetBestProxyForTarget(group, config, domain, weightType)
-            if err != nil || bestNode == "" || bestWeight <= 0 {
+            if err != nil || bestNode == "" {
                 continue
             }
 
             if _, exists := availableProxyMap[bestNode]; exists {
-                s.StorePrefetchResult(group, config, domain, weightType, bestNode)
-                prefetchCount++
+                item := prefetchItem{
+                    target:            domain,
+                    weightType:        weightType,
+                    bestNode:          bestNode,
+                    bestWeight:        bestWeight,
+                    isAlgorithmRandom: bestWeight <= 0,
+                }
+                domainItems = append(domainItems, item)
+                
+                if item.isAlgorithmRandom {
+                    algorithmRandomCount++
+                }
             }
         }
     }
@@ -1058,19 +1088,100 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
         for _, baseType := range []string{WeightTypeTCPASN, WeightTypeUDPASN} {
             weightType := baseType + ":" + asn
             bestNode, bestWeight, _, err := s.GetBestProxyForTarget(group, config, asn, weightType)
-            if err != nil || bestNode == "" || bestWeight <= 0 {
+            if err != nil || bestNode == "" {
                 continue
             }
 
             if _, exists := availableProxyMap[bestNode]; exists {
-                s.StorePrefetchResult(group, config, asn, weightType, bestNode)
-                prefetchCount++
+                item := prefetchItem{
+                    target:            asn,
+                    weightType:        weightType,
+                    bestNode:          bestNode,
+                    bestWeight:        bestWeight,
+                    isAlgorithmRandom: bestWeight <= 0,
+                }
+                asnItems = append(asnItems, item)
+                
+                if item.isAlgorithmRandom {
+                    algorithmRandomCount++
+                }
             }
         }
     }
 
-    log.Infoln("[SmartStore] Prefetch completed for group [%s]: pre-calculated %d domain/ASN mappings",
-        group, prefetchCount)
+    totalItems := len(domainItems) + len(asnItems)
+    algorithmRandomRatio := 0.0
+    if totalItems > 0 {
+        algorithmRandomRatio = float64(algorithmRandomCount) / float64(totalItems)
+    }
+
+    // 如果随机比例小于5%，则进行额外随机探索
+    shouldDoExtraRandomization := algorithmRandomRatio < 0.05
+
+    for _, item := range domainItems {
+        if item.isAlgorithmRandom {
+            s.StorePrefetchResult(group, config, item.target, item.weightType, item.bestNode)
+            prefetchCount++
+        } else if shouldDoExtraRandomization && rand.Float64() < randomExplorationRate && len(availableNodes) > 0 {
+            var randomNode string
+            maxAttempts := 5
+            for i := 0; i < maxAttempts; i++ {
+                randomIndex := rand.Intn(len(availableNodes))
+                candidate := availableNodes[randomIndex]
+                if candidate != item.bestNode {
+                    randomNode = candidate
+                    break
+                }
+            }
+            
+            if randomNode != "" {
+                s.StorePrefetchResult(group, config, item.target, item.weightType, randomNode)
+                randomExplorationCount++
+                log.Debugln("[SmartStore] Random exploration: domain [%s] -> node [%s] (type: %s, replaced best: %s)", 
+                    item.target, randomNode, item.weightType, item.bestNode)
+            } else {
+                s.StorePrefetchResult(group, config, item.target, item.weightType, item.bestNode)
+            }
+            prefetchCount++
+        } else {
+            s.StorePrefetchResult(group, config, item.target, item.weightType, item.bestNode)
+            prefetchCount++
+        }
+    }
+
+    for _, item := range asnItems {
+        if item.isAlgorithmRandom {
+            s.StorePrefetchResult(group, config, item.target, item.weightType, item.bestNode)
+            prefetchCount++
+        } else if shouldDoExtraRandomization && rand.Float64() < randomExplorationRate && len(availableNodes) > 0 {
+            var randomNode string
+            maxAttempts := 5
+            for i := 0; i < maxAttempts; i++ {
+                randomIndex := rand.Intn(len(availableNodes))
+                candidate := availableNodes[randomIndex]
+                if candidate != item.bestNode {
+                    randomNode = candidate
+                    break
+                }
+            }
+            
+            if randomNode != "" {
+                s.StorePrefetchResult(group, config, item.target, item.weightType, randomNode)
+                randomExplorationCount++
+                log.Debugln("[SmartStore] Random exploration: ASN [%s] -> node [%s] (type: %s, replaced best: %s)", 
+                    item.target, randomNode, item.weightType, item.bestNode)
+            } else {
+                s.StorePrefetchResult(group, config, item.target, item.weightType, item.bestNode)
+            }
+            prefetchCount++
+        } else {
+            s.StorePrefetchResult(group, config, item.target, item.weightType, item.bestNode)
+            prefetchCount++
+        }
+    }
+
+    log.Infoln("[SmartStore] Prefetch completed for group [%s]: pre-calculated %d domain/ASN mappings (%d algorithm randoms, %d extra explorations, ratio: %.1f%%)",
+        group, prefetchCount, algorithmRandomCount, randomExplorationCount, algorithmRandomRatio*100)
     return prefetchCount
 }
 
