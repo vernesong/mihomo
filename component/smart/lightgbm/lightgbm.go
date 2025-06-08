@@ -1,18 +1,21 @@
 package lightgbm
 
 import (
+    "context"
     "fmt"
+    "io"
     "math"
+    "net/http"
+    "net/netip"
     "os"
-    "path/filepath"
+    "regexp"
+    "strconv"
     "strings"
     "sync"
     "time"
-    "regexp"
-    "strconv"
-    "net/netip"
 
     C "github.com/metacubex/mihomo/constant"
+    mihomoHttp "github.com/metacubex/mihomo/component/http"
     "github.com/metacubex/mihomo/component/smart"
     "github.com/metacubex/mihomo/log"
     "github.com/dmitryikh/leaves"
@@ -355,17 +358,49 @@ func GetModel() *WeightModel {
     modelInitOnce.Do(func() {
         globalModel = &WeightModel{}
         
-        modelPath := filepath.Join(C.Path.HomeDir(), "Model.bin")
+        modelPath := C.Path.SmartModel()
+        
         if _, err := os.Stat(modelPath); err == nil {
             if err := globalModel.loadModel(modelPath); err != nil {
-                log.Warnln("[Smart] %v", err)
-                globalModel = nil
+                log.Warnln("[Smart] Model.bin invalid, remove and download: %v", err)
+                
+                if rmErr := os.Remove(modelPath); rmErr != nil {
+                    log.Errorln("[Smart] Failed to remove invalid Model.bin: %v", rmErr)
+                    globalModel = nil
+                    return
+                }
+                
+                if downloadErr := downloadModel(modelPath); downloadErr != nil {
+                    log.Errorln("[Smart] Failed to download Model.bin: %v", downloadErr)
+                    globalModel = nil
+                    return
+                }
+                
+                if reloadErr := globalModel.loadModel(modelPath); reloadErr != nil {
+                    log.Errorln("[Smart] Failed to load downloaded Model.bin: %v", reloadErr)
+                    globalModel = nil
+                    return
+                }
+                
+                log.Infoln("[Smart] Model.bin downloaded and loaded successfully")
             } else {
                 log.Infoln("[Smart] Model file loaded successfully")
             }
         } else {
-            log.Debugln("[Smart] Model file Model.bin not found")
-            globalModel = nil
+            log.Infoln("[Smart] Can't find Model.bin, start download")
+            if downloadErr := downloadModel(modelPath); downloadErr != nil {
+                log.Errorln("[Smart] Can't download Model.bin: %v", downloadErr)
+                globalModel = nil
+                return
+            }
+            
+            if loadErr := globalModel.loadModel(modelPath); loadErr != nil {
+                log.Errorln("[Smart] Failed to load downloaded Model.bin: %v", loadErr)
+                globalModel = nil
+                return
+            }
+            
+            log.Infoln("[Smart] Download Model.bin finish")
         }
     })
     
@@ -405,6 +440,32 @@ func (m *WeightModel) loadModel(path string) error {
     m.model = model
     m.lastUpdate = time.Now()
     return nil
+}
+
+func downloadModel(path string) (err error) {
+    modelUrl := getModelDownloadURL()
+    
+    ctx, cancel := context.WithTimeout(context.Background(), time.Second*90)
+    defer cancel()
+    
+    resp, err := mihomoHttp.HttpRequest(ctx, modelUrl, http.MethodGet, nil, nil)
+	if err != nil {
+		return
+	}
+    defer resp.Body.Close()
+    
+    f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, resp.Body)
+
+	return err
+}
+
+func getModelDownloadURL() string {
+    return "https://github.com/vernesong/mihomo/releases/download/LightGBM-Model/Model.bin"
 }
 
 func (m *WeightModel) PredictWeight(input *ModelInput, priorityFactor float64) (float64, bool) {
