@@ -78,6 +78,7 @@ type Smart struct {
     collectData      bool
     dataCollector    *lightgbm.DataCollector
     weightModel      *lightgbm.WeightModel
+    strategy         string
 }
 
 type (
@@ -96,12 +97,16 @@ func getConfigFilename() string {
 	return filename
 }
 
-func NewSmart(option *GroupCommonOption, providers []provider.ProxyProvider, options ...smartOption) (*Smart) {
-	if option.URL == "" {
+func NewSmart(option *GroupCommonOption, providers []provider.ProxyProvider, strategy string, options ...smartOption) (*Smart, error) {
+	if strategy != "round-robin" && strategy != "sticky-sessions" {
+        return nil, fmt.Errorf("%w: %s", errStrategy, strategy)
+    }
+
+    if option.URL == "" {
 		option.URL = C.DefaultTestURL
 	}
 
-	lb, _ := NewLoadBalance(&GroupCommonOption{
+	lb, err := NewLoadBalance(&GroupCommonOption{
         Name:           option.Name + "-fallback",
         URL:            option.URL,
         Filter:         option.Filter,
@@ -113,7 +118,11 @@ func NewSmart(option *GroupCommonOption, providers []provider.ProxyProvider, opt
         ExpectedStatus: option.ExpectedStatus,
         Interface:      option.Interface,
         RoutingMark:    option.RoutingMark,
-    }, providers, "round-robin")
+    }, providers, strategy)
+
+    if err != nil {
+        return nil, err
+    }
 
 	configName := getConfigFilename()
 
@@ -136,13 +145,14 @@ func NewSmart(option *GroupCommonOption, providers []provider.ProxyProvider, opt
         Hidden:         option.Hidden,
         Icon:           option.Icon,
         policyPriority: make([]priorityRule, 0),
+        strategy:       strategy,
     }
 
 	for _, option := range options {
 		option(s)
 	}
 
-	return s
+	return s, nil
 }
 
 func (s *Smart) GetConfigFilename() string {
@@ -705,26 +715,40 @@ func (s *Smart) selectProxy(metadata *C.Metadata, touch bool) C.Proxy {
 }
 
 func (s *Smart) selectNextProxy(metadata *C.Metadata, availableProxies []C.Proxy, triedProxies map[string]bool) C.Proxy {
-	for i := 0; i < 3; i++ {
-		fallbackProxy := s.fallbackToRoundRobin(metadata, availableProxies)
-		if fallbackProxy != nil && !triedProxies[fallbackProxy.Name()] && fallbackProxy.AliveForTestUrl(s.testUrl) {
-			return fallbackProxy
-		}
-	}
+    if s.strategy == "sticky-sessions" {
+        for _, p := range availableProxies {
+            if !triedProxies[p.Name()] && p.AliveForTestUrl(s.testUrl) {
+                return p
+            }
+        }
+        for _, p := range availableProxies {
+            if !triedProxies[p.Name()] {
+                return p
+            }
+        }
+        return nil
+    }
 
-	for _, p := range availableProxies {
-		if !triedProxies[p.Name()] && p.AliveForTestUrl(s.testUrl) {
-			return p
-		}
-	}
+    for i := 0; i < 3; i++ {
+        fallbackProxy := s.fallbackToRoundRobin(metadata, availableProxies)
+        if fallbackProxy != nil && !triedProxies[fallbackProxy.Name()] {
+            return fallbackProxy
+        }
+    }
 
-	for _, p := range availableProxies {
-		if !triedProxies[p.Name()] {
-			return p
-		}
-	}
+    for _, p := range availableProxies {
+        if !triedProxies[p.Name()] && p.AliveForTestUrl(s.testUrl) {
+            return p
+        }
+    }
 
-	return nil
+    for _, p := range availableProxies {
+        if !triedProxies[p.Name()] {
+            return p
+        }
+    }
+
+    return nil
 }
 
 func (s *Smart) fallbackToRoundRobin(metadata *C.Metadata, proxies []C.Proxy) C.Proxy {
@@ -778,6 +802,7 @@ func (s *Smart) MarshalJSON() ([]byte, error) {
         "hidden":         s.Hidden,
         "icon":           s.Icon,
         "policy-priority": policyPriorityStr,
+        "strategy":       s.strategy,
         "useLightGBM":    s.useLightGBM,
         "collectData":    s.collectData,
     })
@@ -1497,8 +1522,17 @@ func smartWithCollectData(collectData bool) smartOption {
     }
 }
 
-func parseSmartOption(config map[string]any) []smartOption {
+func smartWithStrategy(config map[string]any) string {
+    if strategy, ok := config["strategy"].(string); ok {
+        return strategy
+    }
+    return "sticky-sessions"
+}
+
+func parseSmartOption(config map[string]any) ([]smartOption, string) {
     opts := []smartOption{}
+
+    strategy := smartWithStrategy(config)
 
     if elm, ok := config["policy-priority"]; ok {
         if policyPriority, ok := elm.(string); ok {
@@ -1518,7 +1552,7 @@ func parseSmartOption(config map[string]any) []smartOption {
         }
     }
 
-    return opts
+    return opts, strategy
 }
 
 func (s *Smart) getASNCode(metadata *C.Metadata) string {
