@@ -41,8 +41,10 @@ var (
 	backupExeName  string // 备份文件名
 	updateExeName  string // 更新后的可执行文件
 
-	baseURL       string = "https://github.com/MetaCubeX/mihomo/releases/download/Prerelease-Alpha/mihomo"
-	versionURL    string = "https://github.com/MetaCubeX/mihomo/releases/download/Prerelease-Alpha/version.txt"
+	//baseURL       string = "https://github.com/MetaCubeX/mihomo/releases/download/Prerelease-Alpha/mihomo"
+	//versionURL    string = "https://github.com/MetaCubeX/mihomo/releases/download/Prerelease-Alpha/version.txt"
+	baseURL       string = "https://github.com/vernesong/mihomo/releases/download/Prerelease-Alpha/mihomo"
+	versionURL    string = "https://github.com/vernesong/mihomo/releases/download/Prerelease-Alpha/version.txt"
 	packageURL    string
 	latestVersion string
 )
