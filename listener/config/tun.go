@@ -9,18 +9,6 @@ import (
 	"golang.org/x/exp/slices"
 )
 
-func StringSliceToNetipPrefixSlice(ss []string) ([]netip.Prefix, error) {
-	lps := make([]netip.Prefix, 0, len(ss))
-	for _, s := range ss {
-		prefix, err := netip.ParsePrefix(s)
-		if err != nil {
-			return nil, err
-		}
-		lps = append(lps, prefix)
-	}
-	return lps, nil
-}
-
 type Tun struct {
 	Enable              bool       `yaml:"enable" json:"enable"`
 	Device              string     `yaml:"device" json:"device"`
@@ -39,6 +27,7 @@ type Tun struct {
 	AutoRedirect           bool           `yaml:"auto-redirect" json:"auto-redirect,omitempty"`
 	AutoRedirectInputMark  uint32         `yaml:"auto-redirect-input-mark" json:"auto-redirect-input-mark,omitempty"`
 	AutoRedirectOutputMark uint32         `yaml:"auto-redirect-output-mark" json:"auto-redirect-output-mark,omitempty"`
+	LoopbackAddress        []netip.Addr   `yaml:"loopback-address" json:"loopback-address,omitempty"`
 	StrictRoute            bool           `yaml:"strict-route" json:"strict-route,omitempty"`
 	RouteAddress           []netip.Prefix `yaml:"route-address" json:"route-address,omitempty"`
 	RouteAddressSet        []string       `yaml:"route-address-set" json:"route-address-set,omitempty"`
@@ -140,6 +129,9 @@ func (t *Tun) Equal(other Tun) bool {
 		return false
 	}
 	if t.AutoRedirectOutputMark != other.AutoRedirectOutputMark {
+		return false
+	}
+	if !slices.Equal(t.RouteAddress, other.RouteAddress) {
 		return false
 	}
 	if t.StrictRoute != other.StrictRoute {

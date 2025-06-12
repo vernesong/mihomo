@@ -72,6 +72,19 @@ func (t *TypedValue[T]) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+func (t *TypedValue[T]) MarshalYAML() (any, error) {
+	return t.Load(), nil
+}
+
+func (t *TypedValue[T]) UnmarshalYAML(unmarshal func(any) error) error {
+	var v T
+	if err := unmarshal(&v); err != nil {
+		return err
+	}
+	t.Store(v)
+	return nil
+}
+
 func NewTypedValue[T any](t T) (v TypedValue[T]) {
 	v.Store(t)
 	return

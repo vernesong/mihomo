@@ -347,6 +347,8 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
 		IPRoute2RuleIndex:        ruleIndex,
 		AutoRedirectInputMark:    inputMark,
 		AutoRedirectOutputMark:   outputMark,
+		Inet4LoopbackAddress:     common.Filter(options.LoopbackAddress, netip.Addr.Is4),
+		Inet6LoopbackAddress:     common.Filter(options.LoopbackAddress, netip.Addr.Is6),
 		StrictRoute:              options.StrictRoute,
 		Inet4RouteAddress:        inet4RouteAddress,
 		Inet6RouteAddress:        inet6RouteAddress,

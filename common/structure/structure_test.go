@@ -239,13 +239,15 @@ func (n *num) UnmarshalText(text []byte) (err error) {
 
 func TestStructure_TextUnmarshaller(t *testing.T) {
 	rawMap := map[string]any{
-		"num":   "255",
-		"num_p": "127",
+		"num":     "255",
+		"num_p":   "127",
+		"num_arr": []string{"1", "2", "3"},
 	}
 
 	s := &struct {
-		Num  num  `test:"num"`
-		NumP *num `test:"num_p"`
+		Num    num   `test:"num"`
+		NumP   *num  `test:"num_p"`
+		NumArr []num `test:"num_arr"`
 	}{}
 
 	err := decoder.Decode(rawMap, s)
@@ -253,6 +255,7 @@ func TestStructure_TextUnmarshaller(t *testing.T) {
 	assert.Equal(t, 255, s.Num.a)
 	assert.NotNil(t, s.NumP)
 	assert.Equal(t, s.NumP.a, 127)
+	assert.Equal(t, s.NumArr, []num{{1}, {2}, {3}})
 
 	// test WeaklyTypedInput
 	rawMap["num"] = 256

@@ -29,6 +29,19 @@ func (i *Bool) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+func (i *Bool) MarshalYAML() (any, error) {
+	return i.Load(), nil
+}
+
+func (i *Bool) UnmarshalYAML(unmarshal func(any) error) error {
+	var v bool
+	if err := unmarshal(&v); err != nil {
+		return err
+	}
+	i.Store(v)
+	return nil
+}
+
 func (i *Bool) String() string {
 	v := i.Load()
 	return strconv.FormatBool(v)
@@ -58,6 +71,19 @@ func (p *Pointer[T]) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+func (p *Pointer[T]) MarshalYAML() (any, error) {
+	return p.Load(), nil
+}
+
+func (p *Pointer[T]) UnmarshalYAML(unmarshal func(any) error) error {
+	var v *T
+	if err := unmarshal(&v); err != nil {
+		return err
+	}
+	p.Store(v)
+	return nil
+}
+
 func (p *Pointer[T]) String() string {
 	return fmt.Sprint(p.Load())
 }
@@ -78,6 +104,19 @@ func (i *Int32) MarshalJSON() ([]byte, error) {
 func (i *Int32) UnmarshalJSON(b []byte) error {
 	var v int32
 	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	i.Store(v)
+	return nil
+}
+
+func (i *Int32) MarshalYAML() (any, error) {
+	return i.Load(), nil
+}
+
+func (i *Int32) UnmarshalYAML(unmarshal func(any) error) error {
+	var v int32
+	if err := unmarshal(&v); err != nil {
 		return err
 	}
 	i.Store(v)
@@ -111,6 +150,19 @@ func (i *Int64) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+func (i *Int64) MarshalYAML() (any, error) {
+	return i.Load(), nil
+}
+
+func (i *Int64) UnmarshalYAML(unmarshal func(any) error) error {
+	var v int64
+	if err := unmarshal(&v); err != nil {
+		return err
+	}
+	i.Store(v)
+	return nil
+}
+
 func (i *Int64) String() string {
 	v := i.Load()
 	return strconv.FormatInt(int64(v), 10)
@@ -132,6 +184,19 @@ func (i *Uint32) MarshalJSON() ([]byte, error) {
 func (i *Uint32) UnmarshalJSON(b []byte) error {
 	var v uint32
 	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	i.Store(v)
+	return nil
+}
+
+func (i *Uint32) MarshalYAML() (any, error) {
+	return i.Load(), nil
+}
+
+func (i *Uint32) UnmarshalYAML(unmarshal func(any) error) error {
+	var v uint32
+	if err := unmarshal(&v); err != nil {
 		return err
 	}
 	i.Store(v)
@@ -165,6 +230,19 @@ func (i *Uint64) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+func (i *Uint64) MarshalYAML() (any, error) {
+	return i.Load(), nil
+}
+
+func (i *Uint64) UnmarshalYAML(unmarshal func(any) error) error {
+	var v uint64
+	if err := unmarshal(&v); err != nil {
+		return err
+	}
+	i.Store(v)
+	return nil
+}
+
 func (i *Uint64) String() string {
 	v := i.Load()
 	return strconv.FormatUint(uint64(v), 10)
@@ -186,6 +264,19 @@ func (i *Uintptr) MarshalJSON() ([]byte, error) {
 func (i *Uintptr) UnmarshalJSON(b []byte) error {
 	var v uintptr
 	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	i.Store(v)
+	return nil
+}
+
+func (i *Uintptr) MarshalYAML() (any, error) {
+	return i.Load(), nil
+}
+
+func (i *Uintptr) UnmarshalYAML(unmarshal func(any) error) error {
+	var v uintptr
+	if err := unmarshal(&v); err != nil {
 		return err
 	}
 	i.Store(v)

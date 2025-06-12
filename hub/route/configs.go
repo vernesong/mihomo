@@ -75,6 +75,7 @@ type tunSchema struct {
 	AutoRedirect           *bool           `yaml:"auto-redirect" json:"auto-redirect,omitempty"`
 	AutoRedirectInputMark  *uint32         `yaml:"auto-redirect-input-mark" json:"auto-redirect-input-mark,omitempty"`
 	AutoRedirectOutputMark *uint32         `yaml:"auto-redirect-output-mark" json:"auto-redirect-output-mark,omitempty"`
+	LoopbackAddress        *[]netip.Addr   `yaml:"loopback-address" json:"loopback-address,omitempty"`
 	StrictRoute            *bool           `yaml:"strict-route" json:"strict-route,omitempty"`
 	RouteAddress           *[]netip.Prefix `yaml:"route-address" json:"route-address,omitempty"`
 	RouteAddressSet        *[]string       `yaml:"route-address-set" json:"route-address-set,omitempty"`
@@ -173,6 +174,9 @@ func pointerOrDefaultTun(p *tunSchema, def LC.Tun) LC.Tun {
 		}
 		if p.AutoRedirectOutputMark != nil {
 			def.AutoRedirectOutputMark = *p.AutoRedirectOutputMark
+		}
+		if p.LoopbackAddress != nil {
+			def.LoopbackAddress = *p.LoopbackAddress
 		}
 		if p.StrictRoute != nil {
 			def.StrictRoute = *p.StrictRoute

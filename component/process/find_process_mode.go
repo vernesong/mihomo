@@ -1,57 +1,52 @@
 package process
 
 import (
-	"encoding/json"
 	"errors"
 	"strings"
 )
 
 const (
-	FindProcessAlways = "always"
-	FindProcessStrict = "strict"
-	FindProcessOff    = "off"
+	FindProcessStrict FindProcessMode = iota
+	FindProcessAlways
+	FindProcessOff
 )
 
 var (
-	validModes = map[string]struct{}{
-		FindProcessAlways: {},
-		FindProcessOff:    {},
-		FindProcessStrict: {},
+	validModes = map[string]FindProcessMode{
+		FindProcessStrict.String(): FindProcessStrict,
+		FindProcessAlways.String(): FindProcessAlways,
+		FindProcessOff.String():    FindProcessOff,
 	}
 )
 
-type FindProcessMode string
+type FindProcessMode int32
 
-func (m FindProcessMode) Always() bool {
-	return m == FindProcessAlways
-}
-
-func (m FindProcessMode) Off() bool {
-	return m == FindProcessOff
-}
-
-func (m *FindProcessMode) UnmarshalYAML(unmarshal func(any) error) error {
-	var tp string
-	if err := unmarshal(&tp); err != nil {
-		return err
-	}
-	return m.Set(tp)
-}
-
-func (m *FindProcessMode) UnmarshalJSON(data []byte) error {
-	var tp string
-	if err := json.Unmarshal(data, &tp); err != nil {
-		return err
-	}
-	return m.Set(tp)
+// UnmarshalText unserialize FindProcessMode
+func (m *FindProcessMode) UnmarshalText(data []byte) error {
+	return m.Set(string(data))
 }
 
 func (m *FindProcessMode) Set(value string) error {
-	mode := strings.ToLower(value)
-	_, exist := validModes[mode]
+	mode, exist := validModes[strings.ToLower(value)]
 	if !exist {
 		return errors.New("invalid find process mode")
 	}
-	*m = FindProcessMode(mode)
+	*m = mode
 	return nil
+}
+
+// MarshalText serialize FindProcessMode
+func (m FindProcessMode) MarshalText() ([]byte, error) {
+	return []byte(m.String()), nil
+}
+
+func (m FindProcessMode) String() string {
+	switch m {
+	case FindProcessAlways:
+		return "always"
+	case FindProcessOff:
+		return "off"
+	default:
+		return "strict"
+	}
 }
