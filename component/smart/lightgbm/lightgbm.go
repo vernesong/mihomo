@@ -22,7 +22,7 @@ import (
 )
 
 const (
-    MaxFeatureSize = 21  // 特征数量
+    MaxFeatureSize = 21
 )
 
 var (
@@ -175,13 +175,20 @@ var (
         143:  6,  // IMAP
         443:  7,  // HTTPS
         465:  8,  // SMTPS
+        784:  3,  // DNS over QUIC (DoQ)
+        853:  3,  // DNS over TLS (DoT)
         993:  9,  // IMAPS
         995:  10, // POP3S
         1194: 11, // OpenVPN
         1812: 12, // RADIUS
         3306: 13, // MySQL
+        5053: 3,  // DNS备用端口
+        5353: 3,  // mDNS
+        5355: 3,  // LLMNR
         5432: 14, // PostgreSQL
         6379: 15, // Redis
+        8853: 3,  // DoT备用端口
+        9953: 3,  // DNS管理端口
         27017:16, // MongoDB
         6660: 17, // IRC
         6665: 17, // IRC
@@ -204,6 +211,24 @@ var (
         {0, 1023, 20},       // 系统端口
         {1024, 49151, 21},   // 注册端口
         {49152, 65535, 22},  // 动态端口
+    }
+
+    apiServicePorts = map[uint16]bool{
+        8080: true, 8443: true, 9000: true, 9001: true, 9002: true,  // 常见API端口
+        3000: true, 3001: true, 5000: true, 5001: true,              // 开发API端口
+        8000: true, 8001: true, 8888: true, 4000: true, 4001: true,  // 其他API服务端口
+        6000: true, 6001: true, 7000: true, 7001: true,              // 微服务API端口
+    }
+    
+    dnsServicePorts = map[uint16]bool{
+        53:   true, // 传统DNS (UDP/TCP)
+        853:  true, // DNS over TLS (DoT)
+        784:  true, // DNS over QUIC (DoQ) - IANA分配的端口
+        5053: true, // 一些DNS服务的备用端口
+        5353: true, // mDNS (Multicast DNS)
+        5355: true, // LLMNR (Link-Local Multicast Name Resolution)
+        8853: true, // 一些DoT服务使用的备用端口
+        9953: true, // 一些DNS服务使用的管理端口
     }
 
     gameSpecificPorts = map[uint16]bool{
@@ -300,6 +325,53 @@ var (
         "mumble", "ventrilo", "teamspeak", "discord.gg",
         "meeting", "conference", "huddle", "gather",
         "qq", "msn", "icq", "line", "kakao", "viber", "imo", "element",
+    }
+
+    apiServiceKeywords = []string{
+        "api.cloudflare.com", "api.amazonaws.com", "api.azure.com", "googleapis.com",
+        "api.fastly.com", "api.maxcdn.com", "api.keycdn.com", "api.bunnycdn.com",
+        "api.digitalocean.com", "api.vultr.com", "api.linode.com", "api.hetzner.com",
+        
+        "api.vercel.com", "api.netlify.com", "api.heroku.com", "api.railway.app",
+        "api.render.com", "api.fly.io", "registry.npmjs.org", "pypi.org",
+        "hub.docker.com", "registry.docker.io", "rubygems.org", "crates.io",
+        
+        "api.datadog.com", "api.newrelic.com", "api.segment.com", "api.mixpanel.com",
+        "api.amplitude.com", "api.hotjar.com", "api.sentry.io", "api.rollbar.com",
+        
+        "api.auth0.com", "api.okta.com", "api.twilio.com", "api.sendgrid.com",
+        "api.mailgun.com", "api.stripe.com",
+        
+        "ecs.aliyuncs.com", "api.qcloud.com", "api.ucloud.cn", "api.huaweicloud.com",
+        "api.baidubce.com", "api.volcengine.com",
+        
+        "gateway.", "api-gateway.", "apigateway.", "/api/", "/v1/", "/v2/", "/v3/", "/v4/",
+        "/rest/", "/graphql/", "rest.", "graphql.", "webhook.", "rpc.",
+    }
+
+    dnsServiceKeywords = []string{
+        "8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1", "9.9.9.9", "149.112.112.112",
+        "208.67.222.222", "208.67.220.220",
+        
+        "dns.google", "dns.google.com", "cloudflare-dns.com", "dns.cloudflare.com",
+        "one.one.one.one", "family.cloudflare-dns.com", "security.cloudflare-dns.com",
+        "dns.quad9.net", "dns9.quad9.net", "dns10.quad9.net", "dns11.quad9.net",
+        "doh.opendns.com", "doh.familyshield.opendns.com", "doh.sandbox.opendns.com",
+        "mozilla.cloudflare-dns.com", "firefox.dns.nextdns.io",
+        "dns.adguard.com", "dns-family.adguard.com", "dns-unfiltered.adguard.com",
+        "doh.cleanbrowsing.org", "family-filter-dns.cleanbrowsing.org",
+        
+        "dot.cloudflare-dns.com", "dot.alidns.com", "dot.dns.sb", "dot.360.cn",
+        
+        "doh.pub", "dns.pub", "doh.360.cn", "dns.alidns.com", "doh.alidns.com",
+        "doh.dns.sb", "rubyfish.cn", "dns.rubyfish.cn", "pdns.fkgfw.cf",
+        
+        "commons.host", "odvr.nic.cz", "doh.libredns.gr", "dns.digitale-gesellschaft.ch",
+        "dns.switch.ch", "jp.tiar.app", "jp.tiarap.org", "kaitain.restena.lu",
+        "dns.twnic.tw", "dns.hinet.net",
+        
+        "dns", "doh", "doq", "dot", "resolver", "nameserver", "recursive",
+        "authoritative", "secure-dns", "private-dns",
     }
     
     privateIPNetworks = []struct {
@@ -711,7 +783,7 @@ func extractGeoIPFeature(geoIPInfo []string) int {
         return 30 + (hashValue % 20)
     }
     
-    return 0  // 默认未知
+    return 0
 }
 
 func extractDomainTypeFeature(host string) int {
@@ -724,52 +796,66 @@ func extractDomainTypeFeature(host string) int {
     // 1. 检查是否为IP地址形式
     if strings.Contains(host, "[") || (strings.Count(host, ".") == 3 && 
         ipv4Regex.MatchString(host)) {
-        return 1  // IP地址
+        return 1
     }
     
-    // 2. 检查流媒体/视频相关域名
-    for _, keyword := range streamingKeywords {
+    // 2.1 DNS服务优先 - 基础设施服务
+    for _, keyword := range dnsServiceKeywords {
         if strings.Contains(host, keyword) {
-            return 2  // 流媒体服务
+            return 6
         }
     }
     
-    // 3. 检查游戏相关域名
+    // 2.2 API服务 - 开发和基础设施服务
+    for _, keyword := range apiServiceKeywords {
+        if strings.Contains(host, keyword) {
+            return 5
+        }
+    }
+    
+    // 2.3 游戏服务 - 高延迟敏感
     for _, keyword := range gameKeywords {
         if strings.Contains(host, keyword) {
-            return 3  // 游戏服务
+            return 3
         }
     }
     
-    // 4. 检查通讯/会议相关域名
+    // 2.4 通讯/会议服务 - 实时性要求高
     for _, keyword := range communicationKeywords {
         if strings.Contains(host, keyword) {
-            return 4  // 通讯服务
+            return 4
         }
     }
     
-    // 5. 检查顶级域名类型
-    if strings.HasSuffix(host, ".cn") {
-        return 10  // 中国顶级域名
-    } else if strings.HasSuffix(host, ".com") {
-        return 11  // 商业域名
-    } else if strings.HasSuffix(host, ".net") {
-        return 12  // 网络服务域名
-    } else if strings.HasSuffix(host, ".org") {
-        return 13  // 组织域名
-    } else if strings.HasSuffix(host, ".gov") {
-        return 14  // 政府域名
-    } else if strings.HasSuffix(host, ".edu") {
-        return 15  // 教育域名
+    // 2.5 流媒体/视频服务 - 带宽敏感
+    for _, keyword := range streamingKeywords {
+        if strings.Contains(host, keyword) {
+            return 2
+        }
     }
     
-    // 6. 分析域名长度和结构
+    // 3.1 顶级域名类型检查
+    if strings.HasSuffix(host, ".gov") {
+        return 14
+    } else if strings.HasSuffix(host, ".edu") {
+        return 15
+    } else if strings.HasSuffix(host, ".cn") {
+        return 10
+    } else if strings.HasSuffix(host, ".com") {
+        return 11
+    } else if strings.HasSuffix(host, ".net") {
+        return 12
+    } else if strings.HasSuffix(host, ".org") {
+        return 13
+    }
+    
+    // 3.2 域名结构分析
     if matches := domainRegex.FindStringSubmatch(host); len(matches) > 1 {
         domainParts := strings.Split(host, ".")
         if len(domainParts) >= 3 {
-            return 30  // 三级及以上域名
+            return 30
         } else {
-            return 31  // 二级域名
+            return 31
         }
     }
     
@@ -800,91 +886,124 @@ func extractIPFeature(ipAddr string) int {
 }
 
 func extractPortFeature(port uint16) int {
-    // 1. 检查是否为已知端口
+
+    // 1.1 DNS服务端口
+    if _, isDNS := dnsServicePorts[port]; isDNS {
+        return 36
+    }
+    
+    // 1.2 API服务端口
+    if _, isAPI := apiServicePorts[port]; isAPI {
+        return 35
+    }
+    
+    // 1.3 游戏专用端口 - 高延迟敏感
+    if _, isGame := gameSpecificPorts[port]; isGame {
+        return 30
+    }
+    
+    // 1.4 通信专用端口 - 实时性要求高
+    if _, isComm := communicationPorts[port]; isComm {
+        return 31
+    }
+    
+    // 2. 已知标准端口检查
     if category, exists := wellKnownPorts[port]; exists {
         return category
     }
     
-    // 2. 检查是否为游戏或通信专用端口
-    if _, isGame := gameSpecificPorts[port]; isGame {
-        return 30  // 游戏端口
-    }
-    
-    if _, isComm := communicationPorts[port]; isComm {
-        return 31  // 通信端口
-    }
-    
-    // 3. 检查是否在游戏/通信端口范围内
+    // 3.1 游戏/通信端口范围
     for _, r := range gameCommRanges {
         if port >= r.min && port <= r.max {
             switch r.category {
             case 1:
-                return 32  // 游戏端口范围
+                return 32
             case 2:
-                return 33  // 通信端口范围
+                return 33
             case 3:
-                return 34  // 混合端口范围
+                return 34
             }
         }
     }
     
-    // 4. 检查端口范围
+    // 3.2 通用端口范围
     for _, r := range portRanges {
         if port >= r.min && port <= r.max {
             return r.category
         }
     }
     
-    return 0  // 未知端口类型
+    return 0
 }
 
 func deriveConnectionType(port uint16, addressFeature, portFeature int) int {
-    // 网页浏览特征
-    if port == 80 || port == 443 || portFeature == 4 || portFeature == 5 || 
-       portFeature == 11 || portFeature == 12 {
-        return 1
+    
+    // 1.1 DNS服务特征
+    if addressFeature == 6 || portFeature == 36 {
+        return 7
     }
     
-    // 流媒体特征
-    if addressFeature == 2 {
-        return 2
+    // 1.2 检查DNS专用端口
+    if _, isDNS := dnsServicePorts[port]; isDNS {
+        return 7
     }
     
-    // 游戏/通讯特征 - 使用专用端口映射
+    // 1.3 API服务特征 - 开发和基础设施服务
+    if addressFeature == 5 || portFeature == 35 {
+        return 6
+    }
+    
+    // 1.4 检查API专用端口
+    if _, isAPI := apiServicePorts[port]; isAPI {
+        return 6
+    }
+    
+    // 1.5 游戏/通讯特征 - 实时性服务
     if addressFeature == 3 || addressFeature == 4 {
         return 3
     }
     
-    // 查找是否为游戏专用端口
+    // 1.6 检查游戏专用端口
     if _, isGamePort := gameSpecificPorts[port]; isGamePort {
         return 3
     }
     
-    // 查找是否为通信专用端口
+    // 1.7 检查通信专用端口
     if _, isCommPort := communicationPorts[port]; isCommPort {
         return 3
     }
     
-    // 检查端口范围
-    for _, r := range gameCommRanges {
-        if port >= r.min && port <= r.max {
-            return 3  // 游戏/通信特征
-        }
+    // 1.8 流媒体特征 - 带宽敏感服务
+    if addressFeature == 2 {
+        return 2
     }
     
-    // 系统服务和应用的常见端口 - 常见的高端口应用通常是游戏或通信应用
-    if port > 10000 && port < 65000 {
-        return 3  // 大多数高位端口用于游戏或通信
+    // 2.1 网页浏览特征
+    if port == 80 || port == 443 || portFeature == 4 || portFeature == 7 {
+        return 1
     }
     
-    // 数据库访问特征
-    if portFeature == 8 || portFeature == 9 {
+    // 2.2 数据库访问特征
+    if portFeature == 13 || portFeature == 14 || portFeature == 15 || portFeature == 16 {
         return 4
     }
     
-    // 文件传输特征
+    // 2.3 文件传输特征
     if port == 20 || port == 21 || port == 22 || port == 989 || port == 990 {
         return 5
+    }
+    
+    
+    // 3.1 检查游戏/通信端口范围
+    for _, r := range gameCommRanges {
+        if port >= r.min && port <= r.max {
+            return 3
+        }
+    }
+    
+    // 3.2 高位端口推测
+    if port > 10000 && port < 65000 {
+        return 3
     }
     
     return 0
