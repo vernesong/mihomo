@@ -560,6 +560,9 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 			socks["username"] = username
 			socks["password"] = password
 			socks["skip-cert-verify"] = true
+			if scheme == "https" {
+				socks["tls"] = true
+			}
 
 			proxies = append(proxies, socks)
 
@@ -585,6 +588,8 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 			}
 			insecure, sni := query.Get("insecure"), query.Get("sni")
 			insecureBool := insecure == "1"
+			fingerprint := query.Get("hpkp")
+
 			remarks := link.Fragment
 			if remarks == "" {
 				remarks = fmt.Sprintf("%s:%s", server, portStr)
@@ -598,6 +603,7 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 			anytls["username"] = username
 			anytls["password"] = password
 			anytls["sni"] = sni
+			anytls["fingerprint"] = fingerprint
 			anytls["skip-cert-verify"] = insecureBool
 			anytls["udp"] = true
 

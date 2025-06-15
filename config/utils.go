@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/metacubex/mihomo/adapter/outboundgroup"
@@ -150,6 +152,9 @@ func proxyGroupsDagSort(groupsConfig []map[string]any) error {
 }
 
 func verifyIP6() bool {
+	if skip, _ := strconv.ParseBool(os.Getenv("SKIP_SYSTEM_IPV6_CHECK")); skip {
+		return true
+	}
 	if iAddrs, err := net.InterfaceAddrs(); err == nil {
 		for _, addr := range iAddrs {
 			if prefix, err := netip.ParsePrefix(addr.String()); err == nil {
