@@ -62,7 +62,6 @@ func (c *DataCollector) AddSample(input *ModelInput, metadata *C.Metadata, actua
     c.mutex.Lock()
     defer c.mutex.Unlock()
 
-    // 检查文件是否仍然存在，如果不存在则重新初始化
     if c.configured {
         if _, err := os.Stat(c.dataPath); os.IsNotExist(err) {
             log.Infoln("[Smart] Data file was deleted, reinitializing collector")
@@ -84,7 +83,6 @@ func (c *DataCollector) AddSample(input *ModelInput, metadata *C.Metadata, actua
         }
     }
     
-    // 懒加载初始化
     if !c.configured {
         err := c.initializeWriter()
         if err != nil {
@@ -93,20 +91,17 @@ func (c *DataCollector) AddSample(input *ModelInput, metadata *C.Metadata, actua
         }
     }
     
-    // 使用共享的特征提取逻辑
     features := prepareFeatures(input)
     if len(features) == 0 {
         log.Debugln("[Smart] Feature extraction failed, skipping sample collection")
         return
     }
     
-    // 构建基本特征字符串（数值型特征）
     featureStrings := make([]string, len(features))
     for i, f := range features {
         featureStrings[i] = fmt.Sprintf("%.6f", f)
     }
     
-    // 收集原始元数据字符串
     var geoIPStr string
     if metadata.DstGeoIP != nil {
         geoIPStr = strings.Join(metadata.DstGeoIP, ",")
@@ -156,6 +151,12 @@ func (c *DataCollector) AddSample(input *ModelInput, metadata *C.Metadata, actua
     
     if err := c.writer.Write(sample); err != nil {
         log.Warnln("[Smart] Failed to write training data: %v", err)
+        c.configured = false
+        if c.file != nil {
+            c.file.Close()
+            c.file = nil
+        }
+        c.writer = nil
         return
     }
     
@@ -177,7 +178,6 @@ func (c *DataCollector) initializeWriter() error {
         fileExists = true
     }
 
-    // 检查旧文件是否包含hash列
     needUpgrade := false
     if fileExists {
         f, err := os.Open(c.dataPath)
@@ -201,7 +201,6 @@ func (c *DataCollector) initializeWriter() error {
     }
 
     if needUpgrade {
-        // 备份旧文件
         backupPath := c.dataPath + ".bak." + time.Now().Format("20060102150405")
         os.Rename(c.dataPath, backupPath)
         log.Infoln("[Smart] Old CSV file does not contain hash columns, backup to %s and create new file", backupPath)
