@@ -129,7 +129,7 @@ func (c *httpConn) Write(b []byte) (int, error) {
 	buf.Write(b)
 	_, err := c.Conn.Write(buf.Bytes())
 	if err != nil {
-		return 0, nil
+		return 0, err
 	}
 	c.hasSentHeader = true
 	return bLength, nil
