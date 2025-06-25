@@ -1743,11 +1743,6 @@ func (s *Store) MarkConnectionFailed(group, config, host string) {
         return
     }
 
-    domain := GetEffectiveDomain(host, "")
-    if domain == "" {
-        return
-    }
-
     groupKey := fmt.Sprintf("%s:%s", group, config)
     
     key := FormatCacheKey(KeyTypeFailed, config, group, domain)

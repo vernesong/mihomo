@@ -14,7 +14,7 @@ func InitializeCache() {
     globalCacheParams.mutex.Lock()
     defer globalCacheParams.mutex.Unlock()
     
-    if dataCache != nil && domainValidityCache != nil && StatsCache != nil {
+    if dataCache != nil && domainResultCache != nil && StatsCache != nil {
         return
     }
     
@@ -29,9 +29,9 @@ func InitializeCache() {
         lru.WithAge[string, interface{}](CacheMaxAge),
     )
     
-    domainValidityCache = lru.New[string, bool](
-        lru.WithSize[string, bool](globalCacheParams.CacheMaxSize),
-        lru.WithAge[string, bool](CacheMaxAge),
+    domainResultCache = lru.New[string, string](
+        lru.WithSize[string, string](globalCacheParams.CacheMaxSize),
+        lru.WithAge[string, string](CacheMaxAge),
     )
 
     StatsCache = lru.New[string, *StatsRecord](
@@ -419,9 +419,9 @@ func (s *Store) AdjustCacheParameters() {
         lru.WithAge[string, interface{}](cacheMaxAge),
     )
     
-    newDomainValidityCache := lru.New[string, bool](
-        lru.WithSize[string, bool](newCacheSize),
-        lru.WithAge[string, bool](cacheMaxAge),
+    newDomainResultCache := lru.New[string, string](
+        lru.WithSize[string, string](newCacheSize),
+        lru.WithAge[string, string](cacheMaxAge),
     )
     
     newStatsCache := lru.New[string, *StatsRecord](
@@ -486,7 +486,7 @@ func (s *Store) AdjustCacheParameters() {
     
     globalCacheLock.Lock()
     dataCache = newDataCache
-    domainValidityCache = newDomainValidityCache 
+    domainResultCache = newDomainResultCache
     StatsCache = newStatsCache
     globalCacheLock.Unlock()
     
@@ -553,8 +553,8 @@ func ClearCacheByLevel(level string, config string, group string) {
         if StatsCache != nil {
             StatsCache.Clear()
         }
-        if domainValidityCache != nil {
-            domainValidityCache.Clear()
+        if domainResultCache != nil {
+            domainResultCache.Clear()
         }
         globalCacheLock.Unlock()
     } else if level == "config" {

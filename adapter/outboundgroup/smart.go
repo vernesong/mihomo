@@ -225,7 +225,9 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
             
             if i == maxRetries-1 {
                 domain := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
-                s.store.MarkConnectionFailed(s.Name(), s.configName, domain)
+                if domain != "" {
+                    s.store.MarkConnectionFailed(s.Name(), s.configName, domain)
+                }
                 break
             }
         }
@@ -1091,12 +1093,17 @@ func (s *Smart) logConnectionStats(record *smart.StatsRecord, metadata *C.Metada
         weightSource = "LightGBM"
     }
     
+    displayAddress := metadata.Host
+    if displayAddress == "" {
+        displayAddress = domain
+    }
+    
     log.Debugln("[Smart] Updated weights: (Model: [%s], TCP: [%.4f], UDP: [%.4f], TCP ASN: [%.4f], UDP ASN: [%.4f], Base: [%.4f], Priority: [%.2f]) "+
         "For (Group: [%s] - Node: [%s] - Network: [%s] - Address: [%s] - ASN: [%s]) "+
         "- Current: (Up: [%.4f MB], Down: [%.4f MB], Duration: [%.2f s]) "+
         "- History: (Success: [%d], Failure: [%d], Connect: [%d ms], Latency: [%d ms], Total Up: [%.4f MB], Total Down: [%.4f MB], Avg Duration: [%.4f min])",
         weightSource, record.Weights[smart.WeightTypeTCP], record.Weights[smart.WeightTypeUDP], tcpAsnWeight, udpAsnWeight, baseWeight, priorityFactor,
-        s.Name(), proxyName, strings.ToUpper(metadata.NetWork.String()), domain, asnDisplayInfo,
+        s.Name(), proxyName, strings.ToUpper(metadata.NetWork.String()), displayAddress, asnDisplayInfo,
         float64(uploadTotal)/(1024.0*1024.0), float64(downloadTotal)/(1024.0*1024.0), float64(connectionDuration)/1000.0,
         record.Success, record.Failure, record.ConnectTime, record.Latency,
         record.UploadTotal, record.DownloadTotal, record.ConnectionDuration)

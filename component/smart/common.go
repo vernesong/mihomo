@@ -102,7 +102,7 @@ var (
         },
     }
 
-    domainValidityCache *lru.LruCache[string, bool]
+    domainResultCache *lru.LruCache[string, string]
 
     StatsCache *lru.LruCache[string, *StatsRecord]
 
@@ -193,36 +193,34 @@ func FormatDBKey(first string, parts ...string) string {
     return strings.Join(elements, "/")
 }
 
-// 获取有效域名
+// 获取有效顶级域名加一级域名
 func GetEffectiveDomain(host string, dstIP string) string {
-    if domainValidityCache == nil {
-        return host
-    }
-    
     if host != "" {
-        cacheKey := "domain:" + host
-        if valid, ok := domainValidityCache.Get(cacheKey); ok {
-            if valid {
-                return host
+        if domainResultCache != nil {
+            cacheKey := "domain:" + host
+            if cachedResult, ok := domainResultCache.Get(cacheKey); ok {
+                return cachedResult
             }
-            goto tryIP
         }
+        
+        var result string
         
         if ip := net.ParseIP(host); ip != nil {
-            domainValidityCache.Set(cacheKey, true)
-            return ip.String()
-        }
-
-        if eTLD, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil {
-            domainValidityCache.Set(cacheKey, true)
-            return eTLD
+            result = ip.String()
+        } else if eTLD, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil {
+            result = eTLD
+        } else {
+            result = host
         }
         
-        domainValidityCache.Set(cacheKey, false)
-        return host
+        if domainResultCache != nil {
+            cacheKey := "domain:" + host
+            domainResultCache.Set(cacheKey, result)
+        }
+        
+        return result
     }
 
-tryIP:
     if dstIP != "" {
         return dstIP
     }
