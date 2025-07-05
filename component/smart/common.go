@@ -106,7 +106,7 @@ var (
 
     StatsCache *lru.LruCache[string, *StatsRecord]
 
-    var presetSceneParams = map[string]SceneParams{
+    presetSceneParams = map[string]SceneParams{
         "interactive": {0.4, 0.2, 0.4, 1.2, 1.0, 1.3, 0.3},
         "streaming":   {0.5, 0.1, 0.4, 1.5, 0.8, 1.2, 0.2},
         "transfer":    {0.6, 0.2, 0.2, 1.8, 0.7, 0.9, 0.1},
