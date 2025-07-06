@@ -697,18 +697,7 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
             samples := asnNodeSamples[nodeName]
             if samples >= DefaultMinSampleCount {
                 avgWeight := totalWeight / float64(samples)
-                var nameHash uint32
-                if len(nodeName) >= 3 {
-                    h := uint32(0)
-                    for i := 0; i < 3; i++ {
-                        h = h*31 + uint32(nodeName[i])
-                    }
-                    nameHash = h
-                } else {
-                    nameHash = uint32(len(nodeName)) * 31
-                }
-                jitter := 0.97 + (float64(nameHash % 100) / 100.0 * 0.06)
-                nodesWithWeight[nodeName] = avgWeight * jitter
+                nodesWithWeight[nodeName] = avgWeight
             }
         }
 
@@ -723,20 +712,104 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
         }
 
         var requiredNodeCount int
+        
+        baseCount := func() int {
+            switch {
+            case availableNodesCount <= 5:
+                return 1
+            case availableNodesCount <= 10:
+                return 2
+            case availableNodesCount <= 20:
+                return 3
+            case availableNodesCount <= 50:
+                return 4
+            default:
+                return 5
+            }
+        }()
+        
+        coverageRatio := float64(len(nodesWithWeight)) / float64(availableNodesCount)
+        
         switch {
-        case availableNodesCount < 10:
+        case coverageRatio >= 0.6:
+            requiredNodeCount = baseCount + 1
+        case coverageRatio >= 0.3:
+            requiredNodeCount = baseCount
+        case coverageRatio >= 0.1:
+            requiredNodeCount = (baseCount * 2) / 3
+            if requiredNodeCount < 1 {
+                requiredNodeCount = 1
+            }
+        default:
+            requiredNodeCount = 1
+        }
+        
+        if len(nodesWithWeight) >= 3 {
+            var maxWeight, minWeight float64
+            first := true
+            
+            for _, weight := range nodesWithWeight {
+                if first {
+                    maxWeight = weight
+                    minWeight = weight
+                    first = false
+                } else {
+                    if weight > maxWeight {
+                        maxWeight = weight
+                    }
+                    if weight < minWeight {
+                        minWeight = weight
+                    }
+                }
+            }
+            
+            if maxWeight > 0 && minWeight > 0 {
+                ratio := maxWeight / minWeight
+                
+                switch {
+                case ratio >= 4.0:
+                    requiredNodeCount = (requiredNodeCount * 2) / 3
+                    if requiredNodeCount < 1 {
+                        requiredNodeCount = 1
+                    }
+                    
+                case ratio >= 2.0:
+                    requiredNodeCount = (requiredNodeCount * 4) / 5
+                    if requiredNodeCount < 1 {
+                        requiredNodeCount = 1
+                    }
+                    
+                case ratio >= 1.5:
+                    requiredNodeCount = requiredNodeCount
+                    
+                case ratio < 1.3:
+                    requiredNodeCount = requiredNodeCount + 1
+                }
+                
+                if maxWeight < 0.8 {
+                    requiredNodeCount = (requiredNodeCount * 3) / 4
+                    if requiredNodeCount < 1 {
+                        requiredNodeCount = 1
+                    }
+                }
+                
+                if maxWeight > 2.5 && ratio >= 1.8 {
+                    requiredNodeCount = (requiredNodeCount * 3) / 4
+                    if requiredNodeCount < 1 {
+                        requiredNodeCount = 1
+                    }
+                }
+            }
+        }
+        
+        if requiredNodeCount > len(nodesWithWeight) {
+            requiredNodeCount = len(nodesWithWeight)
+        }
+        if requiredNodeCount > availableNodesCount/2 {
             requiredNodeCount = availableNodesCount / 2
             if requiredNodeCount < 1 {
                 requiredNodeCount = 1
             }
-        case availableNodesCount < 30:
-            requiredNodeCount = availableNodesCount / 4
-        case availableNodesCount > 50 && len(nodesWithWeight) > 0 && float64(len(nodesWithWeight))/float64(availableNodesCount) < 0.1:
-            requiredNodeCount = 4
-        case availableNodesCount > 100 && len(nodesWithWeight) > 0 && float64(len(nodesWithWeight))/float64(availableNodesCount) < 0.05:
-            requiredNodeCount = 2
-        default:
-            requiredNodeCount = 5
         }
 
         if len(nodesWithWeight) >= requiredNodeCount {
