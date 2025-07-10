@@ -2,11 +2,11 @@ package provider
 
 import (
 	"fmt"
-	"strings"
 
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/rules/common"
 )
 
 type classicalStrategy struct {
@@ -39,7 +39,7 @@ func (c *classicalStrategy) Reset() {
 }
 
 func (c *classicalStrategy) Insert(rule string) {
-	ruleType, rule, params := ruleParse(rule)
+	ruleType, rule, params := common.ParseRulePayload(rule)
 	r, err := c.parse(ruleType, rule, "", params)
 	if err != nil {
 		log.Warnln("parse classical rule error: %s", err.Error())
@@ -50,23 +50,6 @@ func (c *classicalStrategy) Insert(rule string) {
 }
 
 func (c *classicalStrategy) FinishInsert() {}
-
-func ruleParse(ruleRaw string) (string, string, []string) {
-	item := strings.Split(ruleRaw, ",")
-	if len(item) == 1 {
-		return "", item[0], nil
-	} else if len(item) == 2 {
-		return item[0], item[1], nil
-	} else if len(item) > 2 {
-		if item[0] == "NOT" || item[0] == "OR" || item[0] == "AND" || item[0] == "SUB-RULE" || item[0] == "DOMAIN-REGEX" || item[0] == "PROCESS-NAME-REGEX" || item[0] == "PROCESS-PATH-REGEX" {
-			return item[0], strings.Join(item[1:], ","), nil
-		} else {
-			return item[0], item[1], item[2:]
-		}
-	}
-
-	return "", "", nil
-}
 
 func NewClassicalStrategy(parse func(tp, payload, target string, params []string, subRules map[string][]C.Rule) (parsed C.Rule, parseErr error)) *classicalStrategy {
 	return &classicalStrategy{rules: []C.Rule{}, parse: func(tp, payload, target string, params []string) (parsed C.Rule, parseErr error) {

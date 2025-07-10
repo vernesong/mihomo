@@ -78,21 +78,14 @@ func (r Range) containRange(preStart, preEnd int) bool {
 }
 
 func (logic *Logic) payloadToRule(subPayload string, parseRule common.ParseRuleFunc) (C.Rule, error) {
-	splitStr := strings.SplitN(subPayload, ",", 2)
-	if len(splitStr) < 2 {
-		return nil, fmt.Errorf("[%s] format is error", subPayload)
-	}
-
-	tp := splitStr[0]
-	payload := splitStr[1]
+	tp, payload, param := common.ParseRulePayload(subPayload)
 	switch tp {
 	case "MATCH", "SUB-RULE":
 		return nil, fmt.Errorf("unsupported rule type [%s] on logic rule", tp)
-	case "NOT", "OR", "AND":
-		return parseRule(tp, payload, "", nil, nil)
+	case "":
+		return nil, fmt.Errorf("[%s] format is error", subPayload)
 	}
-	param := strings.Split(payload, ",")
-	return parseRule(tp, param[0], "", param[1:], nil)
+	return parseRule(tp, payload, "", param, nil)
 }
 
 func (logic *Logic) format(payload string) ([]Range, error) {
