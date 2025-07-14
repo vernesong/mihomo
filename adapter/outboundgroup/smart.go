@@ -684,7 +684,7 @@ func (s *Smart) selectProxy(metadata *C.Metadata, touch bool) C.Proxy {
         }
         
         // 实时计算最佳节点
-        bestNode, _, _, _ := s.store.GetBestProxyForTarget(s.Name(), s.configName, target, weightType)
+        bestNode, _, _, _ := s.store.GetBestProxyForTarget(s.Name(), s.configName, target, weightType, false)
         if bestNode != "" {
             if proxy := findProxyByName(bestNode); proxy != nil {
                 return proxy
@@ -1443,7 +1443,7 @@ func (s *Smart) cleanupDegradedNodePreferenceCache(domain string, nodeName strin
     s.store.DeleteCacheResult(smart.KeyTypePrefetch, s.Name(), s.configName, domain)
 
     // 处理域名相关缓存
-    bestNode, bestWeight, _, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, domain, weightType)
+    bestNode, bestWeight, _, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, domain, weightType, false)
     if err == nil && bestNode != "" && bestNode != nodeName && bestWeight > currentWeight {
         s.store.StorePrefetchResult(s.Name(), s.configName, domain, weightType, bestNode)
         log.Debugln("[Smart] Added new prefetch result for domain: [%s] -> [%s] (weight: %.4f, type: %s)", 
@@ -1461,7 +1461,7 @@ func (s *Smart) cleanupDegradedNodePreferenceCache(domain string, nodeName strin
 
         s.store.DeleteCacheResult(smart.KeyTypePrefetch, s.Name(), s.configName, fullAsnWeightType)
         
-        bestNode, bestWeight, _, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, asnInfo, fullAsnWeightType)
+        bestNode, bestWeight, _, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, asnInfo, fullAsnWeightType, false)
         if err == nil && bestNode != "" && bestNode != nodeName && bestWeight > 0 {
             s.store.StorePrefetchResult(s.Name(), s.configName, asnInfo, fullAsnWeightType, bestNode)
             log.Debugln("[Smart] Added new ASN prefetch result: [%s] -> [%s] (weight: %.4f, type: %s)", 

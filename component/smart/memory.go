@@ -265,7 +265,7 @@ func (s *Store) LoadDomainsToCache(group, config string, domains []string, maxDo
                 
                 loadedCount++
                 
-                bestNode, _, _, _ := s.GetBestProxyForTarget(group, config, domain, weightType)
+                bestNode, _, _, _ := s.GetBestProxyForTarget(group, config, domain, weightType, false)
                 if bestNode != "" {
                     s.StorePrefetchResult(group, config, domain, weightType, bestNode)
                 }
@@ -299,7 +299,7 @@ func (s *Store) LoadASNsToCache(group, config string, asns []string) int {
             for _, baseType := range weightTypes {
                 weightType := baseType + ":" + asn
                 
-                bestNode, _, _, _ := s.GetBestProxyForTarget(group, config, asn, weightType)
+                bestNode, _, _, _ := s.GetBestProxyForTarget(group, config, asn, weightType, false)
                 if bestNode != "" {
                     s.StorePrefetchResult(group, config, asn, weightType, bestNode)
                     loadedCount++

@@ -626,7 +626,7 @@ func (s *Store) StoreNodeWeightRanking(group, config string, ranking map[string]
 }
 
 // 获取目标的最佳代理
-func (s *Store) GetBestProxyForTarget(group, config string, target string, weightType string) (string, float64, map[string]float64, error) {
+func (s *Store) GetBestProxyForTarget(group, config string, target string, weightType string, allStats bool) (string, float64, map[string]float64, error) {
     if target == "" {
         return "", 0, nil, errors.New("empty target")
     }
@@ -634,85 +634,94 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
     now := time.Now().Unix()
     minDecay := math.Max(0.1, 0.4)
     decayCache := make(map[int64]float64, 72)
-    
+
     getTimeDecay := func(lastUsedTime int64) float64 {
         return GetTimeDecayWithCache(lastUsedTime, now, minDecay, decayCache)
     }
 
-    if strings.HasPrefix(weightType, WeightTypeTCPASN) || strings.HasPrefix(weightType, WeightTypeUDPASN) {
-        nodeStatesMap := make(map[string]NodeState)
-        allAvailableNodes := make([]string, 0)
-        stateData, _ := s.GetNodeStates(group, config)
-        for nodeName, data := range stateData {
-            var state NodeState
-            if err := json.Unmarshal(data, &state); err == nil {
-                if !state.BlockedUntil.IsZero() && state.BlockedUntil.After(time.Now()) {
-                    continue
-                }
-                nodeStatesMap[nodeName] = state
-                allAvailableNodes = append(allAvailableNodes, nodeName)
+    allStatsMap, err := s.GetAllStats(group, config, allStats)
+    if err != nil {
+        return "", 0, nil, err
+    }
+
+    nodeStatesMap := make(map[string]NodeState)
+    allAvailableNodes := make([]string, 0)
+    stateData, _ := s.GetNodeStates(group, config)
+    for nodeName, data := range stateData {
+        var state NodeState
+        if err := json.Unmarshal(data, &state); err == nil {
+            if !state.BlockedUntil.IsZero() && state.BlockedUntil.After(time.Now()) {
+                continue
             }
+            nodeStatesMap[nodeName] = state
+            allAvailableNodes = append(allAvailableNodes, nodeName)
         }
-        
-        availableNodesCount := len(allAvailableNodes)
+    }
+    availableNodesCount := len(allAvailableNodes)
 
-        allDomainsStats, err := s.GetAllStats(group, config, false)
-        if err != nil {
-            return "", 0, nil, err
+    nodesWithWeight := make(map[string]float64)
+    var domainStats map[string][]byte
+    if stats, ok := allStatsMap[target]; ok {
+        domainStats = stats
+    } else {
+        if len(allAvailableNodes) == 0 {
+            return "", 0, nil, errors.New("no available nodes")
         }
+        randomIndex := int(time.Now().UnixNano() % int64(len(allAvailableNodes)))
+        randomNode := allAvailableNodes[randomIndex]
+        return randomNode, 0.0, nodesWithWeight, nil
+    }
 
-        expectedNodes := len(allDomainsStats) / 4
-        if expectedNodes < 8 {
-            expectedNodes = 8
+    asnMode := strings.HasPrefix(weightType, WeightTypeTCPASN) || strings.HasPrefix(weightType, WeightTypeUDPASN)
+    nodeSamples := make(map[string]int)
+    for nodeName, data := range domainStats {
+        var record StatsRecord
+        if json.Unmarshal(data, &record) != nil {
+            continue
         }
-        
-        asnNodeScores := make(map[string]float64, expectedNodes)
-        asnNodeSamples := make(map[string]int, expectedNodes)
-
-        for _, domainStats := range allDomainsStats {
-            for nodeName, data := range domainStats {
-                if _, blocked := nodeStatesMap[nodeName]; !blocked {
-                    continue
+        if asnMode {
+            if record.Weights != nil {
+                if weight, ok := record.Weights[weightType]; ok && weight > 0 {
+                    timeDecay := getTimeDecay(record.LastUsed.Unix())
+                    nodesWithWeight[nodeName] += weight * timeDecay
+                    nodeSamples[nodeName]++
                 }
-                
-                var record StatsRecord
-                if json.Unmarshal(data, &record) != nil {
-                    continue
-                }
-
+            }
+        } else {
+            var weight float64
+            if record.Weights != nil {
+                weight = record.Weights[weightType]
+            }
+            if weight > 0 {
                 timeDecay := getTimeDecay(record.LastUsed.Unix())
-
-                if record.Weights != nil {
-                    if weight, ok := record.Weights[weightType]; ok && weight > 0 {
-                        decayedWeight := weight * timeDecay
-                        asnNodeScores[nodeName] += decayedWeight
-                        asnNodeSamples[nodeName]++
-                    }
+                decayedWeight := weight * timeDecay
+                if state, exists := nodeStatesMap[nodeName]; exists && state.Degraded {
+                    decayedWeight *= state.DegradedFactor
                 }
+                nodesWithWeight[nodeName] = decayedWeight
             }
         }
+    }
 
-        nodesWithWeight := make(map[string]float64, len(asnNodeScores))
-        for nodeName, totalWeight := range asnNodeScores {
-            samples := asnNodeSamples[nodeName]
+    if asnMode {
+        for nodeName, totalWeight := range nodesWithWeight {
+            samples := nodeSamples[nodeName]
             if samples >= DefaultMinSampleCount {
                 avgWeight := totalWeight / float64(samples)
                 nodesWithWeight[nodeName] = avgWeight
+            } else {
+                delete(nodesWithWeight, nodeName)
             }
         }
-
         for nodeName, weight := range nodesWithWeight {
             if state, ok := nodeStatesMap[nodeName]; ok && state.Degraded {
                 nodesWithWeight[nodeName] = weight * state.DegradedFactor
             }
         }
+    }
 
-        if len(nodesWithWeight) == 0 {
-            return "", 0, nil, errors.New("no valid nodes for ASN")
-        }
-
-        var requiredNodeCount int
-        
+    var requiredNodeCount int
+    if asnMode {
         baseCount := func() int {
             switch {
             case availableNodesCount <= 5:
@@ -727,9 +736,10 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
                 return 5
             }
         }()
-        
-        coverageRatio := float64(len(nodesWithWeight)) / float64(availableNodesCount)
-        
+        coverageRatio := 0.0
+        if availableNodesCount > 0 {
+            coverageRatio = float64(len(nodesWithWeight)) / float64(availableNodesCount)
+        }
         switch {
         case coverageRatio >= 0.6:
             requiredNodeCount = baseCount + 1
@@ -743,11 +753,9 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
         default:
             requiredNodeCount = 1
         }
-        
         if len(nodesWithWeight) >= 3 {
             var maxWeight, minWeight float64
             first := true
-            
             for _, weight := range nodesWithWeight {
                 if first {
                     maxWeight = weight
@@ -762,37 +770,30 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
                     }
                 }
             }
-            
             if maxWeight > 0 && minWeight > 0 {
                 ratio := maxWeight / minWeight
-                
                 switch {
                 case ratio >= 4.0:
                     requiredNodeCount = (requiredNodeCount * 2) / 3
                     if requiredNodeCount < 1 {
                         requiredNodeCount = 1
                     }
-                    
                 case ratio >= 2.0:
                     requiredNodeCount = (requiredNodeCount * 4) / 5
                     if requiredNodeCount < 1 {
                         requiredNodeCount = 1
                     }
-                    
                 case ratio >= 1.5:
                     requiredNodeCount = requiredNodeCount
-                    
                 case ratio < 1.3:
                     requiredNodeCount = requiredNodeCount + 1
                 }
-                
                 if maxWeight < 0.8 {
                     requiredNodeCount = (requiredNodeCount * 3) / 4
                     if requiredNodeCount < 1 {
                         requiredNodeCount = 1
                     }
                 }
-                
                 if maxWeight > 2.5 && ratio >= 1.8 {
                     requiredNodeCount = (requiredNodeCount * 3) / 4
                     if requiredNodeCount < 1 {
@@ -801,7 +802,6 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
                 }
             }
         }
-        
         if requiredNodeCount > len(nodesWithWeight) {
             requiredNodeCount = len(nodesWithWeight)
         }
@@ -811,76 +811,7 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
                 requiredNodeCount = 1
             }
         }
-
-        if len(nodesWithWeight) >= requiredNodeCount {
-            var bestNode string
-            var bestWeight float64
-            
-            for node, weight := range nodesWithWeight {
-                if weight > bestWeight {
-                    bestWeight = weight
-                    bestNode = node
-                }
-            }
-            
-            return bestNode, bestWeight, nodesWithWeight, nil
-        } else {
-            if len(allAvailableNodes) == 0 {
-                return "", 0, nil, errors.New("no available nodes")
-            }
-            
-            randomIndex := int(time.Now().UnixNano() % int64(len(allAvailableNodes)))
-            randomNode := allAvailableNodes[randomIndex]
-                
-            return randomNode, 0.0, nodesWithWeight, nil
-        }
     } else {
-        stats, err := s.GetStatsForDomain(group, config, target)
-        if err != nil || len(stats) == 0 {
-            return "", 0, nil, err
-        }
-        
-        nodeStatesMap := make(map[string]NodeState)
-        allAvailableNodes := make([]string, 0)
-        stateData, _ := s.GetNodeStates(group, config)
-        for nodeName, data := range stateData {
-            var state NodeState
-            if err := json.Unmarshal(data, &state); err == nil {
-                if !state.BlockedUntil.IsZero() && state.BlockedUntil.After(time.Now()) {
-                    continue
-                }
-                nodeStatesMap[nodeName] = state
-                allAvailableNodes = append(allAvailableNodes, nodeName)
-            }
-        }
-        
-        availableNodesCount := len(allAvailableNodes)
-        
-        nodesWithWeight := make(map[string]float64, len(stats))
-        for nodeName, data := range stats {
-            var record StatsRecord
-            if json.Unmarshal(data, &record) != nil {
-                continue
-            }
-            
-            var weight float64
-            if record.Weights != nil {
-                weight = record.Weights[weightType]
-            }
-            
-            if weight > 0 {
-                timeDecay := getTimeDecay(record.LastUsed.Unix())
-                decayedWeight := weight * timeDecay
-                
-                if state, exists := nodeStatesMap[nodeName]; exists && state.Degraded {
-                    decayedWeight *= state.DegradedFactor
-                }
-                
-                nodesWithWeight[nodeName] = decayedWeight
-            }
-        }
-        
-        var requiredNodeCount int
         switch {
         case availableNodesCount < 10:
             requiredNodeCount = availableNodesCount / 2
@@ -896,29 +827,25 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
         default:
             requiredNodeCount = 5
         }
-        
-        if len(nodesWithWeight) >= requiredNodeCount {
-            var bestNode string
-            var bestWeight float64
-            
-            for node, weight := range nodesWithWeight {
-                if weight > bestWeight {
-                    bestWeight = weight
-                    bestNode = node
-                }
+    }
+
+    if len(nodesWithWeight) >= requiredNodeCount && requiredNodeCount > 0 {
+        var bestNode string
+        var bestWeight float64
+        for node, weight := range nodesWithWeight {
+            if weight > bestWeight {
+                bestWeight = weight
+                bestNode = node
             }
-            
-            return bestNode, bestWeight, nodesWithWeight, nil
-        } else {
-            if len(allAvailableNodes) == 0 {
-                return "", 0, nil, errors.New("no available nodes")
-            }
-            
-            randomIndex := int(time.Now().UnixNano() % int64(len(allAvailableNodes)))
-            randomNode := allAvailableNodes[randomIndex]
-                
-            return randomNode, 0.0, nodesWithWeight, nil
         }
+        return bestNode, bestWeight, nodesWithWeight, nil
+    } else {
+        if len(allAvailableNodes) == 0 {
+            return "", 0, nil, errors.New("no available nodes")
+        }
+        randomIndex := int(time.Now().UnixNano() % int64(len(allAvailableNodes)))
+        randomNode := allAvailableNodes[randomIndex]
+        return randomNode, 0.0, nodesWithWeight, nil
     }
 }
 
@@ -1119,8 +1046,6 @@ func (s *Store) GetActiveASNs(group, config string, limit int) []string {
 func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) int {
     log.Debugln("[SmartStore] Executing domain and ASN pre-calculation for policy group [%s]", group)
 
-    randomExplorationRate := 0.05
-
     blockedNodes := make(map[string]bool)
     stateData, _ := s.GetNodeStates(group, config)
     for nodeName, data := range stateData {
@@ -1178,7 +1103,7 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
 
     for _, domain := range domains {
         for _, weightType := range weightTypes {
-            bestNode, bestWeight, _, err := s.GetBestProxyForTarget(group, config, domain, weightType)
+            bestNode, bestWeight, _, err := s.GetBestProxyForTarget(group, config, domain, weightType, true)
             if err != nil || bestNode == "" {
                 continue
             }
@@ -1203,7 +1128,7 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
     for _, asn := range asns {
         for _, baseType := range []string{WeightTypeTCPASN, WeightTypeUDPASN} {
             weightType := baseType + ":" + asn
-            bestNode, bestWeight, _, err := s.GetBestProxyForTarget(group, config, asn, weightType)
+            bestNode, bestWeight, _, err := s.GetBestProxyForTarget(group, config, asn, weightType, true)
             if err != nil || bestNode == "" {
                 continue
             }
@@ -1231,73 +1156,18 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
         algorithmRandomRatio = float64(algorithmRandomCount) / float64(totalItems)
     }
 
-    // 如果随机比例小于5%，则进行额外随机探索
-    shouldDoExtraRandomization := algorithmRandomRatio < 0.05
-
     for _, item := range domainItems {
-        if item.isAlgorithmRandom {
-            s.StorePrefetchResult(group, config, item.target, item.weightType, item.bestNode)
-            prefetchCount++
-        } else if shouldDoExtraRandomization && rand.Float64() < randomExplorationRate && len(availableNodes) > 0 {
-            var randomNode string
-            maxAttempts := 5
-            for i := 0; i < maxAttempts; i++ {
-                randomIndex := rand.Intn(len(availableNodes))
-                candidate := availableNodes[randomIndex]
-                if candidate != item.bestNode {
-                    randomNode = candidate
-                    break
-                }
-            }
-            
-            if randomNode != "" {
-                s.StorePrefetchResult(group, config, item.target, item.weightType, randomNode)
-                randomExplorationCount++
-                log.Debugln("[SmartStore] Random exploration: domain [%s] -> node [%s] (type: %s, replaced best: %s)", 
-                    item.target, randomNode, item.weightType, item.bestNode)
-            } else {
-                s.StorePrefetchResult(group, config, item.target, item.weightType, item.bestNode)
-            }
-            prefetchCount++
-        } else {
-            s.StorePrefetchResult(group, config, item.target, item.weightType, item.bestNode)
-            prefetchCount++
-        }
+        s.StorePrefetchResult(group, config, item.target, item.weightType, item.bestNode)
+        prefetchCount++
     }
 
     for _, item := range asnItems {
-        if item.isAlgorithmRandom {
-            s.StorePrefetchResult(group, config, item.target, item.weightType, item.bestNode)
-            prefetchCount++
-        } else if shouldDoExtraRandomization && rand.Float64() < randomExplorationRate && len(availableNodes) > 0 {
-            var randomNode string
-            maxAttempts := 5
-            for i := 0; i < maxAttempts; i++ {
-                randomIndex := rand.Intn(len(availableNodes))
-                candidate := availableNodes[randomIndex]
-                if candidate != item.bestNode {
-                    randomNode = candidate
-                    break
-                }
-            }
-            
-            if randomNode != "" {
-                s.StorePrefetchResult(group, config, item.target, item.weightType, randomNode)
-                randomExplorationCount++
-                log.Debugln("[SmartStore] Random exploration: ASN [%s] -> node [%s] (type: %s, replaced best: %s)", 
-                    item.target, randomNode, item.weightType, item.bestNode)
-            } else {
-                s.StorePrefetchResult(group, config, item.target, item.weightType, item.bestNode)
-            }
-            prefetchCount++
-        } else {
-            s.StorePrefetchResult(group, config, item.target, item.weightType, item.bestNode)
-            prefetchCount++
-        }
+        s.StorePrefetchResult(group, config, item.target, item.weightType, item.bestNode)
+        prefetchCount++
     }
 
-    log.Infoln("[SmartStore] Prefetch completed for group [%s]: pre-calculated %d domain/ASN mappings (%d algorithm randoms, %d extra explorations, ratio: %.1f%%)",
-        group, prefetchCount, algorithmRandomCount, randomExplorationCount, algorithmRandomRatio*100)
+    log.Infoln("[SmartStore] Prefetch completed for group [%s]: pre-calculated %d domain/ASN mappings (%d algorithm randoms, ratio: %.1f%%)",
+        group, prefetchCount, algorithmRandomCount, algorithmRandomRatio*100)
     return prefetchCount
 }
 
@@ -1490,7 +1360,7 @@ func (s *Store) GetAllStats(group, config string, all bool) (map[string]map[stri
         }
     }
     
-    if len(cacheResults) > int(float64(maxDomainsLimit) * 0.6) && rand.Float64() > 0.15 {
+    if len(cacheResults) > int(float64(maxDomainsLimit) * 0.6) {
         result := make(map[string]map[string][]byte)
         domainsCount := 0
 
@@ -1499,10 +1369,6 @@ func (s *Store) GetAllStats(group, config string, all bool) (map[string]map[stri
             keys = append(keys, key)
         }
 
-        rand.Shuffle(len(keys), func(i, j int) {
-            keys[i], keys[j] = keys[j], keys[i]
-        })
-        
         for _, key := range keys {
             if domainsCount >= maxDomainsLimit {
                 break
@@ -1566,7 +1432,7 @@ func (s *Store) GetAllStats(group, config string, all bool) (map[string]map[stri
     result := make(map[string]map[string][]byte)
     
     skipOffset := 0
-    if maxDomainsLimit > 300 {
+    if maxDomainsLimit > 500 {
         skipOffset = rand.Intn(maxDomainsLimit / 3)
     }
 
