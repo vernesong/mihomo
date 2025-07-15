@@ -10,13 +10,13 @@ import (
 	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/common/atomic"
 	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/common/xsync"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/socks5"
 	"github.com/metacubex/mihomo/transport/tuic/common"
 
 	"github.com/gofrs/uuid/v5"
 	"github.com/metacubex/quic-go"
-	"github.com/puzpuzpuz/xsync/v3"
 )
 
 type ServerOption struct {
@@ -33,7 +33,6 @@ func NewServerHandler(option *ServerOption, quicConn *quic.Conn, uuid uuid.UUID)
 		quicConn:     quicConn,
 		uuid:         uuid,
 		authCh:       make(chan struct{}),
-		udpInputMap:  xsync.NewMapOf[uint16, *serverUDPInput](),
 	}
 }
 
@@ -47,7 +46,7 @@ type serverHandler struct {
 	authUUID atomic.TypedValue[string]
 	authOnce sync.Once
 
-	udpInputMap *xsync.MapOf[uint16, *serverUDPInput]
+	udpInputMap xsync.Map[uint16, *serverUDPInput]
 }
 
 func (s *serverHandler) AuthOk() bool {
@@ -96,7 +95,7 @@ func (s *serverHandler) parsePacket(packet *Packet, udpRelayMode common.UdpRelay
 
 	assocId = packet.ASSOC_ID
 
-	input, _ := s.udpInputMap.LoadOrCompute(assocId, func() *serverUDPInput { return &serverUDPInput{} })
+	input, _ := s.udpInputMap.LoadOrStoreFn(assocId, func() *serverUDPInput { return &serverUDPInput{} })
 	if input.writeClosed.Load() {
 		return nil
 	}

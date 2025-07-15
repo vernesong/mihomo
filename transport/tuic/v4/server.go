@@ -11,13 +11,13 @@ import (
 	"github.com/metacubex/mihomo/common/atomic"
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/pool"
+	"github.com/metacubex/mihomo/common/xsync"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/socks5"
 	"github.com/metacubex/mihomo/transport/tuic/common"
 
 	"github.com/gofrs/uuid/v5"
 	"github.com/metacubex/quic-go"
-	"github.com/puzpuzpuz/xsync/v3"
 )
 
 type ServerOption struct {
@@ -34,7 +34,6 @@ func NewServerHandler(option *ServerOption, quicConn *quic.Conn, uuid uuid.UUID)
 		quicConn:     quicConn,
 		uuid:         uuid,
 		authCh:       make(chan struct{}),
-		udpInputMap:  xsync.NewMapOf[uint32, *atomic.Bool](),
 	}
 }
 
@@ -47,7 +46,7 @@ type serverHandler struct {
 	authOk   atomic.Bool
 	authOnce sync.Once
 
-	udpInputMap *xsync.MapOf[uint32, *atomic.Bool]
+	udpInputMap xsync.Map[uint32, *atomic.Bool]
 }
 
 func (s *serverHandler) AuthOk() bool {
@@ -80,7 +79,7 @@ func (s *serverHandler) parsePacket(packet *Packet, udpRelayMode common.UdpRelay
 
 	assocId = packet.ASSOC_ID
 
-	writeClosed, _ := s.udpInputMap.LoadOrCompute(assocId, func() *atomic.Bool { return &atomic.Bool{} })
+	writeClosed, _ := s.udpInputMap.LoadOrStoreFn(assocId, func() *atomic.Bool { return &atomic.Bool{} })
 	if writeClosed.Load() {
 		return nil
 	}

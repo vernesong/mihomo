@@ -14,6 +14,7 @@ import (
 	atomic2 "github.com/metacubex/mihomo/common/atomic"
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/pool"
+	"github.com/metacubex/mihomo/common/xsync"
 	tlsC "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
@@ -21,7 +22,6 @@ import (
 
 	"github.com/metacubex/quic-go"
 	"github.com/metacubex/randv2"
-	"github.com/puzpuzpuz/xsync/v3"
 )
 
 type ClientOption struct {
@@ -47,7 +47,7 @@ type clientImpl struct {
 	openStreams atomic.Int64
 	closed      atomic.Bool
 
-	udpInputMap *xsync.MapOf[uint16, net.Conn]
+	udpInputMap xsync.Map[uint16, net.Conn]
 
 	// only ready for PoolClient
 	dialerRef   C.Dialer
@@ -406,7 +406,6 @@ func NewClient(clientOption *ClientOption, udp bool, dialerRef C.Dialer) *Client
 		ClientOption: clientOption,
 		udp:          udp,
 		dialerRef:    dialerRef,
-		udpInputMap:  xsync.NewMapOf[uint16, net.Conn](),
 	}
 	c := &Client{ci}
 	runtime.SetFinalizer(c, closeClient)

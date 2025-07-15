@@ -104,8 +104,8 @@ github.com/metacubex/amneziawg-go v0.0.0-20240922133038-fdf3a4d5a4ab h1:Chbw+/31
 github.com/metacubex/amneziawg-go v0.0.0-20240922133038-fdf3a4d5a4ab/go.mod h1:xVKK8jC5Sd3hfh7WjmCq+HorehIbrBijaUWmcuKjPcI=
 github.com/metacubex/bart v0.20.5 h1:XkgLZ17QxfxkqKdGsojoM2Zu01mmHyyQSFzt2/calTM=
 github.com/metacubex/bart v0.20.5/go.mod h1:DCcyfP4MC+Zy7sLK7XeGuMw+P5K9mIRsYOBgiE8icsI=
-github.com/metacubex/bbolt v0.0.0-20240822011022-aed6d4850399 h1:oBowHVKZycNtAFbZ6avaCSZJYeme2Nrj+4RpV2cNJig=
-github.com/metacubex/bbolt v0.0.0-20240822011022-aed6d4850399/go.mod h1:4xcieuIK+M4bGQmQYZVqEaIYqjS1ahO4kXG7EmDgEro=
+github.com/metacubex/bbolt v0.0.0-20250715134201-d343f11712df h1:pwbTEBPk7QQbxEIIynLcn4WsEnAkFiR5Wjevw44MWdk=
+github.com/metacubex/bbolt v0.0.0-20250715134201-d343f11712df/go.mod h1:+WmP0VJZDkDszvpa83HzfUp6QzARl/IKkMorH4+nODw=
 github.com/metacubex/chacha v0.1.5 h1:fKWMb/5c7ZrY8Uoqi79PPFxl+qwR7X/q0OrsAubyX2M=
 github.com/metacubex/chacha v0.1.5/go.mod h1:Djn9bPZxLTXbJFSeyo0/qzEzQI+gUSSzttuzZM75GH8=
 github.com/metacubex/fswatch v0.1.1 h1:jqU7C/v+g0qc2RUFgmAOPoVvfl2BXXUXEumn6oQuxhU=
@@ -171,8 +171,6 @@ github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZN
 github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c h1:ncq/mPwQF4JjgDlrVEn3C11VoGHZN7m8qihwgMEtzYw=
 github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c/go.mod h1:OmDBASR4679mdNQnz2pUhc2G8CO2JrUAVFDRBDP/hJE=
 github.com/prashantv/gostub v1.1.0 h1:BTyx3RfQjRHnUWaGF9oQos79AlQ5k8WNktv7VGvVH4g=
-github.com/puzpuzpuz/xsync/v3 v3.5.1 h1:GJYJZwO6IdxN/IKbneznS6yPkVC+c3zyY/j19c++5Fg=
-github.com/puzpuzpuz/xsync/v3 v3.5.1/go.mod h1:VjzYrABPabuM4KyBh1Ftq6u8nhwY5tBPKP9jpmh0nnA=
 github.com/quic-go/qpack v0.4.0 h1:Cr9BXA1sQS2SmDUWjSofMPNKmvF6IiIfDRmgU0w1ZCo=
 github.com/quic-go/qpack v0.4.0/go.mod h1:UZVnYIfi5GRk+zI9UMaCPsmZ2xKJP7XBUvVyT1Knj9A=
 github.com/sagernet/cors v1.2.1 h1:Cv5Z8y9YSD6Gm+qSpNrL3LO4lD3eQVvbFYJSG7JCMHQ=

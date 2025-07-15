@@ -19,7 +19,7 @@ require (
 	github.com/mdlayher/netlink v1.7.2
 	github.com/metacubex/amneziawg-go v0.0.0-20240922133038-fdf3a4d5a4ab
 	github.com/metacubex/bart v0.20.5
-	github.com/metacubex/bbolt v0.0.0-20240822011022-aed6d4850399
+	github.com/metacubex/bbolt v0.0.0-20250715134201-d343f11712df
 	github.com/metacubex/chacha v0.1.5
 	github.com/metacubex/fswatch v0.1.1
 	github.com/metacubex/gopacket v1.1.20-0.20230608035415-7e2f98a3e759
@@ -42,7 +42,6 @@ require (
 	github.com/mroth/weightedrand/v2 v2.1.0
 	github.com/openacid/low v0.1.21
 	github.com/oschwald/maxminddb-golang v1.12.0 // lastest version compatible with golang1.20
-	github.com/puzpuzpuz/xsync/v3 v3.5.1
 	github.com/sagernet/cors v1.2.1
 	github.com/sagernet/netlink v0.0.0-20240612041022-b9a21c07ac6a
 	github.com/samber/lo v1.51.0
