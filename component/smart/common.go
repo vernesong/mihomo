@@ -48,7 +48,7 @@ const (
     MinDomainsLimit         = 300
     MaxCacheSizeLimit       = 4000 // DomainsLimit + PrefetchDomainsLimit
     MinCacheSizeLimit       = 400
-    MaxBatchThreshLimit     = 1000
+    MaxBatchThreshLimit     = 500
     MinBatchThreshLimit     = 100
     MaxPrefetchDomainsLimit = 2000
     MinPrefetchDomainsLimit = 100
