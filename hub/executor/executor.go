@@ -98,6 +98,7 @@ func ApplyConfig(cfg *config.Config, force bool) {
 
 	updateExperimental(cfg.Experimental)
 	updateUsers(cfg.Users)
+	closeSmartGroups()
 	updateProxies(cfg.Proxies, cfg.Providers)
 	updateRules(cfg.Rules, cfg.SubRules, cfg.RuleProviders)
 	updateSniffer(cfg.Sniffer)
@@ -116,11 +117,10 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	loadProvider(cfg.Providers)
 	updateProfile(cfg)
 	loadProvider(cfg.RuleProviders)
+	initializeSmartGroups(cfg.Proxies)
 	runtime.GC()
 	tunnel.OnRunning()
 	updateUpdater(cfg)
-
-	initializeSmartGroups(cfg.Proxies)
 	
 	resolver.ResetConnection()
 }
@@ -526,7 +526,6 @@ func updateIPTables(cfg *config.Config) {
 }
 
 func initializeSmartGroups(proxies map[string]C.Proxy) {
-	closeSmartGroups()
     for _, proxy := range proxies {
         if proxy.Type() == C.Smart {
             if smart, ok := proxy.Adapter().(*outboundgroup.Smart); ok {

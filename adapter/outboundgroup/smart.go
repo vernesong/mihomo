@@ -1587,6 +1587,9 @@ func (s *Smart) Close() error {
     }
     
     lightgbm.CloseAllCollectors()
+    
+    smartInitOnce = sync.Once{}
+    preloadOnce = sync.Once{}
 
     return nil
 }
