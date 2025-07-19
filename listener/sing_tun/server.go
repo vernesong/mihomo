@@ -365,6 +365,8 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
 		ExcludePackage:           options.ExcludePackage,
 		FileDescriptor:           options.FileDescriptor,
 		InterfaceMonitor:         defaultInterfaceMonitor,
+		EXP_RecvMsgX:             options.RecvMsgX,
+		EXP_SendMsgX:             options.SendMsgX,
 	}
 
 	if options.AutoRedirect {

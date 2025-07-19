@@ -100,6 +100,10 @@ type tunSchema struct {
 	Inet6RouteAddress        *[]netip.Prefix `yaml:"inet6-route-address" json:"inet6-route-address,omitempty"`
 	Inet4RouteExcludeAddress *[]netip.Prefix `yaml:"inet4-route-exclude-address" json:"inet4-route-exclude-address,omitempty"`
 	Inet6RouteExcludeAddress *[]netip.Prefix `yaml:"inet6-route-exclude-address" json:"inet6-route-exclude-address,omitempty"`
+
+	// darwin special config
+	RecvMsgX *bool `yaml:"recvmsgx" json:"recvmsgx,omitempty"`
+	SendMsgX *bool `yaml:"sendmsgx" json:"sendmsgx,omitempty"`
 }
 
 type tuicServerSchema struct {
@@ -242,6 +246,12 @@ func pointerOrDefaultTun(p *tunSchema, def LC.Tun) LC.Tun {
 		}
 		if p.FileDescriptor != nil {
 			def.FileDescriptor = *p.FileDescriptor
+		}
+		if p.RecvMsgX != nil {
+			def.RecvMsgX = *p.RecvMsgX
+		}
+		if p.SendMsgX != nil {
+			def.SendMsgX = *p.SendMsgX
 		}
 	}
 	return def

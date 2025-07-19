@@ -296,6 +296,10 @@ type RawTun struct {
 	Inet6RouteAddress        []netip.Prefix `yaml:"inet6-route-address" json:"inet6-route-address,omitempty"`
 	Inet4RouteExcludeAddress []netip.Prefix `yaml:"inet4-route-exclude-address" json:"inet4-route-exclude-address,omitempty"`
 	Inet6RouteExcludeAddress []netip.Prefix `yaml:"inet6-route-exclude-address" json:"inet6-route-exclude-address,omitempty"`
+
+	// darwin special config
+	RecvMsgX bool `yaml:"recvmsgx" json:"recvmsgx,omitempty"`
+	SendMsgX bool `yaml:"sendmsgx" json:"sendmsgx,omitempty"`
 }
 
 type RawTuicServer struct {
@@ -513,6 +517,8 @@ func DefaultRawConfig() *RawConfig {
 			AutoRoute:           true,
 			AutoDetectInterface: true,
 			Inet6Address:        []netip.Prefix{netip.MustParsePrefix("fdfe:dcba:9876::1/126")},
+			RecvMsgX:            true,
+			SendMsgX:            false, // In the current implementation, if enabled, the kernel may freeze during multi-thread downloads, so it is disabled by default.
 		},
 		TuicServer: RawTuicServer{
 			Enable:                false,
@@ -1554,6 +1560,9 @@ func parseTun(rawTun RawTun, general *General) error {
 		Inet6RouteAddress:        rawTun.Inet6RouteAddress,
 		Inet4RouteExcludeAddress: rawTun.Inet4RouteExcludeAddress,
 		Inet6RouteExcludeAddress: rawTun.Inet6RouteExcludeAddress,
+
+		RecvMsgX: rawTun.RecvMsgX,
+		SendMsgX: rawTun.SendMsgX,
 	}
 
 	return nil

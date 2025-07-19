@@ -55,6 +55,10 @@ type TunOption struct {
 	Inet6RouteAddress        []netip.Prefix `inbound:"inet6-route-address,omitempty"`
 	Inet4RouteExcludeAddress []netip.Prefix `inbound:"inet4-route-exclude-address,omitempty"`
 	Inet6RouteExcludeAddress []netip.Prefix `inbound:"inet6-route-exclude-address,omitempty"`
+
+	// darwin special config
+	RecvMsgX bool `inbound:"recvmsgx,omitempty"`
+	SendMsgX bool `inbound:"sendmsgx,omitempty"`
 }
 
 var _ encoding.TextUnmarshaler = (*netip.Addr)(nil)   // ensure netip.Addr can decode direct by structure package
@@ -124,6 +128,9 @@ func NewTun(options *TunOption) (*Tun, error) {
 			Inet6RouteAddress:        options.Inet6RouteAddress,
 			Inet4RouteExcludeAddress: options.Inet4RouteExcludeAddress,
 			Inet6RouteExcludeAddress: options.Inet6RouteExcludeAddress,
+
+			RecvMsgX: options.RecvMsgX,
+			SendMsgX: options.SendMsgX,
 		},
 	}, nil
 }
