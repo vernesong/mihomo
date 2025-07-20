@@ -25,14 +25,14 @@ require (
 	github.com/metacubex/gopacket v1.1.20-0.20230608035415-7e2f98a3e759
 	github.com/metacubex/quic-go v0.53.1-0.20250628094454-fda5262d1d9c
 	github.com/metacubex/randv2 v0.2.0
-	github.com/metacubex/sing v0.5.4-0.20250605054047-54dc6097da29
+	github.com/metacubex/sing v0.5.4
 	github.com/metacubex/sing-mux v0.3.2
 	github.com/metacubex/sing-quic v0.0.0-20250718154553-1b193bec4cbb
-	github.com/metacubex/sing-shadowsocks v0.2.11-0.20250621023810-0e9ef9dd0c92
-	github.com/metacubex/sing-shadowsocks2 v0.2.5-0.20250621023950-93d605a2143d
+	github.com/metacubex/sing-shadowsocks v0.2.11
+	github.com/metacubex/sing-shadowsocks2 v0.2.5
 	github.com/metacubex/sing-shadowtls v0.0.0-20250503063515-5d9f966d17a2
 	github.com/metacubex/sing-tun v0.4.7-0.20250718032855-bfa768693dca
-	github.com/metacubex/sing-vmess v0.2.2
+	github.com/metacubex/sing-vmess v0.2.3
 	github.com/metacubex/sing-wireguard v0.0.0-20250503063753-2dc62acc626f
 	github.com/metacubex/smux v0.0.0-20250503055512-501391591dee
 	github.com/metacubex/tfo-go v0.0.0-20250516165257-e29c16ae41d4
