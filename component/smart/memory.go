@@ -14,7 +14,7 @@ func InitializeCache() {
     globalCacheParams.mutex.Lock()
     defer globalCacheParams.mutex.Unlock()
     
-    if dataCache != nil && domainResultCache != nil {
+    if dataCache != nil {
         return
     }
     
@@ -27,11 +27,6 @@ func InitializeCache() {
     dataCache = lru.New[string, interface{}](
         lru.WithSize[string, interface{}](globalCacheParams.CacheMaxSize),
         lru.WithAge[string, interface{}](CacheMaxAge),
-    )
-    
-    domainResultCache = lru.New[string, string](
-        lru.WithSize[string, string](globalCacheParams.MaxDomains),
-        lru.WithAge[string, string](CacheMaxAge),
     )
 }
 
@@ -301,7 +296,6 @@ func (s *Store) AdjustCacheParameters() {
     }
     
     var newCacheSize int
-    var newDomainSize int
     var cacheMaxAge int64 = CacheMaxAge
     
     if memoryUsage > 0.9 {
@@ -313,7 +307,6 @@ func (s *Store) AdjustCacheParameters() {
         globalCacheParams.PrefetchLimit = MinPrefetchDomainsLimit
         
         newCacheSize = MinCacheSizeLimit/2
-        newDomainSize = MinDomainsLimit/2
         cacheMaxAge = CacheMaxAge/2
     } else {
         adjustFactor := 4 * memoryUsage * (1 - memoryUsage)
@@ -342,7 +335,6 @@ func (s *Store) AdjustCacheParameters() {
             globalCacheParams.BatchSaveThreshold, globalCacheParams.PrefetchLimit)
         
         newCacheSize = globalCacheParams.CacheMaxSize
-        newDomainSize = globalCacheParams.MaxDomains
     }
     
     globalCacheParams.mutex.Unlock()
@@ -352,11 +344,6 @@ func (s *Store) AdjustCacheParameters() {
         lru.WithAge[string, interface{}](cacheMaxAge),
     )
     
-    newDomainResultCache := lru.New[string, string](
-        lru.WithSize[string, string](newDomainSize),
-        lru.WithAge[string, string](cacheMaxAge),
-    )
-
     var entries map[string]interface{}
     var preserveRatio float64
     
@@ -414,7 +401,6 @@ func (s *Store) AdjustCacheParameters() {
     
     globalCacheLock.Lock()
     dataCache = newDataCache
-    domainResultCache = newDomainResultCache
     globalCacheLock.Unlock()
     
     globalQueueMutex.RLock()
@@ -458,11 +444,6 @@ func (s *Store) PreloadFrequentData(group, config string, proxies []string) {
 func ClearCacheByLevel(level string, config string, group string) {
     if level == "all" {
         RemoveCacheValuesByPrefix("")
-        globalCacheLock.Lock()
-        if domainResultCache != nil {
-            domainResultCache.Clear()
-        }
-        globalCacheLock.Unlock()
     } else if level == "config" {
         RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeUnwrap, config, "", ""))
         RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeFailed, config, "", ""))

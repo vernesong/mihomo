@@ -88,8 +88,6 @@ var (
     
     cachedMemoryLimit float64
     memoryLimitOnce   sync.Once
-
-    domainResultCache *lru.LruCache[string, string]
 )
 
 type (
@@ -166,33 +164,11 @@ func FormatDBKey(first string, parts ...string) string {
 // 获取有效顶级域名加一级域名
 func GetEffectiveDomain(host string, dstIP string) string {
     if host != "" {
-        if domainResultCache != nil {
-            cacheKey := "domain:" + host
-            if cachedResult, ok := domainResultCache.Get(cacheKey); ok {
-                return cachedResult
-            }
-        }
-
-        var result string
-
-        if ip := net.ParseIP(host); ip != nil {
-            result = ip.String()
-        } else {
-            result = host
-        }
-
-        if domainResultCache != nil {
-            cacheKey := "domain:" + host
-            domainResultCache.Set(cacheKey, result)
-        }
-
-        return result
+        return host
     }
-
     if dstIP != "" {
         return dstIP
     }
-
     return ""
 }
 
