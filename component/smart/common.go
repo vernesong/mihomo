@@ -4,7 +4,6 @@ import (
     "errors"
     "fmt"
     "math"
-    "net"
     "runtime"
     "strconv"
     "strings"
