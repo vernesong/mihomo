@@ -301,6 +301,7 @@ func (s *Store) AdjustCacheParameters() {
     }
     
     var newCacheSize int
+    var newDomainSize int
     var cacheMaxAge int64 = CacheMaxAge
     
     if memoryUsage > 0.9 {
@@ -312,7 +313,7 @@ func (s *Store) AdjustCacheParameters() {
         globalCacheParams.PrefetchLimit = MinPrefetchDomainsLimit
         
         newCacheSize = MinCacheSizeLimit/2
-        newDomainSize := MinDomainsLimit/2
+        newDomainSize = MinDomainsLimit/2
         cacheMaxAge = CacheMaxAge/2
     } else {
         adjustFactor := 4 * memoryUsage * (1 - memoryUsage)
@@ -341,7 +342,7 @@ func (s *Store) AdjustCacheParameters() {
             globalCacheParams.BatchSaveThreshold, globalCacheParams.PrefetchLimit)
         
         newCacheSize = globalCacheParams.CacheMaxSize
-        newDomainSize := globalCacheParams.MaxDomains
+        newDomainSize = globalCacheParams.MaxDomains
     }
     
     globalCacheParams.mutex.Unlock()
