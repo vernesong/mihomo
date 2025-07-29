@@ -706,18 +706,20 @@ func (s *Smart) selectProxy(metadata *C.Metadata, touch bool) C.Proxy {
         }
     }
     
-    // 尝试使用ASN信息选择
-    asnNumber := s.getASNCode(metadata)
-    if asnNumber != "" {
-        asnWeightType := weightType
-        if weightType == smart.WeightTypeTCP {
-            asnWeightType = smart.WeightTypeTCPASN + ":" + asnNumber
-        } else {
-            asnWeightType = smart.WeightTypeUDPASN + ":" + asnNumber
-        }
-        
-        if proxy := trySelector(asnNumber, asnWeightType); proxy != nil {
-            return proxy
+    // 尝试使用ASN信息选择（50%概率）
+    if rand.Float64() < 0.5 {
+        asnNumber := s.getASNCode(metadata)
+        if asnNumber != "" {
+            asnWeightType := weightType
+            if weightType == smart.WeightTypeTCP {
+                asnWeightType = smart.WeightTypeTCPASN + ":" + asnNumber
+            } else {
+                asnWeightType = smart.WeightTypeUDPASN + ":" + asnNumber
+            }
+
+            if proxy := trySelector(asnNumber, asnWeightType); proxy != nil {
+                return proxy
+            }
         }
     }
 

@@ -6,6 +6,8 @@ import (
     "strings"
     "time"
 
+    "github.com/metacubex/mihomo/constant"
+    "github.com/metacubex/mihomo/tunnel"
     "github.com/metacubex/mihomo/common/lru"
     "github.com/metacubex/mihomo/log"
 )
@@ -21,7 +23,7 @@ func InitializeCache() {
     globalCacheParams.BatchSaveThreshold = MinBatchThreshLimit
     globalCacheParams.MaxDomains = MinDomainsLimit
     globalCacheParams.PrefetchLimit = MinPrefetchDomainsLimit
-    globalCacheParams.CacheMaxSize = MinCacheSizeLimit
+    globalCacheParams.CacheMaxSize = MinDomainsLimit + MinPrefetchDomainsLimit
     globalCacheParams.MemoryLimit = getSystemMemoryLimit()
 
     dataCache = lru.New[string, interface{}](
@@ -277,6 +279,13 @@ func (s *Store) DeleteCacheResult(keyType, group, config, key string) {
 func (s *Store) AdjustCacheParameters() {
     memoryUsagePercent := GetSystemMemoryUsage()
     memoryUsage := memoryUsagePercent / 100.0
+
+    smartGroupCount := 0
+    for _, proxy := range tunnel.Proxies() {
+        if proxy.Type() == constant.Smart {
+            smartGroupCount++
+        }
+    }
     
     globalCacheParams.mutex.Lock()
     
@@ -299,43 +308,39 @@ func (s *Store) AdjustCacheParameters() {
     var cacheMaxAge int64 = CacheMaxAge
     
     if memoryUsage > 0.9 {
-        log.Warnln("[SmartStore] Critical memory pressure detected (%.1f%%), taking emergency measures", memoryUsage*100)
-        
         globalCacheParams.MaxDomains = MinDomainsLimit
-        globalCacheParams.CacheMaxSize = MinCacheSizeLimit
         globalCacheParams.BatchSaveThreshold = MinBatchThreshLimit
         globalCacheParams.PrefetchLimit = MinPrefetchDomainsLimit
-        
-        newCacheSize = MinCacheSizeLimit/2
+        globalCacheParams.CacheMaxSize = (globalCacheParams.MaxDomains + globalCacheParams.PrefetchLimit) * smartGroupCount
+        newCacheSize = globalCacheParams.CacheMaxSize/2
         cacheMaxAge = CacheMaxAge/2
     } else {
         adjustFactor := 4 * memoryUsage * (1 - memoryUsage)
         
         if memoryUsage > 0.85 {
             globalCacheParams.MaxDomains = MinDomainsLimit
-            globalCacheParams.CacheMaxSize = MinCacheSizeLimit
             globalCacheParams.BatchSaveThreshold = MinBatchThreshLimit
             globalCacheParams.PrefetchLimit = MinPrefetchDomainsLimit
+            globalCacheParams.CacheMaxSize = (globalCacheParams.MaxDomains + globalCacheParams.PrefetchLimit) * smartGroupCount
         } else {
             value := MinDomainsLimit + int(float64(MaxDomainsLimit-MinDomainsLimit)*adjustFactor*MemoryDomainsFactor)
             globalCacheParams.MaxDomains = ClampValue(value, MinDomainsLimit, MaxDomainsLimit)
-                
-            value = MinCacheSizeLimit + int(float64(MaxCacheSizeLimit-MinCacheSizeLimit)*adjustFactor*MemoryCacheSizeFactor)
-            globalCacheParams.CacheMaxSize = ClampValue(value, MinCacheSizeLimit, MaxCacheSizeLimit)
                 
             value = MinBatchThreshLimit + int(float64(MaxBatchThreshLimit-MinBatchThreshLimit)*adjustFactor*MemoryBatchFactor)
             globalCacheParams.BatchSaveThreshold = ClampValue(value, MinBatchThreshLimit, MaxBatchThreshLimit)
                 
             value = MinPrefetchDomainsLimit + int(float64(MaxPrefetchDomainsLimit-MinPrefetchDomainsLimit)*adjustFactor*MemoryPrefetchFactor)
             globalCacheParams.PrefetchLimit = ClampValue(value, MinPrefetchDomainsLimit, MaxPrefetchDomainsLimit)
+            
+            globalCacheParams.CacheMaxSize = (globalCacheParams.MaxDomains + globalCacheParams.PrefetchLimit) * smartGroupCount
         }
-
-        log.Infoln("[SmartStore] Parameters adjusted: MaxDomains=%d, CacheSize=%d, BatchThreshold=%d, PrefetchLimit=%d", 
-            globalCacheParams.MaxDomains, globalCacheParams.CacheMaxSize, 
-            globalCacheParams.BatchSaveThreshold, globalCacheParams.PrefetchLimit)
         
         newCacheSize = globalCacheParams.CacheMaxSize
     }
+
+    log.Infoln("[SmartStore] Parameters adjusted: MaxDomains=%d, CacheSize=%d, BatchThreshold=%d, PrefetchLimit=%d", 
+            globalCacheParams.MaxDomains, globalCacheParams.CacheMaxSize, 
+            globalCacheParams.BatchSaveThreshold, globalCacheParams.PrefetchLimit)
     
     globalCacheParams.mutex.Unlock()
 
