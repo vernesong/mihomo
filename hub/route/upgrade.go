@@ -32,7 +32,11 @@ func upgradeCore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = updater.DefaultCoreUpdater.Update(execPath)
+	query := r.URL.Query()
+	channel := query.Get("channel")
+	force := query.Get("force") == "true"
+
+	err = updater.DefaultCoreUpdater.Update(execPath, channel, force)
 	if err != nil {
 		log.Warnln("%s", err)
 		render.Status(r, http.StatusInternalServerError)
