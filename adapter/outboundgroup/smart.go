@@ -369,14 +369,14 @@ func (s *Smart) InitializeCache() {
     s.ctx, s.cancel = context.WithCancel(context.Background())
 
     smartInitOnce.Do(func() {
-        //s.startTimedTask(5*time.Minute, checkInterval, "Clean up groups", s.cleanupOrphanedGroups, true)
+        s.startTimedTask(5*time.Minute, checkInterval, "Clean up groups", s.cleanupOrphanedGroups, true)
         s.startTimedTask(5*time.Minute, cacheParamAdjustInterval, "Cache parameter adjustment", s.store.AdjustCacheParameters, false)
         s.startTimedTask(5*time.Minute, flushQueueInterval, "Queue flush", func() {
             s.store.FlushQueue(false)
         }, false)
     })
 
-    //s.startTimedTask(5*time.Minute, checkInterval, "Clean up nodes", s.cleanupOrphanedNodeCache, true)
+    s.startTimedTask(5*time.Minute, checkInterval, "Clean up nodes", s.cleanupOrphanedNodeCache, true)
     s.startTimedTask(5*time.Second, checkInterval, "Preload frequent data", func() {
         preloadOnce.Do(func() {
             s.store.AdjustCacheParameters()
