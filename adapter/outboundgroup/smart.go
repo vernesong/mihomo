@@ -22,7 +22,6 @@ import (
     "github.com/metacubex/mihomo/component/smart"
     "github.com/metacubex/mihomo/component/smart/lightgbm"
     "github.com/metacubex/mihomo/log"
-    N "github.com/metacubex/mihomo/common/net"
     "github.com/metacubex/mihomo/tunnel"
     "github.com/metacubex/mihomo/tunnel/statistic"
 
@@ -292,13 +291,7 @@ func (s *Smart) IsL3Protocol(metadata *C.Metadata) bool {
 
 func (s *Smart) wrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata, connectTime int64) C.Conn {
     c.AppendToChains(s)
-
     c = s.registerClosureMetricsCallback(c, proxy, metadata)
-    
-    if !N.NeedHandshake(c) {
-        s.recordConnectionStats("success", metadata, proxy, connectTime, 0, 0, 0, 0, 0, 0, false, nil)
-        return c
-    }
 
     start := time.Now()
 
@@ -376,14 +369,14 @@ func (s *Smart) InitializeCache() {
     s.ctx, s.cancel = context.WithCancel(context.Background())
 
     smartInitOnce.Do(func() {
-        s.startTimedTask(5*time.Minute, checkInterval, "Clean up groups", s.cleanupOrphanedGroups, true)
+        //s.startTimedTask(5*time.Minute, checkInterval, "Clean up groups", s.cleanupOrphanedGroups, true)
         s.startTimedTask(5*time.Minute, cacheParamAdjustInterval, "Cache parameter adjustment", s.store.AdjustCacheParameters, false)
         s.startTimedTask(5*time.Minute, flushQueueInterval, "Queue flush", func() {
             s.store.FlushQueue(false)
         }, false)
     })
 
-    s.startTimedTask(5*time.Minute, checkInterval, "Clean up nodes", s.cleanupOrphanedNodeCache, true)
+    //s.startTimedTask(5*time.Minute, checkInterval, "Clean up nodes", s.cleanupOrphanedNodeCache, true)
     s.startTimedTask(5*time.Second, checkInterval, "Preload frequent data", func() {
         preloadOnce.Do(func() {
             s.store.AdjustCacheParameters()

@@ -1393,7 +1393,7 @@ func (s *Store) DeleteDomainRecords(group, config, domain string) error {
     return s.DeleteByPath(key)
 }
 
-// 获取配置中的所有组
+// 获取缓存中的所有组名
 func (s *Store) GetAllGroupsForConfig(config string) ([]string, error) {
     groupsMap := make(map[string]bool)
     
