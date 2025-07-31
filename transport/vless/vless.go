@@ -51,6 +51,10 @@ func (c *Client) StreamConn(conn net.Conn, dst *DstAddr) (net.Conn, error) {
 	return newConn(conn, c, dst)
 }
 
+func (c *Client) PacketConn(conn net.Conn, rAddr net.Addr) net.PacketConn {
+	return &PacketConn{conn, rAddr}
+}
+
 // NewClient return Client instance
 func NewClient(uuidStr string, addons *Addons) (*Client, error) {
 	uid, err := utils.UUIDMap(uuidStr)

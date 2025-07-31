@@ -16,6 +16,7 @@ import (
 
 	mux "github.com/metacubex/sing-mux"
 	vmess "github.com/metacubex/sing-vmess"
+	"github.com/metacubex/sing-vmess/packetaddr"
 	"github.com/metacubex/sing/common"
 	"github.com/metacubex/sing/common/buf"
 	"github.com/metacubex/sing/common/bufio"
@@ -145,6 +146,10 @@ func (h *ListenerHandler) NewConnection(ctx context.Context, conn net.Conn, meta
 }
 
 func (h *ListenerHandler) NewPacketConnection(ctx context.Context, conn network.PacketConn, metadata M.Metadata) error {
+	if metadata.Destination.Fqdn == packetaddr.SeqPacketMagicAddress {
+		conn = packetaddr.NewConn(bufio.NewNetPacketConn(conn), M.Socksaddr{})
+	}
+
 	defer func() { _ = conn.Close() }()
 	mutex := sync.Mutex{}
 	writer := bufio.NewNetPacketWriter(conn) // a new interface to set nil in defer
