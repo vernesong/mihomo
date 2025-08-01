@@ -22,16 +22,16 @@ type Tracker interface {
 	C.Connection
 }
 
-type rateSample struct {
-	timestamp time.Time
-	bytes     int64
+type timeBucket struct {
+	startMs int64
+	bytes   int64
 }
 
-type rateWindow struct {
-	samples []rateSample
-	pos     int
-	cap     int
-	mu      sync.Mutex
+type bucketWindow struct {
+	buckets   []timeBucket
+	interval  int64
+	windowMs  int64
+	mu        sync.Mutex
 }
 
 
@@ -55,8 +55,8 @@ type tcpTracker struct {
 
 	pushToManager      bool `json:"-"`
 
-	uploadRateWindow   *rateWindow
-	downloadRateWindow *rateWindow
+	uploadBucketWindow   *bucketWindow
+	downloadBucketWindow *bucketWindow
 }
 
 func (tt *tcpTracker) ID() string {
@@ -74,7 +74,7 @@ func (tt *tcpTracker) Read(b []byte) (int, error) {
 		tt.manager.PushDownloaded(download)
 	}
 	tt.DownloadTotal.Add(download)
-	updateMaxRate(tt.downloadRateWindow, download, &tt.TrackerInfo.MaxDownloadRate)
+	tt.TrackerInfo.MaxDownloadRate.Store(tt.downloadBucketWindow.updateMaxRate(download))
 	return n, err
 }
 
@@ -85,7 +85,7 @@ func (tt *tcpTracker) ReadBuffer(buffer *buf.Buffer) (err error) {
 		tt.manager.PushDownloaded(download)
 	}
 	tt.DownloadTotal.Add(download)
-	updateMaxRate(tt.downloadRateWindow, download, &tt.TrackerInfo.MaxDownloadRate)
+	tt.TrackerInfo.MaxDownloadRate.Store(tt.downloadBucketWindow.updateMaxRate(download))
 	return
 }
 
@@ -95,7 +95,7 @@ func (tt *tcpTracker) UnwrapReader() (io.Reader, []N.CountFunc) {
 			tt.manager.PushDownloaded(download)
 		}
 		tt.DownloadTotal.Add(download)
-		updateMaxRate(tt.downloadRateWindow, download, &tt.TrackerInfo.MaxDownloadRate)
+		tt.TrackerInfo.MaxDownloadRate.Store(tt.downloadBucketWindow.updateMaxRate(download))
 	}}
 }
 
@@ -106,7 +106,7 @@ func (tt *tcpTracker) Write(b []byte) (int, error) {
 		tt.manager.PushUploaded(upload)
 	}
 	tt.UploadTotal.Add(upload)
-	updateMaxRate(tt.uploadRateWindow, upload, &tt.TrackerInfo.MaxUploadRate)
+	tt.TrackerInfo.MaxUploadRate.Store(tt.uploadBucketWindow.updateMaxRate(upload))
 	return n, err
 }
 
@@ -117,7 +117,7 @@ func (tt *tcpTracker) WriteBuffer(buffer *buf.Buffer) (err error) {
 		tt.manager.PushUploaded(upload)
 	}
 	tt.UploadTotal.Add(upload)
-	updateMaxRate(tt.uploadRateWindow, upload, &tt.TrackerInfo.MaxUploadRate)
+	tt.TrackerInfo.MaxUploadRate.Store(tt.uploadBucketWindow.updateMaxRate(upload))
 	return
 }
 
@@ -127,7 +127,7 @@ func (tt *tcpTracker) UnwrapWriter() (io.Writer, []N.CountFunc) {
 			tt.manager.PushUploaded(upload)
 		}
 		tt.UploadTotal.Add(upload)
-		updateMaxRate(tt.uploadRateWindow, upload, &tt.TrackerInfo.MaxUploadRate)
+		tt.TrackerInfo.MaxUploadRate.Store(tt.uploadBucketWindow.updateMaxRate(upload))
 	}}
 }
 
@@ -161,8 +161,8 @@ func NewTCPTracker(conn C.Conn, manager *Manager, metadata *C.Metadata, rule C.R
             DownloadTotal: atomic.NewInt64(downloadTotal),
         },
         pushToManager: pushToManager,
-		uploadRateWindow:   newRateWindow(64),
-		downloadRateWindow: newRateWindow(64),
+		uploadBucketWindow:   newBucketWindow(10, 100),
+		downloadBucketWindow: newBucketWindow(10, 100),
     }
 
 	if pushToManager {
@@ -190,8 +190,8 @@ type udpTracker struct {
 
 	pushToManager    bool `json:"-"`
 
-	uploadRateWindow   *rateWindow
-	downloadRateWindow *rateWindow
+	uploadBucketWindow   *bucketWindow
+	downloadBucketWindow *bucketWindow
 }
 
 func (ut *udpTracker) ID() string {
@@ -209,7 +209,7 @@ func (ut *udpTracker) ReadFrom(b []byte) (int, net.Addr, error) {
 		ut.manager.PushDownloaded(download)
 	}
 	ut.DownloadTotal.Add(download)
-	updateMaxRate(ut.downloadRateWindow, download, &ut.TrackerInfo.MaxDownloadRate)
+	ut.TrackerInfo.MaxDownloadRate.Store(ut.downloadBucketWindow.updateMaxRate(download))
 	return n, addr, err
 }
 
@@ -220,7 +220,7 @@ func (ut *udpTracker) WaitReadFrom() (data []byte, put func(), addr net.Addr, er
 		ut.manager.PushDownloaded(download)
 	}
 	ut.DownloadTotal.Add(download)
-	updateMaxRate(ut.downloadRateWindow, download, &ut.TrackerInfo.MaxDownloadRate)
+	ut.TrackerInfo.MaxDownloadRate.Store(ut.downloadBucketWindow.updateMaxRate(download))
 	return
 }
 
@@ -231,7 +231,7 @@ func (ut *udpTracker) WriteTo(b []byte, addr net.Addr) (int, error) {
 		ut.manager.PushUploaded(upload)
 	}
 	ut.UploadTotal.Add(upload)
-	updateMaxRate(ut.uploadRateWindow, upload, &ut.TrackerInfo.MaxUploadRate)
+	ut.TrackerInfo.MaxUploadRate.Store(ut.uploadBucketWindow.updateMaxRate(upload))
 	return n, err
 }
 
@@ -265,8 +265,8 @@ func NewUDPTracker(conn C.PacketConn, manager *Manager, metadata *C.Metadata, ru
     		DownloadTotal: atomic.NewInt64(downloadTotal),
 		},
 		pushToManager: pushToManager,
-		uploadRateWindow:   newRateWindow(64),
-		downloadRateWindow: newRateWindow(64),
+		uploadBucketWindow:   newBucketWindow(10, 100),
+		downloadBucketWindow: newBucketWindow(10, 100),
 	}
 
 	if pushToManager {
@@ -287,41 +287,36 @@ func NewUDPTracker(conn C.PacketConn, manager *Manager, metadata *C.Metadata, ru
 	return ut
 }
 
-func newRateWindow(capacity int) *rateWindow {
-	return &rateWindow{
-		samples: make([]rateSample, capacity),
-		cap:     capacity,
-	}
+func newBucketWindow(bucketCount int, intervalMs int64) *bucketWindow {
+    return &bucketWindow{
+        buckets:  make([]timeBucket, bucketCount),
+        interval: intervalMs,
+        windowMs: intervalMs * int64(bucketCount),
+    }
 }
 
-func (w *rateWindow) Add(bytes int64) {
-	w.mu.Lock()
-	w.samples[w.pos] = rateSample{timestamp: time.Now(), bytes: bytes}
-	w.pos = (w.pos + 1) % w.cap
-	w.mu.Unlock()
-}
+func (w *bucketWindow) updateMaxRate(bytes int64) int64 {
+    w.mu.Lock()
+    nowMs := time.Now().UnixNano() / 1e6
+    idx := int((nowMs / w.interval) % int64(len(w.buckets)))
+    bucketStart := (nowMs / w.interval) * w.interval
+    if w.buckets[idx].startMs != bucketStart {
+        w.buckets[idx].startMs = bucketStart
+        w.buckets[idx].bytes = 0
+    }
+    w.buckets[idx].bytes += bytes
 
-func (w *rateWindow) Sum(windowSec int) int64 {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	now := time.Now()
-	windowStart := now.Add(-time.Duration(windowSec) * time.Second)
-	var total int64
-	for i := 0; i < w.cap; i++ {
-		s := w.samples[i]
-		if s.timestamp.After(windowStart) {
-			total += s.bytes
-		}
-	}
-	return total
-}
-
-func updateMaxRate(window *rateWindow, current int64, maxRate *atomic.Int64) {
-	const windowSec = 5
-	window.Add(current)
-	totalBytes := window.Sum(windowSec)
-	avgRate := int64(float64(totalBytes) / float64(windowSec))
-	if avgRate > maxRate.Load() {
-		maxRate.Store(avgRate)
-	}
+    now := nowMs
+    windowStart := now - w.windowMs
+    maxRate := int64(0)
+    for _, b := range w.buckets {
+        if b.startMs >= windowStart && b.bytes > 0 {
+            rate := int64(float64(b.bytes) * 1000 / float64(w.interval))
+            if rate > maxRate {
+                maxRate = rate
+            }
+        }
+    }
+    w.mu.Unlock()
+    return maxRate
 }
