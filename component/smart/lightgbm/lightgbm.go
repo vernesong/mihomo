@@ -16,6 +16,7 @@ import (
 
     C "github.com/metacubex/mihomo/constant"
     mihomoHttp "github.com/metacubex/mihomo/component/http"
+    "github.com/metacubex/mihomo/common/singleflight"
     "github.com/metacubex/mihomo/component/smart"
     "github.com/metacubex/mihomo/log"
     "github.com/dmitryikh/leaves"
@@ -28,6 +29,8 @@ const (
 var (
     globalModel       *WeightModel
     modelInitOnce     sync.Once
+
+    reloadModelSF     = singleflight.Group[bool]{StoreResult: false}
     
     asnNumberRegex    = regexp.MustCompile(`^(\d+)`)
     domainRegex       = regexp.MustCompile(`([a-zA-Z0-9-]+)(\.[a-zA-Z0-9-]+)+$`)
@@ -525,29 +528,61 @@ func (m *WeightModel) loadModel(path string) error {
     return nil
 }
 
+func ReloadModel() {
+    if globalModel != nil {
+        success, err, shared := reloadModelSF.Do("reload", func() (bool, error) {
+            globalModel.mutex.Lock()
+            defer globalModel.mutex.Unlock()
+            
+            modelPath := C.Path.SmartModel()
+            
+            if _, err := os.Stat(modelPath); err == nil {
+                if err := globalModel.loadModel(modelPath); err != nil {
+                    log.Errorln("[Smart] Failed to reload Model.bin: %v", err)
+                    return false, err
+                } else {
+                    log.Infoln("[Smart] Model.bin reloaded successfully")
+                    return true, nil
+                }
+            }
+            return false, nil
+        })
+        
+        if shared {
+            log.Debugln("[Smart] Model reload was already in progress, waited for completion")
+        }
+        
+        if err != nil {
+            log.Errorln("[Smart] Model reload failed: %v", err)
+        } else if success {
+            log.Debugln("[Smart] Model reload completed successfully")
+        }
+    }
+}
+
 func downloadModel(path string) (err error) {
-    modelUrl := getModelDownloadURL()
+    modelUrl := GetModelDownloadURL()
     
     ctx, cancel := context.WithTimeout(context.Background(), time.Second*90)
     defer cancel()
     
     resp, err := mihomoHttp.HttpRequest(ctx, modelUrl, http.MethodGet, nil, nil)
-	if err != nil {
-		return
-	}
+    if err != nil {
+        return
+    }
     defer resp.Body.Close()
     
     f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = io.Copy(f, resp.Body)
+    if err != nil {
+        return err
+    }
+    defer f.Close()
+    _, err = io.Copy(f, resp.Body)
 
-	return err
+    return err
 }
 
-func getModelDownloadURL() string {
+func GetModelDownloadURL() string {
     return "https://github.com/vernesong/mihomo/releases/download/LightGBM-Model/Model.bin"
 }
 

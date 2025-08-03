@@ -18,6 +18,7 @@ func upgradeRouter() http.Handler {
 	if !embedMode { // disallow upgrade core/geo in embed mode
 		r.Post("/", upgradeCore)
 		r.Post("/geo", updateGeoDatabases)
+		r.Post("/lgbm", updateLgbmModel)
 	}
 	return r
 }
@@ -60,6 +61,21 @@ func updateUI(w http.ResponseWriter, r *http.Request) {
 		render.JSON(w, r, newError(fmt.Sprintf("%s", err)))
 		return
 	}
+
+	render.JSON(w, r, render.M{"status": "ok"})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func updateLgbmModel(w http.ResponseWriter, r *http.Request) {
+	err := updater.UpdateLgbmModelDatabase()
+	if err != nil {
+		log.Warnln("%s", err)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, newError(fmt.Sprintf("%s", err)))
+		return
+    }
 
 	render.JSON(w, r, render.M{"status": "ok"})
 	if f, ok := w.(http.Flusher); ok {

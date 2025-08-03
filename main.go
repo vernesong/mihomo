@@ -172,6 +172,10 @@ func main() {
 		updater.RegisterGeoUpdater()
 	}
 
+	if updater.LgbmAutoUpdate() {
+		updater.RegisterLgbmUpdater()
+	}
+
 	defer executor.Shutdown()
 
 	termSign := make(chan os.Signal, 1)

@@ -24,6 +24,7 @@ import (
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/component/sniffer"
 	"github.com/metacubex/mihomo/component/trie"
+	"github.com/metacubex/mihomo/component/smart/lightgbm"
 	C "github.com/metacubex/mihomo/constant"
 	providerTypes "github.com/metacubex/mihomo/constant/provider"
 	snifferTypes "github.com/metacubex/mihomo/constant/sniffer"
@@ -65,6 +66,9 @@ type General struct {
 	KeepAliveIdle           int               `json:"keep-alive-idle"`
 	KeepAliveInterval       int               `json:"keep-alive-interval"`
 	DisableKeepAlive        bool              `json:"disable-keep-alive"`
+	LgbmAutoUpdate          bool              `json:"lgbm-auto-update"`
+	LgbmUpdateInterval      int               `json:"lgbm-update-interval"`
+	LgbmUrl                 string            `json:"lgbm-url"`
 }
 
 // Inbound config
@@ -420,6 +424,9 @@ type RawConfig struct {
 	KeepAliveIdle           int               `yaml:"keep-alive-idle" json:"keep-alive-idle"`
 	KeepAliveInterval       int               `yaml:"keep-alive-interval" json:"keep-alive-interval"`
 	DisableKeepAlive        bool              `yaml:"disable-keep-alive" json:"disable-keep-alive"`
+	LgbmAutoUpdate          bool              `yaml:"lgbm-auto-update" json:"lgbm-auto-update"`
+	LgbmUpdateInterval      int               `yaml:"lgbm-update-interval" json:"lgbm-update-interval"`
+	LgbmUrl                 string            `yaml:"lgbm-url" json:"lgbm-url"`
 
 	ProxyProvider map[string]map[string]any `yaml:"proxy-providers" json:"proxy-providers"`
 	RuleProvider  map[string]map[string]any `yaml:"rule-providers" json:"rule-providers"`
@@ -462,6 +469,9 @@ func DefaultRawConfig() *RawConfig {
 		Mode:              T.Rule,
 		GeoAutoUpdate:     false,
 		GeoUpdateInterval: 24,
+		LgbmAutoUpdate:    false,
+		LgbmUpdateInterval: 72,
+		LgbmUrl:           lightgbm.GetModelDownloadURL(),
 		GeodataMode:       geodata.GeodataMode(),
 		GeodataLoader:     "memconservative",
 		UnifiedDelay:      false,
@@ -764,6 +774,9 @@ func parseGeneral(cfg *RawConfig) (*General, error) {
 		KeepAliveIdle:           cfg.KeepAliveIdle,
 		KeepAliveInterval:       cfg.KeepAliveInterval,
 		DisableKeepAlive:        cfg.DisableKeepAlive,
+		LgbmAutoUpdate:          cfg.LgbmAutoUpdate,
+		LgbmUpdateInterval:      cfg.LgbmUpdateInterval,
+		LgbmUrl:                 cfg.LgbmUrl,
 	}, nil
 }
 

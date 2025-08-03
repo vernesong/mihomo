@@ -149,6 +149,7 @@ func NewSmart(option *GroupCommonOption, providers []provider.ProxyProvider, str
         Icon:           option.Icon,
         policyPriority: make([]priorityRule, 0),
         strategy:       strategy,
+        sampleRate:     1,
     }
 
 	for _, option := range options {
@@ -1653,12 +1654,11 @@ func smartWithStrategy(config map[string]any) string {
 
 func smartWithSampleRate(sampleRate float64) smartOption {
     return func(s *Smart) {
-        if sampleRate < 0 {
-            sampleRate = 1
-        } else if sampleRate > 1 {
-            sampleRate = 1
+        if sampleRate <= 0 || sampleRate > 1 {
+            s.sampleRate = 1
+        } else {
+            s.sampleRate = sampleRate
         }
-        s.sampleRate = sampleRate
     }
 }
 

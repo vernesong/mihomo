@@ -183,6 +183,9 @@ func GetGeneral() *config.General {
 		KeepAliveInterval:       int(keepalive.KeepAliveInterval() / time.Second),
 		KeepAliveIdle:           int(keepalive.KeepAliveIdle() / time.Second),
 		DisableKeepAlive:        keepalive.DisableKeepAlive(),
+		LgbmAutoUpdate:          updater.LgbmAutoUpdate(),
+		LgbmUpdateInterval:      updater.LgbmUpdateInterval(),
+		LgbmUrl:                 updater.LgbmUrl(),
 	}
 
 	return general
@@ -366,6 +369,10 @@ func updateUpdater(cfg *config.Config) {
 	general := cfg.General
 	updater.SetGeoAutoUpdate(general.GeoAutoUpdate)
 	updater.SetGeoUpdateInterval(general.GeoUpdateInterval)
+
+	updater.SetLgbmAutoUpdate(general.LgbmAutoUpdate)
+	updater.SetLgbmUpdateInterval(general.LgbmUpdateInterval)
+	updater.SetLgbmUrl(general.LgbmUrl)
 
 	controller := cfg.Controller
 	updater.DefaultUiUpdater = updater.NewUiUpdater(controller.ExternalUI, controller.ExternalUIURL, controller.ExternalUIName)
