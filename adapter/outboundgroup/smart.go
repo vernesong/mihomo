@@ -946,7 +946,7 @@ func (s *Smart) checkNodeQualityDegradation(
     uploadTotal, downloadTotal float64,
     maxUploadRateKB, maxDownloadRateKB, historyMaxUploadRateKB, historyMaxDownloadRateKB float64,
     historyUploadTotal, historyDownloadTotal float64,
-    success int64, weightType string, lastStatus int64) (float64, bool) {
+    success int64, weightType string, lastStatus int64, lastUsedVal int64) (float64, bool) {
     
     // 零流量连接
     if connectionDuration > 1000 && downloadTotal == 0 && uploadTotal == 0 {
@@ -959,8 +959,12 @@ func (s *Smart) checkNodeQualityDegradation(
     // 低流量连接检查异常状态码
     if downloadTotal < 0.01 && metadata != nil && metadata.Host != "" && metadata.DstPort == 443 && metadata.NetWork == C.TCP {
         needTest := false
+        cooldownSeconds := int64(300)
+        now := time.Now().Unix()
         if lastStatus == 0 {
-            needTest = true
+            if now-lastUsedVal > cooldownSeconds {
+                needTest = true
+            }
         } else if rand.Float64() < 0.3 {
             needTest = true
         }
@@ -1102,8 +1106,9 @@ func (s *Smart) checkAndLimitStats(record *smart.AtomicStatsRecord) {
 
 // 记录保存
 func (s *Smart) saveStatsRecord(cacheKey, domain string, proxy C.Proxy, record *smart.StatsRecord, lastUsed time.Time) {
-    smart.SetCacheValue(cacheKey, record)
     record.LastUsed = lastUsed
+    
+    smart.SetCacheValue(cacheKey, record)
 
     go func() {
         if data, err := json.Marshal(record); err == nil {
@@ -1478,6 +1483,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
             historyDownloadTotal := atomicRecord.Get("downloadTotal").(float64)
             success := atomicRecord.Get("success").(int64)
             status := atomicRecord.Get("status").(int64)
+            lastUsedVal := atomicRecord.Get("lastUsed").(int64)
             
             degradedWeight, isDegraded = s.checkNodeQualityDegradation(
                 metadata, proxy, atomicRecord,
@@ -1485,7 +1491,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
                 connectionDuration, uploadTotalMB, downloadTotalMB,
                 maxUploadRateKB, maxDownloadRateKB, historyMaxUploadRateKB, historyMaxDownloadRateKB,
                 historyUploadTotal, historyDownloadTotal, success, weightType,
-                status)
+                status, lastUsedVal)
         }
     }
 
