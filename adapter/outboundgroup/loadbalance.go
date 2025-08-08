@@ -23,12 +23,13 @@ type strategyFn = func(proxies []C.Proxy, metadata *C.Metadata, touch bool) C.Pr
 
 type LoadBalance struct {
 	*GroupBase
-	disableUDP     bool
-	strategyFn     strategyFn
-	testUrl        string
-	expectedStatus string
-	Hidden         bool
-	Icon           string
+	disableUDP          bool
+	strategyFn          strategyFn
+	testUrl             string
+	expectedStatus      string
+	Hidden              bool
+	Icon                string
+	stickySessionsCache *lru.LruCache[uint64, int]
 }
 
 var errStrategy = errors.New("unsupported strategy")
@@ -184,12 +185,13 @@ func strategyConsistentHashing(url string) strategyFn {
 	}
 }
 
-func strategyStickySessions(url string) strategyFn {
+func strategyStickySessions(url string, cacheRef **lru.LruCache[uint64, int]) strategyFn {
 	ttl := time.Minute * 10
 	maxRetry := 5
 	lruCache := lru.New[uint64, int](
 		lru.WithAge[uint64, int](int64(ttl.Seconds())),
 		lru.WithSize[uint64, int](1000))
+	*cacheRef = lruCache
 	return func(proxies []C.Proxy, metadata *C.Metadata, touch bool) C.Proxy {
 		key := utils.MapHash(getKeyWithSrcAndDst(metadata))
 		length := len(proxies)
@@ -217,6 +219,14 @@ func strategyStickySessions(url string) strategyFn {
 	}
 }
 
+func (lb *LoadBalance) ClearStickySession(metadata *C.Metadata) {
+	if lb.stickySessionsCache == nil || metadata == nil {
+		return
+	}
+	key := utils.MapHash(getKeyWithSrcAndDst(metadata))
+	lb.stickySessionsCache.Delete(key)
+}
+
 // Unwrap implements C.ProxyAdapter
 func (lb *LoadBalance) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 	proxies := lb.GetProxies(touch)
@@ -241,13 +251,14 @@ func (lb *LoadBalance) MarshalJSON() ([]byte, error) {
 
 func NewLoadBalance(option *GroupCommonOption, providers []provider.ProxyProvider, strategy string) (lb *LoadBalance, err error) {
 	var strategyFn strategyFn
+	var stickySessionsCache *lru.LruCache[uint64, int]
 	switch strategy {
 	case "consistent-hashing":
 		strategyFn = strategyConsistentHashing(option.URL)
 	case "round-robin":
 		strategyFn = strategyRoundRobin(option.URL)
 	case "sticky-sessions":
-		strategyFn = strategyStickySessions(option.URL)
+		strategyFn = strategyStickySessions(option.URL, &stickySessionsCache)
 	default:
 		return nil, fmt.Errorf("%w: %s", errStrategy, strategy)
 	}
@@ -262,11 +273,12 @@ func NewLoadBalance(option *GroupCommonOption, providers []provider.ProxyProvide
 			MaxFailedTimes: option.MaxFailedTimes,
 			Providers:      providers,
 		}),
-		strategyFn:     strategyFn,
-		disableUDP:     option.DisableUDP,
-		testUrl:        option.URL,
-		expectedStatus: option.ExpectedStatus,
-		Hidden:         option.Hidden,
-		Icon:           option.Icon,
+		strategyFn:          strategyFn,
+		disableUDP:          option.DisableUDP,
+		testUrl:             option.URL,
+		expectedStatus:      option.ExpectedStatus,
+		Hidden:              option.Hidden,
+		Icon:                option.Icon,
+		stickySessionsCache: stickySessionsCache,
 	}, nil
 }

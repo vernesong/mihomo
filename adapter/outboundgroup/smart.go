@@ -119,8 +119,6 @@ func NewSmart(option *GroupCommonOption, providers []provider.ProxyProvider, str
         MaxFailedTimes: option.MaxFailedTimes,
         DisableUDP:     option.DisableUDP,
         ExpectedStatus: option.ExpectedStatus,
-        Interface:      option.Interface,
-        RoutingMark:    option.RoutingMark,
     }, providers, strategy)
 
     if err != nil {
@@ -173,7 +171,7 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
     triedProxies := make(map[string]bool)
 
     if s.store != nil && s.store.CheckNetworkFailure(s.Name(), s.configName) {
-        proxy := s.fallbackToRoundRobin(metadata, proxies)
+        proxy := s.fallbackToLoadBalance(metadata, proxies)
         if proxy == nil {
             return nil, errors.New("no suitable proxy found in network failure mode")
         }
@@ -221,6 +219,27 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
     triedProxies[proxy.Name()] = true
 
     var finalErr error
+
+    handleFailure := func(err error, i int) bool {
+        finalErr = err
+        if s.store != nil {
+            s.recordConnectionStats("failed", metadata, proxy, 0, 0, 0, 0, 0, 0, 0, false, err)
+            if i == maxRetries-1 {
+                domain := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
+                if domain != "" {
+                    s.store.MarkConnectionFailed(s.Name(), s.configName, domain)
+                }
+                return false
+            }
+        }
+        triedProxies[proxy.Name()] = true
+        proxy = s.selectNextProxy(metadata, proxies, triedProxies)
+        if proxy == nil {
+            return false
+        }
+        return true
+    }
+
     for i := 0; i < maxRetries; i++ {
         start := time.Now()
         c, err := proxy.DialContext(ctx, metadata)
@@ -231,21 +250,7 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
                 wrappedConn, wrapErr := s.wrapConnWithMetric(c, proxy, metadata, connectTime)
                 if wrapErr != nil {
                     c.Close()
-                    finalErr = wrapErr
-                    
-                    s.recordConnectionStats("failed", metadata, proxy, 0, 0, 0, 0, 0, 0, 0, false, wrapErr)
-                    
-                    if i == maxRetries-1 {
-                        domain := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
-                        if domain != "" {
-                            s.store.MarkConnectionFailed(s.Name(), s.configName, domain)
-                        }
-                        break
-                    }
-                    
-                    triedProxies[proxy.Name()] = true
-                    proxy = s.selectNextProxy(metadata, proxies, triedProxies)
-                    if proxy == nil {
+                    if !handleFailure(wrapErr, i) {
                         break
                     }
                     continue
@@ -255,25 +260,8 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
             c.AppendToChains(s)
             return c, nil
         }
-        
-        finalErr = err
-        
-        if s.store != nil {
-            s.recordConnectionStats("failed", metadata, proxy, 0, 0, 0, 0, 0, 0, 0, false, err)
-            
-            if i == maxRetries-1 {
-                domain := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
-                if domain != "" {
-                    s.store.MarkConnectionFailed(s.Name(), s.configName, domain)
-                }
-                break
-            }
-        }
-        
-        triedProxies[proxy.Name()] = true
-        
-        proxy = s.selectNextProxy(metadata, proxies, triedProxies)
-        if proxy == nil {
+
+        if !handleFailure(err, i) {
             break
         }
     }
@@ -768,47 +756,36 @@ func (s *Smart) selectProxy(metadata *C.Metadata, touch bool) C.Proxy {
         }
     }
 
-    return s.fallbackToRoundRobin(metadata, proxies)
+    return s.fallbackToLoadBalance(metadata, proxies)
 }
 
 func (s *Smart) selectNextProxy(metadata *C.Metadata, availableProxies []C.Proxy, triedProxies map[string]bool) C.Proxy {
-    if s.strategy == "sticky-sessions" {
-        for _, p := range availableProxies {
-            if !triedProxies[p.Name()] && p.AliveForTestUrl(s.testUrl) {
-                return p
-            }
-        }
-        for _, p := range availableProxies {
-            if !triedProxies[p.Name()] {
-                return p
-            }
-        }
-        return nil
-    }
-
     for i := 0; i < 3; i++ {
-        fallbackProxy := s.fallbackToRoundRobin(metadata, availableProxies)
+        if s.strategy == "sticky-sessions" {
+            s.fallback.ClearStickySession(metadata)
+        }
+        fallbackProxy := s.fallbackToLoadBalance(metadata, availableProxies)
         if fallbackProxy != nil && !triedProxies[fallbackProxy.Name()] {
             return fallbackProxy
         }
     }
 
-    for _, p := range availableProxies {
-        if !triedProxies[p.Name()] && p.AliveForTestUrl(s.testUrl) {
-            return p
-        }
-    }
-
+    var fallback C.Proxy
     for _, p := range availableProxies {
         if !triedProxies[p.Name()] {
-            return p
+            if p.AliveForTestUrl(s.testUrl) {
+                return p
+            }
+            if fallback == nil {
+                fallback = p
+            }
         }
     }
-
-    return nil
+    
+    return fallback
 }
 
-func (s *Smart) fallbackToRoundRobin(metadata *C.Metadata, proxies []C.Proxy) C.Proxy {
+func (s *Smart) fallbackToLoadBalance(metadata *C.Metadata, proxies []C.Proxy) C.Proxy {
 	if len(proxies) == 0 {
 		return nil
 	}
@@ -1512,7 +1489,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
     statsSnapshot := atomicRecord.CreateStatsSnapshot()
     
     if isDegraded {
-        go s.cleanupDegradedNodePreferenceCache(domain, proxy.Name(), calculatedWeight, weightType, asnInfo)
+        go s.cleanupDegradedNodePreferenceCache(metadata, domain, proxy.Name(), calculatedWeight, weightType, asnInfo)
     }
 
     // 日志输出
@@ -1631,7 +1608,7 @@ func (s *Smart) processLongConnections(threshold time.Duration) {
     
 }
 
-func (s *Smart) cleanupDegradedNodePreferenceCache(domain string, nodeName string, currentWeight float64, weightType string, asnInfo string) {
+func (s *Smart) cleanupDegradedNodePreferenceCache(metadata *C.Metadata, domain string, nodeName string, currentWeight float64, weightType string, asnInfo string) {
     if s.store == nil {
         return
     }
@@ -1666,6 +1643,11 @@ func (s *Smart) cleanupDegradedNodePreferenceCache(domain string, nodeName strin
             log.Debugln("[Smart] Added new ASN prefetch result: [%s] -> [%s] (weight: %.4f, type: %s)", 
                 asnInfo, bestNode, bestWeight, fullAsnWeightType)
         }
+    }
+
+    // 处理sticky-sessions的缓存
+    if s.fallback != nil && s.strategy == "sticky-sessions" {
+        s.fallback.ClearStickySession(metadata)
     }
 }
 
