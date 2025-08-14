@@ -103,12 +103,12 @@ func TestInboundVless_Encryption(t *testing.T) {
 		}
 		testInboundVless(t, inboundOptions, outboundOptions)
 	})
-	t.Run("-aes128xor-", func(t *testing.T) {
+	t.Run("-xored-", func(t *testing.T) {
 		inboundOptions := inbound.VlessOption{
-			Decryption: "10min-aes128xor-mlkem768seed-" + seedBase64,
+			Decryption: "10min-xored-mlkem768seed-" + seedBase64,
 		}
 		outboundOptions := outbound.VlessOption{
-			Encryption: "8min-aes128xor-mlkem768client-" + clientBase64,
+			Encryption: "8min-xored-mlkem768client-" + clientBase64,
 		}
 		testInboundVless(t, inboundOptions, outboundOptions)
 	})

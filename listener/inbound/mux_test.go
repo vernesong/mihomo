@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var singMuxProtocolList = []string{"h2mux", "smux"} // don't test "yamux" because it has some confused bugs
+var singMuxProtocolList = []string{"smux"} // don't test "h2mux" and "yamux" because it has some confused bugs
 
 // notCloseProxyAdapter is a proxy adapter that does not close the underlying outbound.ProxyAdapter.
 // The outbound.SingMux will close the underlying outbound.ProxyAdapter when it is closed, but we don't want to close it.

@@ -2,15 +2,11 @@ package sing_vless
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"reflect"
-	"strconv"
 	"strings"
-	"time"
 	"unsafe"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
@@ -88,42 +84,11 @@ func New(config LC.VlessServer, tunnel C.Tunnel, additions ...inbound.Addition) 
 
 	sl = &Listener{config: config, service: service}
 
-	if s := strings.SplitN(config.Decryption, "-", 4); len(s) == 4 && s[2] == "mlkem768seed" {
-		var minutes uint32
-		if s[0] != "1rtt" {
-			t := strings.TrimSuffix(s[0], "min")
-			if t == s[0] {
-				return nil, fmt.Errorf("invaild vless decryption value: %s", config.Decryption)
-			}
-			var i int
-			i, err = strconv.Atoi(t)
-			if err != nil {
-				return nil, fmt.Errorf("invaild vless decryption value: %s", config.Decryption)
-			}
-			minutes = uint32(i)
-		}
-		var xor uint32
-		switch s[1] {
-		case "vless":
-		case "aes128xor":
-			xor = 1
-		default:
-			return nil, fmt.Errorf("invaild vless decryption value: %s", config.Decryption)
-		}
-		var b []byte
-		b, err = base64.RawURLEncoding.DecodeString(s[3])
-		if err != nil {
-			return nil, fmt.Errorf("invaild vless decryption value: %s", config.Decryption)
-		}
-		if len(b) == encryption.MLKEM768SeedLength {
-			sl.decryption = &encryption.ServerInstance{}
-			if err = sl.decryption.Init(b, xor, time.Duration(minutes)*time.Minute); err != nil {
-				return nil, fmt.Errorf("failed to use mlkem768seed: %w", err)
-			}
-		} else {
-			return nil, fmt.Errorf("invaild vless decryption value: %s", config.Decryption)
-		}
-
+	sl.decryption, err = encryption.NewServer(config.Decryption)
+	if err != nil {
+		return nil, err
+	}
+	if sl.decryption != nil {
 		defer func() { // decryption must be closed to avoid the goroutine leak
 			if err != nil {
 				_ = sl.decryption.Close()

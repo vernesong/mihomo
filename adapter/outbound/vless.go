@@ -3,14 +3,11 @@ package outbound
 import (
 	"context"
 	"crypto/tls"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
-	"time"
 
 	"github.com/metacubex/mihomo/common/convert"
 	N "github.com/metacubex/mihomo/common/net"
@@ -456,41 +453,11 @@ func NewVless(option VlessOption) (*Vless, error) {
 		option: &option,
 	}
 
-	if s := strings.SplitN(option.Encryption, "-", 4); len(s) == 4 && s[2] == "mlkem768client" {
-		var minutes uint32
-		if s[0] != "1rtt" {
-			t := strings.TrimSuffix(s[0], "min")
-			if t == s[0] {
-				return nil, fmt.Errorf("invaild vless encryption value: %s", option.Encryption)
-			}
-			var i int
-			i, err = strconv.Atoi(t)
-			if err != nil {
-				return nil, fmt.Errorf("invaild vless encryption value: %s", option.Encryption)
-			}
-			minutes = uint32(i)
-		}
-		var xor uint32
-		switch s[1] {
-		case "vless":
-		case "aes128xor":
-			xor = 1
-		default:
-			return nil, fmt.Errorf("invaild vless encryption value: %s", option.Encryption)
-		}
-		var b []byte
-		b, err = base64.RawURLEncoding.DecodeString(s[3])
-		if err != nil {
-			return nil, fmt.Errorf("invaild vless encryption value: %s", option.Encryption)
-		}
-		if len(b) == encryption.MLKEM768ClientLength {
-			v.encryption = &encryption.ClientInstance{}
-			if err = v.encryption.Init(b, xor, time.Duration(minutes)*time.Minute); err != nil {
-				return nil, fmt.Errorf("failed to use mlkem768seed: %w", err)
-			}
-		} else {
-			return nil, fmt.Errorf("invaild vless encryption value: %s", option.Encryption)
-		}
+	v.encryption, err = encryption.NewClient(option.Encryption)
+	if err != nil {
+		return nil, err
+	}
+	if v.encryption != nil {
 		if option.Flow != "" {
 			return nil, errors.New(`vless "encryption" doesn't support "flow" yet`)
 		}

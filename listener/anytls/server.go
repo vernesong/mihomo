@@ -7,9 +7,9 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync/atomic"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
-	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/buf"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/ech"
@@ -31,7 +31,7 @@ type Listener struct {
 	listeners []net.Listener
 	tlsConfig *tlsC.Config
 	userMap   map[[32]byte]string
-	padding   atomic.TypedValue[*padding.PaddingFactory]
+	padding   atomic.Pointer[padding.PaddingFactory]
 }
 
 func New(config LC.AnyTLSServer, tunnel C.Tunnel, additions ...inbound.Addition) (sl *Listener, err error) {

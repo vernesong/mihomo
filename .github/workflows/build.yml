@@ -80,6 +80,13 @@ jobs:
           - { goos: android, goarch: arm, ndk: armv7a-linux-androideabi34, output: armv7 }
           - { goos: android, goarch: arm64, ndk: aarch64-linux-android34, output: arm64-v8 }
 
+          # Go 1.24 with special patch can work on Windows 7
+          # https://github.com/MetaCubeX/go/commits/release-branch.go1.24/
+          - { goos: windows, goarch: '386', output: '386-go124', goversion: '1.24' }
+          - { goos: windows, goarch: amd64, goamd64: v1, output: amd64-v1-go124, goversion: '1.24' }
+          - { goos: windows, goarch: amd64, goamd64: v2, output: amd64-v2-go124, goversion: '1.24' }
+          - { goos: windows, goarch: amd64, goamd64: v3, output: amd64-v3-go124, goversion: '1.24' }
+
           # Go 1.23 with special patch can work on Windows 7
           # https://github.com/MetaCubeX/go/commits/release-branch.go1.23/
           - { goos: windows, goarch: '386', output: '386-go123', goversion: '1.23' }
@@ -107,6 +114,12 @@ jobs:
           - { goos: windows, goarch: amd64, goamd64: v1, output: amd64-v1-go120, goversion: '1.20' }
           - { goos: windows, goarch: amd64, goamd64: v2, output: amd64-v2-go120, goversion: '1.20' }
           - { goos: windows, goarch: amd64, goamd64: v3, output: amd64-v3-go120, goversion: '1.20' }
+
+          # Go 1.24 is the last release that will run on macOS 11 Big Sur. Go 1.25 will require macOS 12 Monterey or later.
+          - { goos: darwin, goarch: arm64, output: arm64-go124, goversion: '1.24' }
+          - { goos: darwin, goarch: amd64, goamd64: v1, output: amd64-v1-go124, goversion: '1.24' }
+          - { goos: darwin, goarch: amd64, goamd64: v2, output: amd64-v2-go124, goversion: '1.24' }
+          - { goos: darwin, goarch: amd64, goamd64: v3, output: amd64-v3-go124, goversion: '1.24' }
 
           # Go 1.22 is the last release that will run on macOS 10.15 Catalina. Go 1.23 will require macOS 11 Big Sur or later.
           - { goos: darwin, goarch: arm64, output: arm64-go122, goversion: '1.22' }
@@ -139,7 +152,7 @@ jobs:
       if: ${{ matrix.jobs.goversion == '' && matrix.jobs.abi != '1' }}
       uses: actions/setup-go@v5
       with:
-        go-version: '1.24'
+        go-version: '1.25'
 
     - name: Set up Go
       if: ${{ matrix.jobs.goversion != '' && matrix.jobs.abi != '1' }}
@@ -155,6 +168,24 @@ jobs:
         echo "/usr/local/go/bin" >> $GITHUB_PATH
 
       # modify from https://github.com/restic/restic/issues/4636#issuecomment-1896455557
+      # this patch file only works on golang1.25.x
+      # that means after golang1.26 release it must be changed
+      # see: https://github.com/MetaCubeX/go/commits/release-branch.go1.25/
+      # revert:
+      # 693def151adff1af707d82d28f55dba81ceb08e1: "crypto/rand,runtime: switch RtlGenRandom for ProcessPrng"
+      # 7c1157f9544922e96945196b47b95664b1e39108: "net: remove sysSocket fallback for Windows 7"
+      # 48042aa09c2f878c4faa576948b07fe625c4707a: "syscall: remove Windows 7 console handle workaround"
+      # a17d959debdb04cd550016a3501dd09d50cd62e7: "runtime: always use LoadLibraryEx to load system libraries"
+    - name: Revert Golang1.25 commit for Windows7/8
+      if: ${{ matrix.jobs.goos == 'windows' && matrix.jobs.goversion == '' }}
+      run: |
+        cd $(go env GOROOT)
+        curl https://github.com/MetaCubeX/go/commit/8cb5472d94c34b88733a81091bd328e70ee565a4.diff | patch --verbose -p 1
+        curl https://github.com/MetaCubeX/go/commit/6788c4c6f9fafb56729bad6b660f7ee2272d699f.diff | patch --verbose -p 1
+        curl https://github.com/MetaCubeX/go/commit/a5b2168bb836ed9d6601c626f95e56c07923f906.diff | patch --verbose -p 1
+        curl https://github.com/MetaCubeX/go/commit/f56f1e23507e646c85243a71bde7b9629b2f970c.diff | patch --verbose -p 1
+
+      # modify from https://github.com/restic/restic/issues/4636#issuecomment-1896455557
       # this patch file only works on golang1.24.x
       # that means after golang1.25 release it must be changed
       # see: https://github.com/MetaCubeX/go/commits/release-branch.go1.24/
@@ -164,7 +195,7 @@ jobs:
       # 48042aa09c2f878c4faa576948b07fe625c4707a: "syscall: remove Windows 7 console handle workaround"
       # a17d959debdb04cd550016a3501dd09d50cd62e7: "runtime: always use LoadLibraryEx to load system libraries"
     - name: Revert Golang1.24 commit for Windows7/8
-      if: ${{ matrix.jobs.goos == 'windows' && matrix.jobs.goversion == '' }}
+      if: ${{ matrix.jobs.goos == 'windows' && matrix.jobs.goversion == '1.24' }}
       run: |
         cd $(go env GOROOT)
         curl https://github.com/MetaCubeX/go/commit/2a406dc9f1ea7323d6ca9fccb2fe9ddebb6b1cc8.diff | patch --verbose -p 1

@@ -4,7 +4,7 @@ import (
 	"context"
 	"net"
 
-	tls "github.com/3andne/restls-client-go"
+	tls "github.com/metacubex/restls-client-go"
 )
 
 const (

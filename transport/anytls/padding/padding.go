@@ -7,8 +7,8 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
-	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/transport/anytls/util"
 )
 
@@ -31,7 +31,7 @@ type PaddingFactory struct {
 	Md5       string
 }
 
-func UpdatePaddingScheme(rawScheme []byte, to *atomic.TypedValue[*PaddingFactory]) bool {
+func UpdatePaddingScheme(rawScheme []byte, to *atomic.Pointer[PaddingFactory]) bool {
 	if p := NewPaddingFactory(rawScheme); p != nil {
 		to.Store(p)
 		return true

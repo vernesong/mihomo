@@ -8,8 +8,8 @@ import (
 	"net/netip"
 	"strconv"
 
+	"github.com/metacubex/blake3"
 	"github.com/metacubex/quic-go"
-	"lukechampine.com/blake3"
 
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/socks5"

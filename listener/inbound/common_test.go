@@ -10,11 +10,13 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/common/pool"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/dialer"
@@ -30,7 +32,7 @@ import (
 )
 
 var httpPath = "/inbound_test"
-var httpData = make([]byte, 10240)
+var httpData = make([]byte, 2*pool.RelayBufferSize)
 var remoteAddr = netip.MustParseAddr("1.2.3.4")
 var userUUID = utils.NewUUIDV4().String()
 var tlsCertificate, tlsPrivateKey, tlsFingerprint, _ = ca.NewRandomTLSKeyPair(ca.KeyPairTypeP256)
@@ -134,14 +136,21 @@ func NewHttpTestTunnel() *TestTunnel {
 
 	r := chi.NewRouter()
 	r.Get(httpPath, func(w http.ResponseWriter, r *http.Request) {
-		render.Data(w, r, httpData)
+		query := r.URL.Query()
+		size, err := strconv.Atoi(query.Get("size"))
+		if err != nil {
+			render.Status(r, http.StatusBadRequest)
+			render.PlainText(w, r, err.Error())
+			return
+		}
+		render.Data(w, r, httpData[:size])
 	})
 	h2Server := &http2.Server{}
 	server := http.Server{Handler: r}
 	_ = http2.ConfigureServer(&server, h2Server)
 	go server.Serve(ln)
-	testFn := func(t *testing.T, proxy C.ProxyAdapter, proto string) {
-		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s://%s%s", proto, remoteAddr, httpPath), nil)
+	testFn := func(t *testing.T, proxy C.ProxyAdapter, proto string, size int) {
+		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s://%s%s?size=%d", proto, remoteAddr, httpPath, size), nil)
 		if !assert.NoError(t, err) {
 			return
 		}
@@ -200,7 +209,7 @@ func NewHttpTestTunnel() *TestTunnel {
 		if !assert.NoError(t, err) {
 			return
 		}
-		assert.Equal(t, httpData, data)
+		assert.Equal(t, httpData[:size], data)
 	}
 	tunnel := &TestTunnel{
 		HandleTCPConnFn: func(conn net.Conn, metadata *C.Metadata) {
@@ -241,27 +250,30 @@ func NewHttpTestTunnel() *TestTunnel {
 		},
 		CloseFn: ln.Close,
 		DoTestFn: func(t *testing.T, proxy C.ProxyAdapter) {
+
 			// Sequential testing for debugging
 			t.Run("Sequential", func(t *testing.T) {
-				testFn(t, proxy, "http")
-				testFn(t, proxy, "https")
+				testFn(t, proxy, "http", len(httpData))
+				testFn(t, proxy, "https", len(httpData))
 			})
 
 			// Concurrent testing to detect stress
 			t.Run("Concurrent", func(t *testing.T) {
 				wg := sync.WaitGroup{}
-				const num = 50
-				for i := 0; i < num; i++ {
+				num := len(httpData) / 1024
+				for i := 1; i <= num; i++ {
+					i := i
 					wg.Add(1)
 					go func() {
-						testFn(t, proxy, "https")
+						testFn(t, proxy, "https", i*1024)
 						defer wg.Done()
 					}()
 				}
-				for i := 0; i < num; i++ {
+				for i := 1; i <= num; i++ {
+					i := i
 					wg.Add(1)
 					go func() {
-						testFn(t, proxy, "http")
+						testFn(t, proxy, "http", i*1024)
 						defer wg.Done()
 					}()
 				}

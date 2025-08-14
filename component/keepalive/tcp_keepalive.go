@@ -10,27 +10,27 @@ import (
 )
 
 var (
-	keepAliveIdle     = atomic.NewTypedValue[time.Duration](0 * time.Second)
-	keepAliveInterval = atomic.NewTypedValue[time.Duration](0 * time.Second)
+	keepAliveIdle     = atomic.NewInt64(0)
+	keepAliveInterval = atomic.NewInt64(0)
 	disableKeepAlive  = atomic.NewBool(false)
 
 	SetDisableKeepAliveCallback = utils.NewCallback[bool]()
 )
 
 func SetKeepAliveIdle(t time.Duration) {
-	keepAliveIdle.Store(t)
+	keepAliveIdle.Store(int64(t))
 }
 
 func SetKeepAliveInterval(t time.Duration) {
-	keepAliveInterval.Store(t)
+	keepAliveInterval.Store(int64(t))
 }
 
 func KeepAliveIdle() time.Duration {
-	return keepAliveIdle.Load()
+	return time.Duration(keepAliveIdle.Load())
 }
 
 func KeepAliveInterval() time.Duration {
-	return keepAliveInterval.Load()
+	return time.Duration(keepAliveInterval.Load())
 }
 
 func SetDisableKeepAlive(disable bool) {

@@ -639,7 +639,7 @@ proxies: # socks5
     uuid: uuid
     network: tcp
     encryption: "8min-vless-mlkem768client-bas64RawURLEncoding" # 复用八分钟后协商新的 sharedKey，需小于服务端的值
-    # encryption: "8min-aes128xor-mlkem768client-bas64RawURLEncoding"
+    # encryption: "8min-xored-mlkem768client-bas64RawURLEncoding"
     tls: false #可以不开启tls
     udp: true
 
@@ -1348,7 +1348,7 @@ listeners:
     # ws-path: "/" # 如果不为空则开启 websocket 传输层
     # grpc-service-name: "GunService" # 如果不为空则开启 grpc 传输层
     # decryption: "10min-vless-mlkem768seed-bas64RawURLEncoding" # 同时允许 1-RTT 模式与十分钟复用的 0-RTT 模式, 后面base64字符串可由可由 mihomo generate vless-mlkem768 命令生成
-    # decryption: "10min-aes128xor-mlkem768seed-bas64RawURLEncoding"
+    # decryption: "10min-xored-mlkem768seed-bas64RawURLEncoding"
     # 下面两项如果填写则开启 tls（需要同时填写）
     # certificate: ./server.crt
     # private-key: ./server.key
