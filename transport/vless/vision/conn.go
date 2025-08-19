@@ -3,7 +3,6 @@ package vision
 import (
 	"bytes"
 	"crypto/subtle"
-	gotls "crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/metacubex/mihomo/common/buf"
 	N "github.com/metacubex/mihomo/common/net"
-	tlsC "github.com/metacubex/mihomo/component/tls"
 	"github.com/metacubex/mihomo/log"
 
 	"github.com/gofrs/uuid/v5"
@@ -181,17 +179,10 @@ func (vc *Conn) WriteBuffer(buffer *buf.Buffer) (err error) {
 			buffer.Release()
 			return err
 		}
-		switch underlying := vc.tlsConn.(type) {
-		case *gotls.Conn:
-			if underlying.ConnectionState().Version != gotls.VersionTLS13 {
-				buffer.Release()
-				return ErrNotTLS13
-			}
-		case *tlsC.UConn:
-			if underlying.ConnectionState().Version != tlsC.VersionTLS13 {
-				buffer.Release()
-				return ErrNotTLS13
-			}
+		err = vc.checkTLSVersion()
+		if err != nil {
+			buffer.Release()
+			return err
 		}
 		vc.tlsConn = nil
 		return nil

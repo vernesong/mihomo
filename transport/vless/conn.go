@@ -105,26 +105,20 @@ func (vc *Conn) sendRequest(p []byte) bool {
 		}
 	}
 
-	var buffer *buf.Buffer
-	if vc.IsXTLSVisionEnabled() {
-		buffer = buf.New()
-		defer buffer.Release()
-	} else {
-		requestLen := 1  // protocol version
-		requestLen += 16 // UUID
-		requestLen += 1  // addons length
-		requestLen += len(addonsBytes)
-		requestLen += 1 // command
-		if !vc.dst.Mux {
-			requestLen += 2 // port
-			requestLen += 1 // addr type
-			requestLen += len(vc.dst.Addr)
-		}
-		requestLen += len(p)
-
-		buffer = buf.NewSize(requestLen)
-		defer buffer.Release()
+	requestLen := 1  // protocol version
+	requestLen += 16 // UUID
+	requestLen += 1  // addons length
+	requestLen += len(addonsBytes)
+	requestLen += 1 // command
+	if !vc.dst.Mux {
+		requestLen += 2 // port
+		requestLen += 1 // addr type
+		requestLen += len(vc.dst.Addr)
 	}
+	requestLen += len(p)
+
+	buffer := buf.NewSize(requestLen)
+	defer buffer.Release()
 
 	buf.Must(
 		buffer.WriteByte(Version),              // protocol version
@@ -180,10 +174,6 @@ func (vc *Conn) Upstream() any {
 
 func (vc *Conn) NeedHandshake() bool {
 	return vc.needHandshake
-}
-
-func (vc *Conn) IsXTLSVisionEnabled() bool {
-	return vc.addons != nil && vc.addons.Flow == XRV
 }
 
 // newConn return a Conn instance

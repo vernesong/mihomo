@@ -67,3 +67,21 @@ func NewConn(conn connWithUpstream, userUUID *uuid.UUID) (*Conn, error) {
 	c.rawInput = (*bytes.Buffer)(unsafe.Add(p, r.Offset))
 	return c, nil
 }
+
+func (vc *Conn) checkTLSVersion() error {
+	switch underlying := vc.tlsConn.(type) {
+	case *gotls.Conn:
+		if underlying.ConnectionState().Version != gotls.VersionTLS13 {
+			return ErrNotTLS13
+		}
+	case *tlsC.Conn:
+		if underlying.ConnectionState().Version != tlsC.VersionTLS13 {
+			return ErrNotTLS13
+		}
+	case *tlsC.UConn:
+		if underlying.ConnectionState().Version != tlsC.VersionTLS13 {
+			return ErrNotTLS13
+		}
+	}
+	return nil
+}

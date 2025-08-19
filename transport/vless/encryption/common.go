@@ -48,7 +48,7 @@ func DecodeHeader(h []byte) (t byte, l int, err error) {
 		l = 0
 	}
 	if l < 17 || l > 17000 { // TODO: TLSv1.3 max length
-		err = fmt.Errorf("invalid header: %v", h[:5]) // relied by client's Read()
+		err = fmt.Errorf("invalid header: %v", h[:5]) // DO NOT CHANGE: relied by client's Read()
 	}
 	return
 }
