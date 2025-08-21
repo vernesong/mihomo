@@ -3,7 +3,6 @@ package outbound
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -456,11 +455,6 @@ func NewVless(option VlessOption) (*Vless, error) {
 	v.encryption, err = encryption.NewClient(option.Encryption)
 	if err != nil {
 		return nil, err
-	}
-	if v.encryption != nil {
-		if option.Flow != "" {
-			return nil, errors.New(`vless "encryption" doesn't support "flow" yet`)
-		}
 	}
 
 	v.realityConfig, err = v.option.RealityOpts.Parse()

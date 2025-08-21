@@ -12,24 +12,20 @@ import (
 
 	N "github.com/metacubex/mihomo/common/net"
 	tlsC "github.com/metacubex/mihomo/component/tls"
+	"github.com/metacubex/mihomo/transport/vless/encryption"
 
 	"github.com/gofrs/uuid/v5"
-	"github.com/metacubex/sing/common"
 )
 
 var ErrNotTLS13 = errors.New("XTLS Vision based on TLS 1.3 outer connection")
 
-type connWithUpstream interface {
-	net.Conn
-	common.WithUpstream
-}
-
-func NewConn(conn connWithUpstream, userUUID *uuid.UUID) (*Conn, error) {
+func NewConn(conn net.Conn, tlsConn net.Conn, userUUID *uuid.UUID) (*Conn, error) {
 	c := &Conn{
 		ExtendedReader:             N.NewExtendedReader(conn),
 		ExtendedWriter:             N.NewExtendedWriter(conn),
-		upstream:                   conn,
+		Conn:                       conn,
 		userUUID:                   userUUID,
+		tlsConn:                    tlsConn,
 		packetsToFilter:            6,
 		needHandshake:              true,
 		readProcess:                true,
@@ -38,33 +34,42 @@ func NewConn(conn connWithUpstream, userUUID *uuid.UUID) (*Conn, error) {
 	}
 	var t reflect.Type
 	var p unsafe.Pointer
-	switch underlying := conn.Upstream().(type) {
+	switch underlying := tlsConn.(type) {
 	case *gotls.Conn:
 		//log.Debugln("type tls")
-		c.Conn = underlying.NetConn()
-		c.tlsConn = underlying
+		c.netConn = underlying.NetConn()
 		t = reflect.TypeOf(underlying).Elem()
 		p = unsafe.Pointer(underlying)
 	case *tlsC.Conn:
 		//log.Debugln("type *tlsC.Conn")
-		c.Conn = underlying.NetConn()
-		c.tlsConn = underlying
+		c.netConn = underlying.NetConn()
 		t = reflect.TypeOf(underlying).Elem()
 		p = unsafe.Pointer(underlying)
 	case *tlsC.UConn:
 		//log.Debugln("type *tlsC.UConn")
-		c.Conn = underlying.NetConn()
-		c.tlsConn = underlying
+		c.netConn = underlying.NetConn()
 		t = reflect.TypeOf(underlying.Conn).Elem()
 		//log.Debugln("t:%v", t)
 		p = unsafe.Pointer(underlying.Conn)
+	case *encryption.ClientConn:
+		//log.Debugln("type *encryption.ClientConn")
+		c.netConn = underlying.Conn
+		t = reflect.TypeOf(underlying).Elem()
+		p = unsafe.Pointer(underlying)
+	case *encryption.ServerConn:
+		//log.Debugln("type *encryption.ServerConn")
+		c.netConn = underlying.Conn
+		t = reflect.TypeOf(underlying).Elem()
+		p = unsafe.Pointer(underlying)
 	default:
 		return nil, fmt.Errorf(`failed to use vision, maybe "security" is not "tls" or "utls"`)
 	}
-	i, _ := t.FieldByName("input")
-	r, _ := t.FieldByName("rawInput")
-	c.input = (*bytes.Reader)(unsafe.Add(p, i.Offset))
-	c.rawInput = (*bytes.Buffer)(unsafe.Add(p, r.Offset))
+	if i, ok := t.FieldByName("input"); ok {
+		c.input = (*bytes.Reader)(unsafe.Add(p, i.Offset))
+	}
+	if r, ok := t.FieldByName("rawInput"); ok {
+		c.rawInput = (*bytes.Buffer)(unsafe.Add(p, r.Offset))
+	}
 	return c, nil
 }
 

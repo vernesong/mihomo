@@ -149,6 +149,10 @@ func (c *Conn) ReaderReplaceable() bool {
 	return c.disablePipe.Load() || c.deadline.Load().IsZero()
 }
 
+func (c *Conn) WriterReplaceable() bool {
+	return true
+}
+
 func (c *Conn) Upstream() any {
 	return c.ExtendedConn
 }

@@ -5,7 +5,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"math/big"
@@ -13,6 +12,7 @@ import (
 
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
+	"golang.org/x/crypto/sha3"
 )
 
 var MaxNonce = bytes.Repeat([]byte{255}, 12)
@@ -73,9 +73,9 @@ func ReadAndDiscardPaddings(conn net.Conn) (h []byte, t byte, l int, err error) 
 	}
 }
 
-func NewAead(c byte, secret, salt, info []byte) (aead cipher.AEAD) {
+func NewAEAD(c byte, secret, salt, info []byte) (aead cipher.AEAD) {
 	key := make([]byte, 32)
-	hkdf.New(sha256.New, secret, salt, info).Read(key)
+	hkdf.New(sha3.New256, secret, salt, info).Read(key)
 	if c&1 == 1 {
 		block, _ := aes.NewCipher(key)
 		aead, _ = cipher.NewGCM(block)

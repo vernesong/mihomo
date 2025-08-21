@@ -30,26 +30,22 @@ type Conn struct {
 }
 
 func (vc *Conn) Read(b []byte) (int, error) {
-	if vc.received {
-		return vc.ExtendedReader.Read(b)
+	if !vc.received {
+		if err := vc.recvResponse(); err != nil {
+			return 0, err
+		}
+		vc.received = true
 	}
-
-	if err := vc.recvResponse(); err != nil {
-		return 0, err
-	}
-	vc.received = true
 	return vc.ExtendedReader.Read(b)
 }
 
 func (vc *Conn) ReadBuffer(buffer *buf.Buffer) error {
-	if vc.received {
-		return vc.ExtendedReader.ReadBuffer(buffer)
+	if !vc.received {
+		if err := vc.recvResponse(); err != nil {
+			return err
+		}
+		vc.received = true
 	}
-
-	if err := vc.recvResponse(); err != nil {
-		return err
-	}
-	vc.received = true
 	return vc.ExtendedReader.ReadBuffer(buffer)
 }
 
@@ -190,7 +186,7 @@ func newConn(conn net.Conn, client *Client, dst *DstAddr) (net.Conn, error) {
 	if client.Addons != nil {
 		switch client.Addons.Flow {
 		case XRV:
-			visionConn, err := vision.NewConn(c, c.id)
+			visionConn, err := vision.NewConn(c, conn, c.id)
 			if err != nil {
 				return nil, err
 			}

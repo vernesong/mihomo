@@ -6,16 +6,15 @@ require (
 	github.com/bahlo/generic-list-go v0.2.0
 	github.com/coreos/go-iptables v0.8.0
 	github.com/dlclark/regexp2 v1.11.5
-	github.com/enfein/mieru/v3 v3.16.1
+	github.com/enfein/mieru/v3 v3.19.0
 	github.com/go-chi/chi/v5 v5.2.2
 	github.com/go-chi/render v1.0.3
 	github.com/gobwas/ws v1.4.0
 	github.com/gofrs/uuid/v5 v5.3.2
 	github.com/insomniacslk/dhcp v0.0.0-20250109001534-8abf58130905
 	github.com/klauspost/compress v1.17.9 // lastest version compatible with golang1.20
-	github.com/lunixbochs/struc v0.0.0-20200707160740-784aaebc1d40
 	github.com/mdlayher/netlink v1.7.2
-	github.com/metacubex/amneziawg-go v0.0.0-20240922133038-fdf3a4d5a4ab
+	github.com/metacubex/amneziawg-go v0.0.0-20250820070344-732c0c9d418a
 	github.com/metacubex/bart v0.20.5
 	github.com/metacubex/bbolt v0.0.0-20250725135710-010dbbbb7a5b
 	github.com/metacubex/blake3 v0.1.0
@@ -32,12 +31,12 @@ require (
 	github.com/metacubex/sing-shadowsocks2 v0.2.6
 	github.com/metacubex/sing-shadowtls v0.0.0-20250503063515-5d9f966d17a2
 	github.com/metacubex/sing-tun v0.4.7
-	github.com/metacubex/sing-vmess v0.2.4-0.20250731011226-ea28d589924d
+	github.com/metacubex/sing-vmess v0.2.4-0.20250821024956-97839f31a65d
 	github.com/metacubex/sing-wireguard v0.0.0-20250503063753-2dc62acc626f
 	github.com/metacubex/smux v0.0.0-20250503055512-501391591dee
 	github.com/metacubex/tfo-go v0.0.0-20250516165257-e29c16ae41d4
 	github.com/metacubex/utls v1.8.1-0.20250811145843-49b4f106169a
-	github.com/metacubex/wireguard-go v0.0.0-20240922131502-c182e7471181
+	github.com/metacubex/wireguard-go v0.0.0-20250820062549-a6cecdd7f57f
 	github.com/miekg/dns v1.1.63 // lastest version compatible with golang1.20
 	github.com/mroth/weightedrand/v2 v2.1.0
 	github.com/openacid/low v0.1.21

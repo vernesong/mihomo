@@ -18,7 +18,6 @@ func fragUDPMessage(m udpMessage, maxSize int) []udpMessage {
 		frag := m
 		frag.FragID = fragID
 		frag.FragCount = fragCount
-		frag.DataLen = uint16(payloadSize)
 		frag.Data = fullPayload[off : off+payloadSize]
 		frags = append(frags, frag)
 		off += payloadSize
@@ -56,7 +55,6 @@ func (d *defragger) Feed(m udpMessage) *udpMessage {
 			for _, frag := range d.frags {
 				data = append(data, frag.Data...)
 			}
-			m.DataLen = uint16(len(data))
 			m.Data = data
 			m.FragID = 0
 			m.FragCount = 1

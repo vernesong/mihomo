@@ -60,6 +60,7 @@ jobs:
       - name: Revert Golang1.25 commit for Windows7/8
         if: ${{ matrix.jobs.goos == 'windows' && matrix.jobs.goversion == '1.25' }}
         run: |
+          alias curl='curl -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}"'
           cd $(go env GOROOT)
           curl https://github.com/MetaCubeX/go/commit/8cb5472d94c34b88733a81091bd328e70ee565a4.diff | patch --verbose -p 1
           curl https://github.com/MetaCubeX/go/commit/6788c4c6f9fafb56729bad6b660f7ee2272d699f.diff | patch --verbose -p 1
@@ -78,6 +79,7 @@ jobs:
       - name: Revert Golang1.24 commit for Windows7/8
         if: ${{ runner.os == 'Windows' && matrix.go-version == '1.24' }}
         run: |
+          alias curl='curl -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}"'
           cd $(go env GOROOT)
           curl https://github.com/MetaCubeX/go/commit/2a406dc9f1ea7323d6ca9fccb2fe9ddebb6b1cc8.diff | patch --verbose -p 1
           curl https://github.com/MetaCubeX/go/commit/7b1fd7d39c6be0185fbe1d929578ab372ac5c632.diff | patch --verbose -p 1
@@ -96,6 +98,7 @@ jobs:
       - name: Revert Golang1.23 commit for Windows7/8
         if: ${{ runner.os == 'Windows' && matrix.go-version == '1.23' }}
         run: |
+          alias curl='curl -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}"'
           cd $(go env GOROOT)
           curl https://github.com/MetaCubeX/go/commit/9ac42137ef6730e8b7daca016ece831297a1d75b.diff | patch --verbose -p 1
           curl https://github.com/MetaCubeX/go/commit/21290de8a4c91408de7c2b5b68757b1e90af49dd.diff | patch --verbose -p 1
@@ -114,6 +117,7 @@ jobs:
       - name: Revert Golang1.22 commit for Windows7/8
         if: ${{ runner.os == 'Windows' && matrix.go-version == '1.22' }}
         run: |
+          alias curl='curl -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}"'
           cd $(go env GOROOT)
           curl https://github.com/MetaCubeX/go/commit/9779155f18b6556a034f7bb79fb7fb2aad1e26a9.diff | patch --verbose -p 1
           curl https://github.com/MetaCubeX/go/commit/ef0606261340e608017860b423ffae5c1ce78239.diff | patch --verbose -p 1
@@ -124,6 +128,7 @@ jobs:
       - name: Revert Golang1.21 commit for Windows7/8
         if: ${{ runner.os == 'Windows' && matrix.go-version == '1.21' }}
         run: |
+          alias curl='curl -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}"'
           cd $(go env GOROOT)
           curl https://github.com/golang/go/commit/9e43850a3298a9b8b1162ba0033d4c53f8637571.diff | patch --verbose -R -p 1
 

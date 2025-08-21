@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // NewClient new client from encryption string
@@ -15,7 +14,7 @@ func NewClient(encryption string) (*ClientInstance, error) {
 	case "", "none": // We will not reject empty string like xray-core does, because we need to ensure compatibility
 		return nil, nil
 	}
-	if s := strings.SplitN(encryption, "-", 4); len(s) == 4 && s[2] == "mlkem768client" {
+	if s := strings.Split(encryption, "."); len(s) == 5 && s[2] == "mlkem768Client" {
 		var minutes uint32
 		if s[0] != "1rtt" {
 			t := strings.TrimSuffix(s[0], "min")
@@ -28,27 +27,35 @@ func NewClient(encryption string) (*ClientInstance, error) {
 			}
 			minutes = uint32(i)
 		}
-		var xor uint32
+		var xorMode uint32
 		switch s[1] {
-		case "vless":
-		case "xored":
-			xor = 1
+		case "native":
+		case "divide":
+			xorMode = 1
+		case "random":
+			xorMode = 2
 		default:
 			return nil, fmt.Errorf("invaild vless encryption value: %s", encryption)
 		}
-		b, err := base64.RawURLEncoding.DecodeString(s[3])
+		xorPKeyBytes, err := base64.RawURLEncoding.DecodeString(s[3])
 		if err != nil {
 			return nil, fmt.Errorf("invaild vless encryption value: %s", encryption)
 		}
-		if len(b) == MLKEM768ClientLength {
-			client := &ClientInstance{}
-			if err = client.Init(b, xor, time.Duration(minutes)*time.Minute); err != nil {
-				return nil, fmt.Errorf("failed to use mlkem768seed: %w", err)
-			}
-			return client, nil
-		} else {
+		if len(xorPKeyBytes) != X25519PasswordSize {
 			return nil, fmt.Errorf("invaild vless encryption value: %s", encryption)
 		}
+		nfsEKeyBytes, err := base64.RawURLEncoding.DecodeString(s[4])
+		if err != nil {
+			return nil, fmt.Errorf("invaild vless encryption value: %s", encryption)
+		}
+		if len(nfsEKeyBytes) != MLKEM768ClientLength {
+			return nil, fmt.Errorf("invaild vless encryption value: %s", encryption)
+		}
+		client := &ClientInstance{}
+		if err = client.Init(nfsEKeyBytes, xorPKeyBytes, xorMode, minutes); err != nil {
+			return nil, fmt.Errorf("failed to use mlkem768seed: %w", err)
+		}
+		return client, nil
 	}
 	return nil, fmt.Errorf("invaild vless encryption value: %s", encryption)
 }
@@ -60,7 +67,7 @@ func NewServer(decryption string) (*ServerInstance, error) {
 	case "", "none": // We will not reject empty string like xray-core does, because we need to ensure compatibility
 		return nil, nil
 	}
-	if s := strings.SplitN(decryption, "-", 4); len(s) == 4 && s[2] == "mlkem768seed" {
+	if s := strings.Split(decryption, "."); len(s) == 5 && s[2] == "mlkem768Seed" {
 		var minutes uint32
 		if s[0] != "1rtt" {
 			t := strings.TrimSuffix(s[0], "min")
@@ -73,27 +80,35 @@ func NewServer(decryption string) (*ServerInstance, error) {
 			}
 			minutes = uint32(i)
 		}
-		var xor uint32
+		var xorMode uint32
 		switch s[1] {
-		case "vless":
-		case "xored":
-			xor = 1
+		case "native":
+		case "divide":
+			xorMode = 1
+		case "random":
+			xorMode = 2
 		default:
 			return nil, fmt.Errorf("invaild vless decryption value: %s", decryption)
 		}
-		b, err := base64.RawURLEncoding.DecodeString(s[3])
+		xorSKeyBytes, err := base64.RawURLEncoding.DecodeString(s[3])
 		if err != nil {
 			return nil, fmt.Errorf("invaild vless decryption value: %s", decryption)
 		}
-		if len(b) == MLKEM768SeedLength {
-			server := &ServerInstance{}
-			if err = server.Init(b, xor, time.Duration(minutes)*time.Minute); err != nil {
-				return nil, fmt.Errorf("failed to use mlkem768seed: %w", err)
-			}
-			return server, nil
-		} else {
+		if len(xorSKeyBytes) != X25519PrivateKeySize {
 			return nil, fmt.Errorf("invaild vless decryption value: %s", decryption)
 		}
+		nfsDKeySeed, err := base64.RawURLEncoding.DecodeString(s[4])
+		if err != nil {
+			return nil, fmt.Errorf("invaild vless decryption value: %s", decryption)
+		}
+		if len(nfsDKeySeed) != MLKEM768SeedLength {
+			return nil, fmt.Errorf("invaild vless decryption value: %s", decryption)
+		}
+		server := &ServerInstance{}
+		if err = server.Init(nfsDKeySeed, xorSKeyBytes, xorMode, minutes); err != nil {
+			return nil, fmt.Errorf("failed to use mlkem768seed: %w", err)
+		}
+		return server, nil
 	}
 	return nil, fmt.Errorf("invaild vless decryption value: %s", decryption)
 }

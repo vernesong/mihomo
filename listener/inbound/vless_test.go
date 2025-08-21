@@ -89,29 +89,38 @@ func TestInboundVless_TLS(t *testing.T) {
 }
 
 func TestInboundVless_Encryption(t *testing.T) {
-	seedBase64, clientBase64, err := encryption.GenMLKEM768("")
+	seedBase64, clientBase64, _, err := encryption.GenMLKEM768("")
 	if err != nil {
 		t.Fatal(err)
 		return
 	}
-	t.Run("-vless-", func(t *testing.T) {
-		inboundOptions := inbound.VlessOption{
-			Decryption: "10min-vless-mlkem768seed-" + seedBase64,
-		}
-		outboundOptions := outbound.VlessOption{
-			Encryption: "8min-vless-mlkem768client-" + clientBase64,
-		}
-		testInboundVless(t, inboundOptions, outboundOptions)
-	})
-	t.Run("-xored-", func(t *testing.T) {
-		inboundOptions := inbound.VlessOption{
-			Decryption: "10min-xored-mlkem768seed-" + seedBase64,
-		}
-		outboundOptions := outbound.VlessOption{
-			Encryption: "8min-xored-mlkem768client-" + clientBase64,
-		}
-		testInboundVless(t, inboundOptions, outboundOptions)
-	})
+	privateKeyBase64, passwordBase64, err := encryption.GenX25519("")
+	if err != nil {
+		t.Fatal(err)
+		return
+	}
+	var modes = []string{
+		"native",
+		"divide",
+		"random",
+	}
+	for i := range modes {
+		mode := modes[i]
+		t.Run(mode, func(t *testing.T) {
+			inboundOptions := inbound.VlessOption{
+				Decryption: "10min." + mode + ".mlkem768Seed." + privateKeyBase64 + "." + seedBase64,
+			}
+			outboundOptions := outbound.VlessOption{
+				Encryption: "8min." + mode + ".mlkem768Client." + passwordBase64 + "." + clientBase64,
+			}
+			testInboundVless(t, inboundOptions, outboundOptions)
+			t.Run("xtls-rprx-vision", func(t *testing.T) {
+				outboundOptions := outboundOptions
+				outboundOptions.Flow = "xtls-rprx-vision"
+				testInboundVless(t, inboundOptions, outboundOptions)
+			})
+		})
+	}
 }
 
 func TestInboundVless_Wss1(t *testing.T) {

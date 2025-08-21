@@ -21,15 +21,16 @@ var (
 )
 
 type Conn struct {
-	net.Conn
+	net.Conn // should be *vless.Conn
 	N.ExtendedReader
 	N.ExtendedWriter
-	upstream net.Conn
 	userUUID *uuid.UUID
 
-	tlsConn  net.Conn
-	input    *bytes.Reader
-	rawInput *bytes.Buffer
+	// tlsConn and it's internal variables
+	tlsConn  net.Conn      // maybe [*tls.Conn] or other tls-like conn
+	netConn  net.Conn      // tlsConn.NetConn()
+	input    *bytes.Reader // &tlsConn.input or nil
+	rawInput *bytes.Buffer // &tlsConn.rawInput or nil
 
 	needHandshake              bool
 	packetsToFilter            int
@@ -143,7 +144,7 @@ func (vc *Conn) ReadBuffer(buffer *buf.Buffer) error {
 			}
 			if vc.input == nil && vc.rawInput == nil {
 				vc.readProcess = false
-				vc.ExtendedReader = N.NewExtendedReader(vc.Conn)
+				vc.ExtendedReader = N.NewExtendedReader(vc.netConn)
 				log.Debugln("XTLS Vision direct read start")
 			}
 			if needReturn {
@@ -214,7 +215,7 @@ func (vc *Conn) WriteBuffer(buffer *buf.Buffer) (err error) {
 			return err
 		}
 		if vc.writeDirect {
-			vc.ExtendedWriter = N.NewExtendedWriter(vc.Conn)
+			vc.ExtendedWriter = N.NewExtendedWriter(vc.netConn)
 			log.Debugln("XTLS Vision direct write start")
 			//time.Sleep(5 * time.Millisecond)
 		}
@@ -235,7 +236,7 @@ func (vc *Conn) WriteBuffer(buffer *buf.Buffer) (err error) {
 			ApplyPadding(buffer2, command, nil, vc.isTLS)
 			err = vc.ExtendedWriter.WriteBuffer(buffer2)
 			if vc.writeDirect {
-				vc.ExtendedWriter = N.NewExtendedWriter(vc.Conn)
+				vc.ExtendedWriter = N.NewExtendedWriter(vc.netConn)
 				log.Debugln("XTLS Vision direct write start")
 				//time.Sleep(10 * time.Millisecond)
 			}
@@ -266,9 +267,9 @@ func (vc *Conn) NeedHandshake() bool {
 func (vc *Conn) Upstream() any {
 	if vc.writeDirect ||
 		vc.readLastCommand == commandPaddingDirect {
-		return vc.Conn
+		return vc.netConn
 	}
-	return vc.upstream
+	return vc.Conn
 }
 
 func (vc *Conn) ReaderPossiblyReplaceable() bool {
@@ -292,4 +293,11 @@ func (vc *Conn) WriterReplaceable() bool {
 		return true
 	}
 	return false
+}
+
+func (vc *Conn) Close() error {
+	if vc.ReaderReplaceable() || vc.WriterReplaceable() { // ignore send closeNotify alert in tls.Conn
+		return vc.netConn.Close()
+	}
+	return vc.Conn.Close()
 }

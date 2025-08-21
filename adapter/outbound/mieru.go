@@ -28,15 +28,16 @@ type Mieru struct {
 
 type MieruOption struct {
 	BasicOption
-	Name         string `proxy:"name"`
-	Server       string `proxy:"server"`
-	Port         int    `proxy:"port,omitempty"`
-	PortRange    string `proxy:"port-range,omitempty"`
-	Transport    string `proxy:"transport"`
-	UDP          bool   `proxy:"udp,omitempty"`
-	UserName     string `proxy:"username"`
-	Password     string `proxy:"password"`
-	Multiplexing string `proxy:"multiplexing,omitempty"`
+	Name          string `proxy:"name"`
+	Server        string `proxy:"server"`
+	Port          int    `proxy:"port,omitempty"`
+	PortRange     string `proxy:"port-range,omitempty"`
+	Transport     string `proxy:"transport"`
+	UDP           bool   `proxy:"udp,omitempty"`
+	UserName      string `proxy:"username"`
+	Password      string `proxy:"password"`
+	Multiplexing  string `proxy:"multiplexing,omitempty"`
+	HandshakeMode string `proxy:"handshake-mode,omitempty"`
 }
 
 // DialContext implements C.ProxyAdapter
@@ -245,6 +246,9 @@ func buildMieruClientConfig(option MieruOption) (*mieruclient.ClientConfig, erro
 			Level: mierupb.MultiplexingLevel(multiplexing).Enum(),
 		}
 	}
+	if handshakeMode, ok := mierupb.HandshakeMode_value[option.HandshakeMode]; ok {
+		config.Profile.HandshakeMode = (*mierupb.HandshakeMode)(&handshakeMode)
+	}
 	return config, nil
 }
 
@@ -292,6 +296,11 @@ func validateMieruOption(option MieruOption) error {
 	if option.Multiplexing != "" {
 		if _, ok := mierupb.MultiplexingLevel_value[option.Multiplexing]; !ok {
 			return fmt.Errorf("invalid multiplexing level: %s", option.Multiplexing)
+		}
+	}
+	if option.HandshakeMode != "" {
+		if _, ok := mierupb.HandshakeMode_value[option.HandshakeMode]; !ok {
+			return fmt.Errorf("invalid handshake mode: %s", option.HandshakeMode)
 		}
 	}
 	return nil

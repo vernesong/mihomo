@@ -25,11 +25,12 @@ import (
 	"github.com/metacubex/sing-vmess/vless"
 	"github.com/metacubex/sing/common"
 	"github.com/metacubex/sing/common/metadata"
+	"github.com/metacubex/sing/common/network"
 )
 
 func init() {
 	vless.RegisterTLS(func(conn net.Conn) (loaded bool, netConn net.Conn, reflectType reflect.Type, reflectPointer unsafe.Pointer) {
-		tlsConn, loaded := common.Cast[*reality.Conn](conn) // *utls.Conn
+		tlsConn, loaded := network.CastReader[*reality.Conn](conn) // *utls.Conn
 		if !loaded {
 			return
 		}
@@ -37,11 +38,27 @@ func init() {
 	})
 
 	vless.RegisterTLS(func(conn net.Conn) (loaded bool, netConn net.Conn, reflectType reflect.Type, reflectPointer unsafe.Pointer) {
-		tlsConn, loaded := common.Cast[*tlsC.UConn](conn) // *utls.UConn
+		tlsConn, loaded := network.CastReader[*tlsC.UConn](conn) // *utls.UConn
 		if !loaded {
 			return
 		}
 		return true, tlsConn.NetConn(), reflect.TypeOf(tlsConn.Conn).Elem(), unsafe.Pointer(tlsConn.Conn)
+	})
+
+	vless.RegisterTLS(func(conn net.Conn) (loaded bool, netConn net.Conn, reflectType reflect.Type, reflectPointer unsafe.Pointer) {
+		tlsConn, loaded := network.CastReader[*encryption.ClientConn](conn)
+		if !loaded {
+			return
+		}
+		return true, tlsConn.Conn, reflect.TypeOf(tlsConn).Elem(), unsafe.Pointer(tlsConn)
+	})
+
+	vless.RegisterTLS(func(conn net.Conn) (loaded bool, netConn net.Conn, reflectType reflect.Type, reflectPointer unsafe.Pointer) {
+		tlsConn, loaded := network.CastReader[*encryption.ServerConn](conn)
+		if !loaded {
+			return
+		}
+		return true, tlsConn.Conn, reflect.TypeOf(tlsConn).Elem(), unsafe.Pointer(tlsConn)
 	})
 }
 

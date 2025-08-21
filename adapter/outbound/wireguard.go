@@ -87,15 +87,26 @@ type WireGuardPeerOption struct {
 }
 
 type AmneziaWGOption struct {
-	JC   int    `proxy:"jc"`
-	JMin int    `proxy:"jmin"`
-	JMax int    `proxy:"jmax"`
-	S1   int    `proxy:"s1"`
-	S2   int    `proxy:"s2"`
-	H1   uint32 `proxy:"h1"`
-	H2   uint32 `proxy:"h2"`
-	H3   uint32 `proxy:"h3"`
-	H4   uint32 `proxy:"h4"`
+	JC   int    `proxy:"jc,omitempty"`
+	JMin int    `proxy:"jmin,omitempty"`
+	JMax int    `proxy:"jmax,omitempty"`
+	S1   int    `proxy:"s1,omitempty"`
+	S2   int    `proxy:"s2,omitempty"`
+	H1   uint32 `proxy:"h1,omitempty"`
+	H2   uint32 `proxy:"h2,omitempty"`
+	H3   uint32 `proxy:"h3,omitempty"`
+	H4   uint32 `proxy:"h4,omitempty"`
+
+	// AmneziaWG v1.5
+	I1    string `proxy:"i1,omitempty"`
+	I2    string `proxy:"i2,omitempty"`
+	I3    string `proxy:"i3,omitempty"`
+	I4    string `proxy:"i4,omitempty"`
+	I5    string `proxy:"i5,omitempty"`
+	J1    string `proxy:"j1,omitempty"`
+	J2    string `proxy:"j2,omitempty"`
+	J3    string `proxy:"j3,omitempty"`
+	Itime int64  `proxy:"itime,omitempty"`
 }
 
 type wgSingErrorHandler struct {
@@ -386,15 +397,60 @@ func (w *WireGuard) genIpcConf(ctx context.Context, updateOnly bool) (string, er
 	if !updateOnly {
 		ipcConf += "private_key=" + w.option.PrivateKey + "\n"
 		if w.option.AmneziaWGOption != nil {
-			ipcConf += "jc=" + strconv.Itoa(w.option.AmneziaWGOption.JC) + "\n"
-			ipcConf += "jmin=" + strconv.Itoa(w.option.AmneziaWGOption.JMin) + "\n"
-			ipcConf += "jmax=" + strconv.Itoa(w.option.AmneziaWGOption.JMax) + "\n"
-			ipcConf += "s1=" + strconv.Itoa(w.option.AmneziaWGOption.S1) + "\n"
-			ipcConf += "s2=" + strconv.Itoa(w.option.AmneziaWGOption.S2) + "\n"
-			ipcConf += "h1=" + strconv.FormatUint(uint64(w.option.AmneziaWGOption.H1), 10) + "\n"
-			ipcConf += "h2=" + strconv.FormatUint(uint64(w.option.AmneziaWGOption.H2), 10) + "\n"
-			ipcConf += "h3=" + strconv.FormatUint(uint64(w.option.AmneziaWGOption.H3), 10) + "\n"
-			ipcConf += "h4=" + strconv.FormatUint(uint64(w.option.AmneziaWGOption.H4), 10) + "\n"
+			if w.option.AmneziaWGOption.JC != 0 {
+				ipcConf += "jc=" + strconv.Itoa(w.option.AmneziaWGOption.JC) + "\n"
+			}
+			if w.option.AmneziaWGOption.JMin != 0 {
+				ipcConf += "jmin=" + strconv.Itoa(w.option.AmneziaWGOption.JMin) + "\n"
+			}
+			if w.option.AmneziaWGOption.JMax != 0 {
+				ipcConf += "jmax=" + strconv.Itoa(w.option.AmneziaWGOption.JMax) + "\n"
+			}
+			if w.option.AmneziaWGOption.S1 != 0 {
+				ipcConf += "s1=" + strconv.Itoa(w.option.AmneziaWGOption.S1) + "\n"
+			}
+			if w.option.AmneziaWGOption.S2 != 0 {
+				ipcConf += "s2=" + strconv.Itoa(w.option.AmneziaWGOption.S2) + "\n"
+			}
+			if w.option.AmneziaWGOption.H1 != 0 {
+				ipcConf += "h1=" + strconv.FormatUint(uint64(w.option.AmneziaWGOption.H1), 10) + "\n"
+			}
+			if w.option.AmneziaWGOption.H2 != 0 {
+				ipcConf += "h2=" + strconv.FormatUint(uint64(w.option.AmneziaWGOption.H2), 10) + "\n"
+			}
+			if w.option.AmneziaWGOption.H3 != 0 {
+				ipcConf += "h3=" + strconv.FormatUint(uint64(w.option.AmneziaWGOption.H3), 10) + "\n"
+			}
+			if w.option.AmneziaWGOption.H4 != 0 {
+				ipcConf += "h4=" + strconv.FormatUint(uint64(w.option.AmneziaWGOption.H4), 10) + "\n"
+			}
+			if w.option.AmneziaWGOption.I1 != "" {
+				ipcConf += "i1=" + w.option.AmneziaWGOption.I1 + "\n"
+			}
+			if w.option.AmneziaWGOption.I2 != "" {
+				ipcConf += "i2=" + w.option.AmneziaWGOption.I2 + "\n"
+			}
+			if w.option.AmneziaWGOption.I3 != "" {
+				ipcConf += "i3=" + w.option.AmneziaWGOption.I3 + "\n"
+			}
+			if w.option.AmneziaWGOption.I4 != "" {
+				ipcConf += "i4=" + w.option.AmneziaWGOption.I4 + "\n"
+			}
+			if w.option.AmneziaWGOption.I5 != "" {
+				ipcConf += "i5=" + w.option.AmneziaWGOption.I5 + "\n"
+			}
+			if w.option.AmneziaWGOption.J1 != "" {
+				ipcConf += "j1=" + w.option.AmneziaWGOption.J1 + "\n"
+			}
+			if w.option.AmneziaWGOption.J2 != "" {
+				ipcConf += "j2=" + w.option.AmneziaWGOption.J2 + "\n"
+			}
+			if w.option.AmneziaWGOption.J3 != "" {
+				ipcConf += "j3=" + w.option.AmneziaWGOption.J3 + "\n"
+			}
+			if w.option.AmneziaWGOption.Itime != 0 {
+				ipcConf += "itime=" + strconv.FormatInt(int64(w.option.AmneziaWGOption.Itime), 10) + "\n"
+			}
 		}
 	}
 	if len(w.option.Peers) > 0 {
