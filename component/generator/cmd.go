@@ -1,4 +1,4 @@
-package generater
+package generator
 
 import (
 	"encoding/base64"
@@ -22,20 +22,19 @@ func Main(args []string) {
 		}
 		fmt.Println(newUUID.String())
 	case "reality-keypair":
-		privateKey, err := GeneratePrivateKey()
+		privateKey, err := GenX25519PrivateKey()
 		if err != nil {
 			panic(err)
 		}
-		publicKey := privateKey.PublicKey()
-		fmt.Println("PrivateKey: " + base64.RawURLEncoding.EncodeToString(privateKey[:]))
-		fmt.Println("PublicKey: " + base64.RawURLEncoding.EncodeToString(publicKey[:]))
+		fmt.Println("PrivateKey: " + base64.RawURLEncoding.EncodeToString(privateKey.Bytes()))
+		fmt.Println("PublicKey: " + base64.RawURLEncoding.EncodeToString(privateKey.PublicKey().Bytes()))
 	case "wg-keypair":
-		privateKey, err := GeneratePrivateKey()
+		privateKey, err := GenX25519PrivateKey()
 		if err != nil {
 			panic(err)
 		}
-		fmt.Println("PrivateKey: " + privateKey.String())
-		fmt.Println("PublicKey: " + privateKey.PublicKey().String())
+		fmt.Println("PrivateKey: " + base64.StdEncoding.EncodeToString(privateKey.Bytes()))
+		fmt.Println("PublicKey: " + base64.StdEncoding.EncodeToString(privateKey.PublicKey().Bytes()))
 	case "ech-keypair":
 		if len(args) < 2 {
 			panic("Using: generate ech-keypair <plain_server_name>")

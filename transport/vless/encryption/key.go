@@ -56,6 +56,9 @@ func GenX25519(privateKeyStr string) (privateKeyBase64, passwordBase64 string, e
 		}
 	}
 
+	// Avoid generating equivalent X25519 private keys
+	// https://github.com/XTLS/Xray-core/pull/1747
+	//
 	// Modify random bytes using algorithm described at:
 	// https://cr.yp.to/ecdh.html.
 	privateKey[0] &= 248

@@ -57,7 +57,7 @@ type ClientConn struct {
 	random    []byte
 	aead      cipher.AEAD
 	nonce     []byte
-	peerAead  cipher.AEAD
+	peerAEAD  cipher.AEAD
 	peerNonce []byte
 	input     bytes.Reader // peerCache
 }
@@ -70,13 +70,13 @@ func (i *ClientInstance) Init(nfsEKeyBytes, xorPKeyBytes []byte, xorMode, minute
 	if i.nfsEKey, err = mlkem.NewEncapsulationKey768(nfsEKeyBytes); err != nil {
 		return
 	}
-	hash32 := sha3.Sum256(nfsEKeyBytes)
-	copy(i.hash11[:], hash32[:])
 	if xorMode > 0 {
 		i.xorMode = xorMode
 		if i.xorPKey, err = ecdh.X25519().NewPublicKey(xorPKeyBytes); err != nil {
 			return
 		}
+		hash32 := sha3.Sum256(nfsEKeyBytes)
+		copy(i.hash11[:], hash32[:])
 	}
 	i.minutes = time.Duration(minutes) * time.Minute
 	return
@@ -108,23 +108,25 @@ func (i *ClientInstance) Handshake(conn net.Conn) (*ClientConn, error) {
 	pfsDKey, _ := mlkem.NewDecapsulationKey768(pfsDKeySeed)
 	pfsEKeyBytes := pfsDKey.EncapsulationKey().Bytes()
 	nfsKey, encapsulatedNfsKey := i.nfsEKey.Encapsulate()
-	paddingLen := randBetween(100, 1000)
+	nfsAEAD := NewAEAD(ClientCipher, nfsKey, pfsEKeyBytes, encapsulatedNfsKey)
 
-	clientHello := make([]byte, 5+11+1+1184+1088+5+paddingLen)
+	clientHello := make([]byte, 5+11+1+1184+1088+randBetween(100, 1000))
 	EncodeHeader(clientHello, 1, 11+1+1184+1088)
 	copy(clientHello[5:], i.hash11[:])
 	clientHello[5+11] = ClientCipher
 	copy(clientHello[5+11+1:], pfsEKeyBytes)
 	copy(clientHello[5+11+1+1184:], encapsulatedNfsKey)
-	EncodeHeader(clientHello[5+11+1+1184+1088:], 23, int(paddingLen))
-	rand.Read(clientHello[5+11+1+1184+1088+5:])
+	padding := clientHello[5+11+1+1184+1088:]
+	rand.Read(padding) // important
+	EncodeHeader(padding, 23, len(padding)-5)
+	nfsAEAD.Seal(padding[:5], clientHello[5:5+11+1], padding[5:len(padding)-16], padding[:5])
 
 	if _, err := c.Conn.Write(clientHello); err != nil {
 		return nil, err
 	}
-	// client can send more paddings / NFS AEAD messages if needed
+	// client can send more NFS AEAD paddings / messages if needed
 
-	_, t, l, err := ReadAndDiscardPaddings(c.Conn) // allow paddings before server hello
+	_, t, l, err := ReadAndDiscardPaddings(c.Conn, nil, nil) // allow paddings before server hello
 	if err != nil {
 		return nil, err
 	}
@@ -206,10 +208,10 @@ func (c *ClientConn) Read(b []byte) (int, error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
-	if c.peerAead == nil {
-		_, t, l, err := ReadAndDiscardPaddings(c.Conn) // allow paddings before random hello
+	if c.peerAEAD == nil {
+		_, t, l, err := ReadAndDiscardPaddings(c.Conn, nil, nil) // allow paddings before random hello
 		if err != nil {
-			if c.instance != nil && strings.HasPrefix(err.Error(), "invalid header: ") { // 0-RTT's 0-RTT
+			if c.instance != nil && strings.HasPrefix(err.Error(), "invalid header: ") { // 0-RTT
 				c.instance.Lock()
 				if bytes.Equal(c.ticket, c.instance.ticket) {
 					c.instance.expire = time.Now() // expired
@@ -232,7 +234,7 @@ func (c *ClientConn) Read(b []byte) (int, error) {
 		if c.random == nil {
 			return 0, errors.New("empty c.random")
 		}
-		c.peerAead = NewAEAD(ClientCipher, c.baseKey, peerRandomHello, c.random)
+		c.peerAEAD = NewAEAD(ClientCipher, c.baseKey, peerRandomHello, c.random)
 		c.peerNonce = make([]byte, 12)
 	}
 	if c.input.Len() > 0 {
@@ -253,13 +255,13 @@ func (c *ClientConn) Read(b []byte) (int, error) {
 	if len(dst) <= len(b) {
 		dst = b[:len(dst)] // avoids another copy()
 	}
-	var peerAead cipher.AEAD
+	var peerAEAD cipher.AEAD
 	if bytes.Equal(c.peerNonce, MaxNonce) {
-		peerAead = NewAEAD(ClientCipher, c.baseKey, peerData, h)
+		peerAEAD = NewAEAD(ClientCipher, c.baseKey, peerData, h)
 	}
-	_, err = c.peerAead.Open(dst[:0], c.peerNonce, peerData, h)
-	if peerAead != nil {
-		c.peerAead = peerAead
+	_, err = c.peerAEAD.Open(dst[:0], c.peerNonce, peerData, h)
+	if peerAEAD != nil {
+		c.peerAEAD = peerAEAD
 	}
 	IncreaseNonce(c.peerNonce)
 	if err != nil {

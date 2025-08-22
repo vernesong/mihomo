@@ -14,6 +14,7 @@ var NewPacket = buf.NewPacket
 var NewSize = buf.NewSize
 var With = buf.With
 var As = buf.As
+var ReleaseMulti = buf.ReleaseMulti
 
 var (
 	Must  = common.Must

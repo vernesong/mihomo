@@ -1,6 +1,7 @@
 package inbound_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -21,7 +22,7 @@ import (
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/ech"
-	"github.com/metacubex/mihomo/component/generater"
+	"github.com/metacubex/mihomo/component/generator"
 	tlsC "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
 
@@ -48,13 +49,12 @@ var echConfigBase64, echKeyPem, _ = ech.GenECHConfig(echPublicSni)
 
 func init() {
 	rand.Read(httpData)
-	privateKey, err := generater.GeneratePrivateKey()
+	privateKey, err := generator.GenX25519PrivateKey()
 	if err != nil {
 		panic(err)
 	}
-	publicKey := privateKey.PublicKey()
-	realityPrivateKey = base64.RawURLEncoding.EncodeToString(privateKey[:])
-	realityPublickey = base64.RawURLEncoding.EncodeToString(publicKey[:])
+	realityPrivateKey = base64.RawURLEncoding.EncodeToString(privateKey.Bytes())
+	realityPublickey = base64.RawURLEncoding.EncodeToString(privateKey.PublicKey().Bytes())
 }
 
 type TestTunnel struct {
@@ -143,6 +143,7 @@ func NewHttpTestTunnel() *TestTunnel {
 			render.PlainText(w, r, err.Error())
 			return
 		}
+		io.Copy(io.Discard, r.Body)
 		render.Data(w, r, httpData[:size])
 	})
 	h2Server := &http2.Server{}
@@ -150,7 +151,7 @@ func NewHttpTestTunnel() *TestTunnel {
 	_ = http2.ConfigureServer(&server, h2Server)
 	go server.Serve(ln)
 	testFn := func(t *testing.T, proxy C.ProxyAdapter, proto string, size int) {
-		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s://%s%s?size=%d", proto, remoteAddr, httpPath, size), nil)
+		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s://%s%s?size=%d", proto, remoteAddr, httpPath, size), bytes.NewReader(httpData[:size]))
 		if !assert.NoError(t, err) {
 			return
 		}

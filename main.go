@@ -14,7 +14,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/metacubex/mihomo/component/generater"
+	"github.com/metacubex/mihomo/component/generator"
 	"github.com/metacubex/mihomo/component/geodata"
 	"github.com/metacubex/mihomo/component/updater"
 	"github.com/metacubex/mihomo/config"
@@ -73,7 +73,7 @@ func main() {
 	}
 
 	if len(os.Args) > 1 && os.Args[1] == "generate" {
-		generater.Main(os.Args[2:])
+		generator.Main(os.Args[2:])
 		return
 	}
 

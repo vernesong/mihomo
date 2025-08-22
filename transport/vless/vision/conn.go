@@ -170,7 +170,7 @@ func (vc *Conn) WriteBuffer(buffer *buf.Buffer) (err error) {
 	if vc.needHandshake {
 		vc.needHandshake = false
 		if buffer.IsEmpty() {
-			ApplyPadding(buffer, commandPaddingContinue, vc.userUUID, false)
+			ApplyPadding(buffer, commandPaddingContinue, vc.userUUID, true) // we do a long padding to hide vless header
 		} else {
 			vc.FilterTLS(buffer.Bytes())
 			ApplyPadding(buffer, commandPaddingContinue, vc.userUUID, vc.isTLS)
@@ -190,55 +190,37 @@ func (vc *Conn) WriteBuffer(buffer *buf.Buffer) (err error) {
 	}
 
 	if vc.writeFilterApplicationData {
-		buffer2 := ReshapeBuffer(buffer)
-		defer buffer2.Release()
 		vc.FilterTLS(buffer.Bytes())
-		command := commandPaddingContinue
-		if !vc.isTLS {
-			command = commandPaddingEnd
-
-			// disable XTLS
-			//vc.readProcess = false
-			vc.writeFilterApplicationData = false
-			vc.packetsToFilter = 0
-		} else if buffer.Len() > 6 && bytes.Equal(buffer.To(3), tlsApplicationDataStart) || vc.packetsToFilter <= 0 {
-			command = commandPaddingEnd
-			if vc.enableXTLS {
-				command = commandPaddingDirect
-				vc.writeDirect = true
-			}
-			vc.writeFilterApplicationData = false
-		}
-		ApplyPadding(buffer, command, nil, vc.isTLS)
-		err = vc.ExtendedWriter.WriteBuffer(buffer)
-		if err != nil {
-			return err
-		}
-		if vc.writeDirect {
-			vc.ExtendedWriter = N.NewExtendedWriter(vc.netConn)
-			log.Debugln("XTLS Vision direct write start")
-			//time.Sleep(5 * time.Millisecond)
-		}
-		if buffer2 != nil {
-			if vc.writeDirect || !vc.isTLS {
-				return vc.ExtendedWriter.WriteBuffer(buffer2)
-			}
-			vc.FilterTLS(buffer2.Bytes())
-			command = commandPaddingContinue
-			if buffer2.Len() > 6 && bytes.Equal(buffer2.To(3), tlsApplicationDataStart) || vc.packetsToFilter <= 0 {
-				command = commandPaddingEnd
-				if vc.enableXTLS {
-					command = commandPaddingDirect
-					vc.writeDirect = true
+		buffers := vc.ReshapeBuffer(buffer)
+		applyPadding := true
+		for i, buffer := range buffers {
+			command := commandPaddingContinue
+			if applyPadding {
+				if vc.isTLS && buffer.Len() > 6 && bytes.Equal(buffer.To(3), tlsApplicationDataStart) {
+					command = commandPaddingEnd
+					if vc.enableXTLS {
+						command = commandPaddingDirect
+						vc.writeDirect = true
+					}
+					vc.writeFilterApplicationData = false
+					applyPadding = false
+				} else if !vc.isTLS12orAbove && vc.packetsToFilter <= 1 {
+					command = commandPaddingEnd
+					vc.writeFilterApplicationData = false
+					applyPadding = false
 				}
-				vc.writeFilterApplicationData = false
+				ApplyPadding(buffer, command, nil, vc.isTLS)
 			}
-			ApplyPadding(buffer2, command, nil, vc.isTLS)
-			err = vc.ExtendedWriter.WriteBuffer(buffer2)
-			if vc.writeDirect {
+
+			err = vc.ExtendedWriter.WriteBuffer(buffer)
+			if err != nil {
+				buf.ReleaseMulti(buffers[i:]) // release unwritten buffers
+				return
+			}
+			if command == commandPaddingDirect {
 				vc.ExtendedWriter = N.NewExtendedWriter(vc.netConn)
 				log.Debugln("XTLS Vision direct write start")
-				//time.Sleep(10 * time.Millisecond)
+				//time.Sleep(5 * time.Millisecond)
 			}
 		}
 		return err
