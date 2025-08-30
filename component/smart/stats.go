@@ -569,9 +569,9 @@ func (s *Store) StoreNodeWeightRanking(group, config string, ranking map[string]
 }
 
 // 获取目标的最佳代理
-func (s *Store) GetBestProxyForTarget(group, config string, target string, weightType string, allStats bool) (string, float64, error) {
+func (s *Store) GetBestProxyForTarget(group, config string, target string, weightType string, allStats bool) ([]string, []float64, error) {
 	if target == "" {
-		return "", 0, errors.New("empty target")
+		return nil, nil, errors.New("empty target")
 	}
 
 	now := time.Now().Unix()
@@ -584,7 +584,7 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
 
 	allStatsMap, err := s.GetAllStats(group, config, allStats)
 	if err != nil {
-		return "", 0, err
+		return nil, nil, err
 	}
 
 	nodeStatesMap := make(map[string]NodeState)
@@ -643,7 +643,7 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
 		if stats, ok := allStatsMap[target]; ok {
 			domainStats = stats
 		} else {
-			return "", 0, errors.New("empty stats")
+			return nil, nil, errors.New("empty stats")
 		}
 		for nodeName, data := range domainStats {
 			var record StatsRecord
@@ -764,19 +764,33 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
 		}
 	}
 
-	if len(nodesWithWeight) >= requiredNodeCount && requiredNodeCount > 0 {
-		var bestNode string
-		var bestWeight float64
-		for node, weight := range nodesWithWeight {
-			if weight > bestWeight {
-				bestWeight = weight
-				bestNode = node
-			}
-		}
-		return bestNode, bestWeight, nil
-	} else {
-		return "", 0, errors.New("not enough nodes with valid weights")
+	type nodeWeight struct {
+		name   string
+		weight float64
 	}
+	var nodeList []nodeWeight
+	for node, weight := range nodesWithWeight {
+		nodeList = append(nodeList, nodeWeight{node, weight})
+	}
+	sort.Slice(nodeList, func(i, j int) bool {
+		return nodeList[i].weight > nodeList[j].weight
+	})
+
+	topN := 3
+	if len(nodeList) < topN {
+		topN = len(nodeList)
+	}
+	if topN == 0 {
+		return nil, nil, errors.New("not enough nodes with valid weights")
+	}
+
+	var bestNodes []string
+	var bestWeights []float64
+	for i := 0; i < topN; i++ {
+		bestNodes = append(bestNodes, nodeList[i].name)
+		bestWeights = append(bestWeights, nodeList[i].weight)
+	}
+	return bestNodes, bestWeights, nil
 }
 
 // 获取活跃域名
@@ -991,10 +1005,12 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
 	// 域名
 	for domain, activeTypes := range domains {
 		for _, weightType := range activeTypes {
-			bestNode, bestWeight, err := s.GetBestProxyForTarget(group, config, domain, weightType, true)
-			if err != nil || bestNode == "" || bestWeight <= 0 {
+			bestNodes, bestWeights, err := s.GetBestProxyForTarget(group, config, domain, weightType, true)
+			if err != nil || len(bestNodes) == 0 || bestNodes[0] == "" || bestWeights[0] <= 0 {
 				continue
 			}
+			bestNode := bestNodes[0]
+			bestWeight := bestWeights[0]
 			if _, exists := availableProxyMap[bestNode]; exists {
 				item := prefetchItem{
 					target:     domain,
@@ -1018,10 +1034,12 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
 			} else {
 				continue
 			}
-			bestNode, bestWeight, err := s.GetBestProxyForTarget(group, config, asn, weightType, true)
-			if err != nil || bestNode == "" || bestWeight <= 0 {
+			bestNodes, bestWeights, err := s.GetBestProxyForTarget(group, config, asn, weightType, true)
+			if err != nil || len(bestNodes) == 0 || bestNodes[0] == "" || bestWeights[0] <= 0 {
 				continue
 			}
+			bestNode := bestNodes[0]
+			bestWeight := bestWeights[0]
 			if _, exists := availableProxyMap[bestNode]; exists {
 				item := prefetchItem{
 					target:     asn,

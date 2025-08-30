@@ -177,7 +177,20 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 		}
 		triedProxies[proxy.Name()] = true
 		for i := 0; i < maxRetries; i++ {
-			c, err := proxy.DialContext(ctx, metadata)
+			historyConnectTime := s.getHistoryConnectStats(metadata, proxy)
+			const thresholdRatio = 2.0
+			var timeout time.Duration
+			if historyConnectTime > 0 {
+				timeout = time.Duration(float64(historyConnectTime)*thresholdRatio) * time.Millisecond
+				if timeout > C.DefaultTCPTimeout {
+					timeout = C.DefaultTCPTimeout
+				}
+			} else {
+				timeout = C.DefaultTCPTimeout
+			}
+			ctxDial, cancel := context.WithTimeout(ctx, timeout)
+			c, err := proxy.DialContext(ctxDial, metadata)
+			cancel()
 			if err == nil {
 				wrappedConn, wrapErr := s.wrapConnWithMetric(c, proxy, metadata, 0)
 				if wrapErr != nil {
@@ -241,8 +254,21 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 	}
 
 	for i := 0; i < maxRetries; i++ {
+		historyConnectTime := s.getHistoryConnectStats(metadata, proxy)
+		const thresholdRatio = 2.0
+		var timeout time.Duration
+		if historyConnectTime > 0 {
+			timeout = time.Duration(float64(historyConnectTime)*thresholdRatio) * time.Millisecond
+			if timeout > C.DefaultTCPTimeout {
+				timeout = C.DefaultTCPTimeout
+			}
+		} else {
+			timeout = C.DefaultTCPTimeout
+		}
+		ctxDial, cancel := context.WithTimeout(ctx, timeout)
 		start := time.Now()
-		c, err := proxy.DialContext(ctx, metadata)
+		c, err := proxy.DialContext(ctxDial, metadata)
+		cancel()
 		connectTime := time.Since(start).Milliseconds()
 
 		if err == nil {
@@ -283,12 +309,26 @@ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 
 	var finalErr error
 	for i := 0; i < maxRetries; i++ {
+		historyConnectTime := s.getHistoryConnectStats(metadata, proxy)
+		const thresholdRatio = 2.0
+		var timeout time.Duration
+		if historyConnectTime > 0 {
+			timeout = time.Duration(float64(historyConnectTime)*thresholdRatio) * time.Millisecond
+			if timeout > C.DefaultTCPTimeout {
+				timeout = C.DefaultTCPTimeout
+			}
+		} else {
+			timeout = C.DefaultTCPTimeout
+		}
+		ctxDial, cancel := context.WithTimeout(ctx, timeout)
 		start := time.Now()
-		pc, err = proxy.ListenPacketContext(ctx, metadata)
+		pc, err = proxy.ListenPacketContext(ctxDial, metadata)
+		cancel()
+		connectTime := time.Since(start).Milliseconds()
+
 		if err == nil {
 			pc.AppendToChains(s)
 			if s.store != nil {
-				connectTime := time.Since(start).Milliseconds()
 				s.recordConnectionStats("success", metadata, proxy, connectTime, 0, 0, 0, 0, 0, 0, false, nil)
 				pc = s.registerPacketClosureMetricsCallback(pc, proxy, metadata)
 			}
@@ -720,9 +760,9 @@ func (s *Smart) selectProxy(metadata *C.Metadata, touch bool) C.Proxy {
 		}
 
 		// 实时计算最佳节点
-		bestNode, _, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, target, weightType, false)
-		if err == nil && bestNode != "" {
-			if proxy := findProxyByName(bestNode); proxy != nil {
+		bestNodes, _, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, target, weightType, false)
+		if err == nil && len(bestNodes) > 0 && bestNodes[0] != "" {
+			if proxy := findProxyByName(bestNodes[0]); proxy != nil {
 				return proxy
 			}
 		}
@@ -759,6 +799,50 @@ func (s *Smart) selectProxy(metadata *C.Metadata, touch bool) C.Proxy {
 }
 
 func (s *Smart) selectNextProxy(metadata *C.Metadata, availableProxies []C.Proxy, triedProxies map[string]bool) C.Proxy {
+	findProxyByName := func(name string) C.Proxy {
+		for _, p := range availableProxies {
+			if p.Name() == name && !triedProxies[p.Name()] && p.AliveForTestUrl(s.testUrl) {
+				return p
+			}
+		}
+		return nil
+	}
+
+	weightType := smart.WeightTypeTCP
+	if metadata.NetWork == C.UDP {
+		weightType = smart.WeightTypeUDP
+	}
+
+	domain := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
+	if domain != "" {
+		bestNodes, _, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, domain, weightType, false)
+		for _, node := range bestNodes {
+			if err == nil && node != "" && !triedProxies[node] {
+				if proxy := findProxyByName(node); proxy != nil {
+					return proxy
+				}
+			}
+		}
+	}
+
+	asnNumber := s.getASNCode(metadata)
+	if asnNumber != "" {
+		asnWeightType := weightType
+		if weightType == smart.WeightTypeTCP {
+			asnWeightType = smart.WeightTypeTCPASN + ":" + asnNumber
+		} else {
+			asnWeightType = smart.WeightTypeUDPASN + ":" + asnNumber
+		}
+		bestNodes, _, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, asnNumber, asnWeightType, false)
+		for _, node := range bestNodes {
+			if err == nil && node != "" && !triedProxies[node] {
+				if proxy := findProxyByName(node); proxy != nil {
+					return proxy
+				}
+			}
+		}
+	}
+
 	for i := 0; i < 3; i++ {
 		if s.strategy == "sticky-sessions" {
 			s.fallback.ClearStickySession(metadata)
@@ -912,6 +996,28 @@ func (s *Smart) cleanupOrphanedNodeCache() {
 			log.Warnln("[Smart] Failed to clean up non-existent node caches: %v", err)
 		}
 	}
+}
+
+// 获取历史 connectTime
+func (s *Smart) getHistoryConnectStats(metadata *C.Metadata, proxy C.Proxy) (historyConnectTime int64) {
+	if s.store == nil || proxy == nil || metadata == nil {
+		return 0
+	}
+	domain := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
+	if domain == "" {
+		return 0
+	}
+	cacheKey := smart.FormatCacheKey(smart.KeyTypeStats, s.configName, s.Name(), domain, proxy.Name())
+	atomicManager := smart.GetAtomicManager()
+	if atomicManager == nil {
+		return 0
+	}
+	atomicRecord := atomicManager.GetOrCreateAtomicRecord(cacheKey, s.store, s.Name(), s.configName, domain, proxy.Name())
+	if atomicRecord == nil {
+		return 0
+	}
+	historyConnectTime, _ = atomicRecord.Get("connectTime").(int64)
+	return
 }
 
 func (s *Smart) checkNodeQualityDegradation(
@@ -1639,8 +1745,17 @@ func (s *Smart) cleanupDegradedNodePreferenceCache(metadata *C.Metadata, domain 
 	s.store.DeleteCacheResult(smart.KeyTypePrefetch, s.Name(), s.configName, domain)
 
 	// 处理域名相关缓存
-	bestNode, bestWeight, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, domain, weightType, false)
-	if err == nil && bestNode != "" && bestNode != nodeName && bestWeight > currentWeight {
+	bestNodes, bestWeights, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, domain, weightType, false)
+	var bestNode string
+	var bestWeight float64
+	for i := 0; i < len(bestNodes); i++ {
+		if bestNodes[i] != "" && bestNodes[i] != nodeName {
+			bestNode = bestNodes[i]
+			bestWeight = bestWeights[i]
+			break
+		}
+	}
+	if err == nil && bestNode != "" && bestWeight > currentWeight {
 		s.store.StorePrefetchResult(s.Name(), s.configName, domain, weightType, bestNode, bestWeight)
 		log.Debugln("[Smart] Added new prefetch result for domain: [%s] -> [%s] (weight: %.4f, type: %s)",
 			domain, bestNode, bestWeight, weightType)
@@ -1656,11 +1771,20 @@ func (s *Smart) cleanupDegradedNodePreferenceCache(metadata *C.Metadata, domain 
 
 		s.store.DeleteCacheResult(smart.KeyTypePrefetch, s.Name(), s.configName, asnInfo)
 
-		bestNode, bestWeight, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, asnInfo, fullAsnWeightType, false)
-		if err == nil && bestNode != "" && bestNode != nodeName && bestWeight > currentWeight {
-			s.store.StorePrefetchResult(s.Name(), s.configName, asnInfo, fullAsnWeightType, bestNode, bestWeight)
+		bestNodes, bestWeights, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, asnInfo, fullAsnWeightType, false)
+		var asnBestNode string
+		var asnBestWeight float64
+		for i := 0; i < len(bestNodes); i++ {
+			if bestNodes[i] != "" && bestNodes[i] != nodeName {
+				asnBestNode = bestNodes[i]
+				asnBestWeight = bestWeights[i]
+				break
+			}
+		}
+		if err == nil && asnBestNode != "" && asnBestWeight > currentWeight {
+			s.store.StorePrefetchResult(s.Name(), s.configName, asnInfo, fullAsnWeightType, asnBestNode, asnBestWeight)
 			log.Debugln("[Smart] Added new ASN prefetch result: [%s] -> [%s] (weight: %.4f, type: %s)",
-				asnInfo, bestNode, bestWeight, fullAsnWeightType)
+				asnInfo, asnBestNode, asnBestWeight, fullAsnWeightType)
 		}
 	}
 
