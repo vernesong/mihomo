@@ -335,6 +335,7 @@ func (p *Proxy) StatusTest(ctx context.Context, url string, expectedStatus utils
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		TLSClientConfig:       ca.GetGlobalTLSConfig(&tls.Config{}),
+		DisableKeepAlives:     true,
 	}
 
 	client := http.Client{
