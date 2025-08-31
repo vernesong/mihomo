@@ -99,6 +99,15 @@ func TestInboundVless_Encryption(t *testing.T) {
 		t.Fatal(err)
 		return
 	}
+	paddings := []struct {
+		name string
+		data string
+	}{
+		{"unconfigured-padding", ""},
+		{"default-padding", "100-111-1111.75-0-111.50-0-3333."},
+		{"old-padding", "100-100-1000."}, // Xray-core v25.8.29
+		{"custom-padding", "100-1234-7890.33-0-1111.66-0-6666.55-111-777."},
+	}
 	var modes = []string{
 		"native",
 		"xorpub",
@@ -107,19 +116,26 @@ func TestInboundVless_Encryption(t *testing.T) {
 	for i := range modes {
 		mode := modes[i]
 		t.Run(mode, func(t *testing.T) {
-			inboundOptions := inbound.VlessOption{
-				Decryption: "mlkem768x25519plus." + mode + ".600s." + privateKeyBase64 + "." + seedBase64,
+			t.Parallel()
+			for i := range paddings {
+				padding := paddings[i].data
+				t.Run(paddings[i].name, func(t *testing.T) {
+					inboundOptions := inbound.VlessOption{
+						Decryption: "mlkem768x25519plus." + mode + ".600s." + padding + privateKeyBase64 + "." + seedBase64,
+					}
+					outboundOptions := outbound.VlessOption{
+						Encryption: "mlkem768x25519plus." + mode + ".0rtt." + padding + passwordBase64 + "." + clientBase64,
+					}
+					testInboundVless(t, inboundOptions, outboundOptions)
+					t.Run("xtls-rprx-vision", func(t *testing.T) {
+						outboundOptions := outboundOptions
+						outboundOptions.Flow = "xtls-rprx-vision"
+						testInboundVless(t, inboundOptions, outboundOptions)
+					})
+				})
 			}
-			outboundOptions := outbound.VlessOption{
-				Encryption: "mlkem768x25519plus." + mode + ".0rtt." + passwordBase64 + "." + clientBase64,
-			}
-			testInboundVless(t, inboundOptions, outboundOptions)
-			t.Run("xtls-rprx-vision", func(t *testing.T) {
-				outboundOptions := outboundOptions
-				outboundOptions.Flow = "xtls-rprx-vision"
-				testInboundVless(t, inboundOptions, outboundOptions)
-			})
 		})
+
 	}
 }
 

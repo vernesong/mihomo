@@ -87,7 +87,11 @@ func (s *serverHandler) handle() {
 		_ = s.handleMessage()
 	}()
 
-	<-s.quicConn.HandshakeComplete()
+	select {
+	case <-s.quicConn.HandshakeComplete(): // this chan maybe not closed if handshake never complete
+	case <-time.After(s.quicConn.Config().HandshakeIdleTimeout): // HandshakeIdleTimeout in real conn.Config() never be zero
+	}
+
 	time.AfterFunc(s.AuthenticationTimeout, func() {
 		if s.v4Handler != nil {
 			if s.v4Handler.AuthOk() {

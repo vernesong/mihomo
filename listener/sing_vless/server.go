@@ -230,7 +230,7 @@ func (l *Listener) HandleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbou
 	ctx := sing.WithAdditions(context.TODO(), additions...)
 	if l.decryption != nil {
 		var err error
-		conn, err = l.decryption.Handshake(conn)
+		conn, err = l.decryption.Handshake(conn, nil)
 		if err != nil {
 			return
 		}
