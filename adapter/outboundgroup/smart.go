@@ -163,19 +163,12 @@ func (s *Smart) GetConfigFilename() string {
 
 func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {
 	proxies := s.GetProxies(true)
-
 	if len(proxies) == 0 {
 		return nil, errors.New("no proxy available")
 	}
 
-	triedProxies := make(map[string]bool)
-
-	if s.store != nil && s.store.CheckNetworkFailure(s.Name(), s.configName) {
-		proxy := s.fallbackToLoadBalance(metadata, proxies)
-		if proxy == nil {
-			return nil, errors.New("no suitable proxy found in network failure mode")
-		}
-		triedProxies[proxy.Name()] = true
+	tryDial := func(proxy C.Proxy, proxies []C.Proxy, triedProxies map[string]bool, maxRetries int, wrapMetric bool) (C.Conn, error) {
+		var finalErr error
 		for i := 0; i < maxRetries; i++ {
 			historyConnectTime := s.getHistoryConnectStats(metadata, proxy)
 			const thresholdRatio = 2.0
@@ -189,110 +182,70 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 				timeout = C.DefaultTCPTimeout
 			}
 			ctxDial, cancel := context.WithTimeout(ctx, timeout)
+			start := time.Now()
 			c, err := proxy.DialContext(ctxDial, metadata)
 			cancel()
+			connectTime := time.Since(start).Milliseconds()
+
 			if err == nil {
-				wrappedConn, wrapErr := s.wrapConnWithMetric(c, proxy, metadata, 0)
-				if wrapErr != nil {
-					c.Close()
-					if i == maxRetries-1 {
-						break
+				if s.store != nil && wrapMetric {
+					wrappedConn, wrapErr := s.wrapConnWithMetric(c, proxy, metadata, connectTime)
+					if wrapErr != nil {
+						c.Close()
+						finalErr = wrapErr
+						if i == maxRetries-1 {
+							break
+						}
+						if s.selected != "" {
+							break
+						}
+						proxy = s.selectNextProxy(metadata, proxies, triedProxies)
+						if proxy == nil {
+							break
+						}
+						triedProxies[proxy.Name()] = true
+						continue
 					}
-					proxy = s.selectNextProxy(metadata, proxies, triedProxies)
-					if proxy == nil {
-						break
-					}
-					triedProxies[proxy.Name()] = true
-					continue
+					return wrappedConn, nil
 				}
-				return wrappedConn, nil
+				c.AppendToChains(s)
+				return c, nil
 			}
 
+			finalErr = err
 			if i == maxRetries-1 {
 				break
 			}
-
+			if s.selected != "" {
+				break
+			}
 			proxy = s.selectNextProxy(metadata, proxies, triedProxies)
 			if proxy == nil {
 				break
 			}
-
 			triedProxies[proxy.Name()] = true
 		}
+		return nil, finalErr
+	}
 
-		return nil, errors.New("no proxy available")
+	triedProxies := make(map[string]bool)
+
+	if s.store != nil && s.store.CheckNetworkFailure(s.Name(), s.configName) {
+		proxy := s.fallbackToLoadBalance(metadata, proxies)
+		if proxy == nil {
+			return nil, errors.New("no proxy found in network failure mode")
+		}
+		triedProxies[proxy.Name()] = true
+		return tryDial(proxy, proxies, triedProxies, maxRetries, true)
 	}
 
 	proxy := s.selectProxy(metadata, false)
 	if proxy == nil {
 		proxy = proxies[0]
 	}
-
 	triedProxies = make(map[string]bool)
 	triedProxies[proxy.Name()] = true
-
-	var finalErr error
-
-	handleFailure := func(err error, i int) bool {
-		finalErr = err
-		if s.store != nil {
-			s.recordConnectionStats("failed", metadata, proxy, 0, 0, 0, 0, 0, 0, 0, false, err)
-			if i == maxRetries-1 {
-				domain := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
-				if domain != "" {
-					s.store.MarkConnectionFailed(s.Name(), s.configName, domain)
-				}
-				return false
-			}
-		}
-		triedProxies[proxy.Name()] = true
-		proxy = s.selectNextProxy(metadata, proxies, triedProxies)
-		if proxy == nil {
-			return false
-		}
-		return true
-	}
-
-	for i := 0; i < maxRetries; i++ {
-		historyConnectTime := s.getHistoryConnectStats(metadata, proxy)
-		const thresholdRatio = 2.0
-		var timeout time.Duration
-		if historyConnectTime > 0 {
-			timeout = time.Duration(float64(historyConnectTime)*thresholdRatio) * time.Millisecond
-			if timeout > C.DefaultTCPTimeout {
-				timeout = C.DefaultTCPTimeout
-			}
-		} else {
-			timeout = C.DefaultTCPTimeout
-		}
-		ctxDial, cancel := context.WithTimeout(ctx, timeout)
-		start := time.Now()
-		c, err := proxy.DialContext(ctxDial, metadata)
-		cancel()
-		connectTime := time.Since(start).Milliseconds()
-
-		if err == nil {
-			if s.store != nil {
-				wrappedConn, wrapErr := s.wrapConnWithMetric(c, proxy, metadata, connectTime)
-				if wrapErr != nil {
-					c.Close()
-					if !handleFailure(wrapErr, i) {
-						break
-					}
-					continue
-				}
-				return wrappedConn, nil
-			}
-			c.AppendToChains(s)
-			return c, nil
-		}
-
-		if !handleFailure(err, i) {
-			break
-		}
-	}
-
-	return nil, finalErr
+	return tryDial(proxy, proxies, triedProxies, maxRetries, true)
 }
 
 func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (pc C.PacketConn, err error) {
@@ -339,6 +292,9 @@ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 			s.recordConnectionStats("failed", metadata, proxy, 0, 0, 0, 0, 0, 0, 0, false, err)
 		}
 		triedProxies[proxy.Name()] = true
+		if s.selected != "" {
+			break
+		}
 		proxy = s.selectNextProxy(metadata, proxies, triedProxies)
 		if proxy == nil {
 			break
@@ -699,10 +655,7 @@ func (s *Smart) selectProxy(metadata *C.Metadata, touch bool) C.Proxy {
 	if s.selected != "" {
 		for _, p := range proxies {
 			if p.Name() == s.selected {
-				if p.AliveForTestUrl(s.testUrl) {
-					return p
-				}
-				break
+				return p
 			}
 		}
 	}
@@ -808,6 +761,26 @@ func (s *Smart) selectNextProxy(metadata *C.Metadata, availableProxies []C.Proxy
 		return nil
 	}
 
+	findFirstAvailable := func(names []string) C.Proxy {
+		for _, node := range names {
+			if node != "" && !triedProxies[node] {
+				if proxy := findProxyByName(node); proxy != nil {
+					return proxy
+				}
+			}
+		}
+		return nil
+	}
+
+	if s.store == nil {
+		for _, p := range availableProxies {
+			if !triedProxies[p.Name()] && p.AliveForTestUrl(s.testUrl) {
+				return p
+			}
+		}
+		return nil
+	}
+
 	weightType := smart.WeightTypeTCP
 	if metadata.NetWork == C.UDP {
 		weightType = smart.WeightTypeUDP
@@ -816,11 +789,9 @@ func (s *Smart) selectNextProxy(metadata *C.Metadata, availableProxies []C.Proxy
 	domain := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
 	if domain != "" {
 		bestNodes, _, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, domain, weightType, false)
-		for _, node := range bestNodes {
-			if err == nil && node != "" && !triedProxies[node] {
-				if proxy := findProxyByName(node); proxy != nil {
-					return proxy
-				}
+		if err == nil {
+			if proxy := findFirstAvailable(bestNodes); proxy != nil {
+				return proxy
 			}
 		}
 	}
@@ -834,11 +805,9 @@ func (s *Smart) selectNextProxy(metadata *C.Metadata, availableProxies []C.Proxy
 			asnWeightType = smart.WeightTypeUDPASN + ":" + asnNumber
 		}
 		bestNodes, _, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, asnNumber, asnWeightType, false)
-		for _, node := range bestNodes {
-			if err == nil && node != "" && !triedProxies[node] {
-				if proxy := findProxyByName(node); proxy != nil {
-					return proxy
-				}
+		if err == nil {
+			if proxy := findFirstAvailable(bestNodes); proxy != nil {
+				return proxy
 			}
 		}
 	}
