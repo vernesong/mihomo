@@ -9,10 +9,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"regexp"
 
 	"github.com/metacubex/mihomo/common/cmd"
 	"github.com/metacubex/mihomo/common/lru"
 	"github.com/metacubex/mihomo/log"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 const (
@@ -85,6 +88,8 @@ var (
 
 	cachedMemoryLimit float64
 	memoryLimitOnce   sync.Once
+
+	domainCache *lru.LruCache[string, string]
 )
 
 type (
@@ -158,15 +163,101 @@ func FormatDBKey(first string, parts ...string) string {
 	return strings.Join(elements, "/")
 }
 
-// 获取有效顶级域名加一级域名
-func GetEffectiveDomain(host string, dstIP string) string {
-	if host != "" {
-		return host
+// 获取有效顶级域名加一二级域名并归一
+func GetEffectiveDomain(host string, dstIP string) (string, string) {
+	rawHost := host
+
+	if host == "" {
+		if dstIP != "" {
+			return dstIP, dstIP
+		}
+		return "", ""
 	}
-	if dstIP != "" {
-		return dstIP
+
+	h := strings.ToLower(host)
+
+	validLabel := regexp.MustCompile(`^[a-z0-9-]+$`)
+	hexRandom := regexp.MustCompile(`^[0-9a-f]{8,}$`)
+
+	compute := func() string {
+		parts := strings.Split(h, ".")
+
+		reg, err := publicsuffix.EffectiveTLDPlusOne(h)
+		if err != nil || reg == "" || !(h == reg || strings.HasSuffix(h, "."+reg)) {
+			if len(parts) >= 2 {
+				reg = strings.Join(parts[len(parts)-2:], ".")
+			} else {
+				return h
+			}
+		}
+
+		var sub string
+		if h == reg {
+			sub = ""
+		} else {
+			sub = strings.TrimSuffix(h, "."+reg)
+		}
+
+		if sub == "" {
+			return reg
+		}
+
+		labels := strings.Split(sub, ".")
+		last := labels[len(labels)-1]
+
+		if strings.Contains(last, "-") {
+			last = "*"
+		} else if hexRandom.MatchString(last) {
+			last = "*"
+		} else {
+			letters := 0
+			digits := 0
+			for _, r := range last {
+				if r >= 'a' && r <= 'z' {
+					letters++
+				} else if r >= '0' && r <= '9' {
+					digits++
+				}
+			}
+			if letters > 0 && digits > 0 {
+				if len(last) > 10 || (digits > 0 && float64(digits)/float64(len(last)) > 0.6) {
+					last = "*"
+				}
+			}
+		}
+
+		if !validLabel.MatchString(last) || strings.HasPrefix(last, "-") || strings.HasSuffix(last, "-") {
+			last = "*"
+		}
+
+		var normalizedSub string
+		if len(labels) == 1 {
+			normalizedSub = last
+		} else {
+			normalizedSub = "*." + last
+		}
+
+		if normalizedSub == "" || normalizedSub == "*" || normalizedSub == "*.*" {
+			return "*." + reg
+		}
+
+		return normalizedSub + "." + reg
 	}
-	return ""
+
+	if domainCache != nil {
+		if val, _ := domainCache.GetOrStore(h, func() string {
+			return compute()
+		}); val != "" {
+			return val, rawHost
+		}
+	}
+
+	final := compute()
+	if domainCache != nil {
+		domainCache.Set(h, final)
+	}
+
+	return final, rawHost
 }
 
 // 限制值在指定范围内

@@ -30,40 +30,35 @@ func InitializeCache() {
 		lru.WithSize[string, interface{}](globalCacheParams.CacheMaxSize),
 		lru.WithAge[string, interface{}](CacheMaxAge),
 	)
+
+	domainCache = lru.New[string, string](
+		lru.WithSize[string, string](globalCacheParams.MaxDomains),
+		lru.WithAge[string, string](CacheMaxAge),
+	)
 }
 
 // 从全局缓存获取值
 func GetCacheValue(cacheKey string) (interface{}, bool) {
-	globalCacheLock.RLock()
-	defer globalCacheLock.RUnlock()
 	return dataCache.Get(cacheKey)
 }
 
 // 设置全局缓存值
 func SetCacheValue(cacheKey string, value interface{}) {
-	globalCacheLock.Lock()
-	defer globalCacheLock.Unlock()
 	dataCache.Set(cacheKey, value)
 }
 
 // 删除全局缓存值
 func DeleteCacheValue(cacheKey string) {
-	globalCacheLock.Lock()
-	defer globalCacheLock.Unlock()
 	dataCache.Delete(cacheKey)
 }
 
 // 按前缀获取缓存值
 func GetCacheValuesByPrefix(prefix string) map[string]interface{} {
-	globalCacheLock.RLock()
-	defer globalCacheLock.RUnlock()
 	return dataCache.FilterByKeyPrefix(prefix)
 }
 
 // 按前缀移除缓存值
 func RemoveCacheValuesByPrefix(prefix string) {
-	globalCacheLock.Lock()
-	defer globalCacheLock.Unlock()
 	dataCache.RemoveByKeyPrefix(prefix)
 }
 
@@ -349,6 +344,11 @@ func (s *Store) AdjustCacheParameters() {
 		lru.WithAge[string, interface{}](cacheMaxAge),
 	)
 
+	domainCache = lru.New[string, string](
+		lru.WithSize[string, string](globalCacheParams.MaxDomains),
+		lru.WithAge[string, string](cacheMaxAge),
+	)
+
 	var entries map[string]interface{}
 	var preserveRatio float64
 
@@ -464,6 +464,8 @@ func ClearCacheByLevel(level string, config string, group string) {
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeRanking, config, group, ""))
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypePrefetch, config, group, ""))
 	}
+
+	domainCache.Clear()
 }
 
 // 从数据库结果更新缓存

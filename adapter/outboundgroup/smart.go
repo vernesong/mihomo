@@ -309,7 +309,7 @@ func (s *Smart) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 	if proxy != nil && s.store != nil {
 		domain := ""
 		if metadata != nil {
-			domain = smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
+			domain, _ = smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
 			if domain != "" {
 				s.store.StoreUnwrapResult(s.Name(), s.configName, domain, proxy.Name())
 			}
@@ -724,7 +724,7 @@ func (s *Smart) selectProxy(metadata *C.Metadata, touch bool) C.Proxy {
 	}
 
 	// 尝试使用域名信息选择
-	domain := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
+	domain, _ := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
 	if domain != "" {
 		if proxy := trySelector(domain, weightType); proxy != nil {
 			return proxy
@@ -786,7 +786,7 @@ func (s *Smart) selectNextProxy(metadata *C.Metadata, availableProxies []C.Proxy
 		weightType = smart.WeightTypeUDP
 	}
 
-	domain := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
+	domain, _ := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
 	if domain != "" {
 		bestNodes, _, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, domain, weightType, false)
 		if err == nil {
@@ -972,7 +972,7 @@ func (s *Smart) getHistoryConnectStats(metadata *C.Metadata, proxy C.Proxy) (his
 	if s.store == nil || proxy == nil || metadata == nil {
 		return 0
 	}
-	domain := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
+	domain, _ := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
 	if domain == "" {
 		return 0
 	}
@@ -991,7 +991,7 @@ func (s *Smart) getHistoryConnectStats(metadata *C.Metadata, proxy C.Proxy) (his
 
 func (s *Smart) checkNodeQualityDegradation(
 	metadata *C.Metadata, proxy C.Proxy, atomicRecord *smart.AtomicStatsRecord,
-	domain, proxyName string,
+	addressDisplay, proxyName string,
 	newWeight, oldWeight float64,
 	connectionDuration int64,
 	uploadTotal, downloadTotal float64,
@@ -1003,7 +1003,7 @@ func (s *Smart) checkNodeQualityDegradation(
 	if connectionDuration > 1000 && downloadTotal == 0 && uploadTotal == 0 {
 		degradedWeight := math.Max(0.1, newWeight*0.3)
 		log.Debugln("[Smart] Zero-traffic connection detected: [%s] for domain [%s], conn time: %dms, forcing weight degradation from %.4f to %.4f (%s)",
-			proxyName, domain, connectionDuration, newWeight, degradedWeight, weightType)
+			proxyName, addressDisplay, connectionDuration, newWeight, degradedWeight, weightType)
 		return degradedWeight, true
 	}
 
@@ -1029,7 +1029,7 @@ func (s *Smart) checkNodeQualityDegradation(
 			if err == nil && (!ok && (status == 403 || status == 429 || status == 407)) {
 				degradedWeight := math.Max(0.1, newWeight*0.3)
 				log.Debugln("[Smart] HTTPS connection detected abnormal response [%d], [%s] for domain [%s], degrade weight from %.4f to %.4f (%s)",
-					status, proxyName, metadata.Host, newWeight, degradedWeight, weightType)
+					status, proxyName, addressDisplay, newWeight, degradedWeight, weightType)
 				return degradedWeight, true
 			}
 		}
@@ -1095,7 +1095,7 @@ func (s *Smart) checkNodeQualityDegradation(
 
 				log.Debugln("[Smart] Node quality degraded: [%s] for domain [%s], "+
 					"weight from %.4f to %.4f (%.1f%%), limited to %.4f (%s)",
-					proxyName, domain, oldWeight, newWeight, weightChangeRatio*100,
+					proxyName, addressDisplay, oldWeight, newWeight, weightChangeRatio*100,
 					limitedWeight, weightType)
 
 				return limitedWeight, true
@@ -1272,7 +1272,7 @@ func formatTimeUnit(val float64) string {
 
 // 日志记录
 func (s *Smart) logConnectionStats(record *smart.StatsRecord, metadata *C.Metadata, baseWeight, priorityFactor float64,
-	domain, proxyName string, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate float64,
+	addressDisplay, proxyName string, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate float64,
 	connectionDuration int64, asnInfo string, isModelPredicted bool) {
 
 	var tcpAsnWeight, udpAsnWeight float64
@@ -1304,7 +1304,7 @@ func (s *Smart) logConnectionStats(record *smart.StatsRecord, metadata *C.Metada
 		"- Current: (Up: [%s], Down: [%s], Max Up Speed: [%s], Max Down Speed: [%s], Duration: [%s]) "+
 		"- History: (Success: [%d], Failure: [%d], Connect: [%s], Latency: [%s], Total Up: [%s], Total Down: [%s], Max Up Speed: [%s], Max Down Speed: [%s], Avg Duration: [%s])",
 		weightSource, record.Weights[smart.WeightTypeTCP], record.Weights[smart.WeightTypeUDP], tcpAsnWeight, udpAsnWeight, baseWeight, priorityFactor,
-		s.Name(), proxyName, strings.ToUpper(metadata.NetWork.String()), domain, asnDisplayInfo,
+		s.Name(), proxyName, strings.ToUpper(metadata.NetWork.String()), addressDisplay, asnDisplayInfo,
 		formatTrafficUnit(uploadTotal*1024*1024, false),
 		formatTrafficUnit(downloadTotal*1024*1024, false),
 		formatTrafficUnit(maxUploadRate*1024, true),
@@ -1380,9 +1380,14 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 		return
 	}
 
-	domain := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
+	domain, rawDomain := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
 	if domain == "" {
 		return
+	}
+
+	addressDisplay := rawDomain
+	if rawDomain != "" && domain != "" && rawDomain != domain {
+		addressDisplay = fmt.Sprintf("%s (Wildcard: %s)", rawDomain, domain)
 	}
 
 	if status == "failed" {
@@ -1558,7 +1563,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 
 			degradedWeight, isDegraded = s.checkNodeQualityDegradation(
 				metadata, proxy, atomicRecord,
-				domain, proxy.Name(), calculatedWeight, oldWeight,
+				addressDisplay, proxy.Name(), calculatedWeight, oldWeight,
 				connectionDuration, uploadTotalMB, downloadTotalMB,
 				maxUploadRateKB, maxDownloadRateKB, historyMaxUploadRateKB, historyMaxDownloadRateKB,
 				historyUploadTotal, historyDownloadTotal, success, weightType,
@@ -1583,13 +1588,13 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 	statsSnapshot := atomicRecord.CreateStatsSnapshot()
 
 	if isDegraded {
-		go s.cleanupDegradedNodePreferenceCache(metadata, domain, proxy.Name(), calculatedWeight, weightType, asnInfo)
+		go s.cleanupDegradedNodePreferenceCache(metadata, domain, addressDisplay, proxy.Name(), calculatedWeight, weightType, asnInfo)
 	}
 
 	// 日志输出
 	if status == "closed" {
 		if !fromLongConnProcess {
-			s.logConnectionStats(statsSnapshot, metadata, baseWeight, priorityFactor, domain, proxy.Name(),
+			s.logConnectionStats(statsSnapshot, metadata, baseWeight, priorityFactor, addressDisplay, proxy.Name(),
 				uploadTotalMB, downloadTotalMB, maxUploadRateKB, maxDownloadRateKB, connectionDuration, asnInfo, isModelPredicted)
 		}
 	}
@@ -1702,7 +1707,7 @@ func (s *Smart) processLongConnections(threshold time.Duration) {
 
 }
 
-func (s *Smart) cleanupDegradedNodePreferenceCache(metadata *C.Metadata, domain string, nodeName string, currentWeight float64, weightType string, asnInfo string) {
+func (s *Smart) cleanupDegradedNodePreferenceCache(metadata *C.Metadata, domain, addressDisplay string, nodeName string, currentWeight float64, weightType string, asnInfo string) {
 	if s.store == nil {
 		return
 	}
@@ -1727,7 +1732,7 @@ func (s *Smart) cleanupDegradedNodePreferenceCache(metadata *C.Metadata, domain 
 	if err == nil && bestNode != "" && bestWeight > currentWeight {
 		s.store.StorePrefetchResult(s.Name(), s.configName, domain, weightType, bestNode, bestWeight)
 		log.Debugln("[Smart] Added new prefetch result for domain: [%s] -> [%s] (weight: %.4f, type: %s)",
-			domain, bestNode, bestWeight, weightType)
+			addressDisplay, bestNode, bestWeight, weightType)
 	}
 
 	// 处理ASN相关缓存

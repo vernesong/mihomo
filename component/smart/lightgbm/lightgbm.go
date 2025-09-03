@@ -1101,7 +1101,7 @@ func CreateModelInputFromStats(
 
 	if metadata != nil {
 		input.DestIPASN = metadata.DstIPASN
-		input.Host = metadata.Host
+		input.Host, _ = smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
 		if metadata.DstIP.IsValid() {
 			input.DestIP = metadata.DstIP.String()
 		}
