@@ -339,7 +339,7 @@ func (p *Proxy) StatusTest(ctx context.Context, url string, expectedStatus utils
 	}
 
 	client := http.Client{
-		Timeout:   5 * time.Second,
+		Timeout:   20 * time.Second,
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -357,42 +357,68 @@ func (p *Proxy) StatusTest(ctx context.Context, url string, expectedStatus utils
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 
+	var headStatusCode int
 	resp, err := client.Do(req)
 	if err != nil {
 		if netErr, okTimeout := err.(net.Error); okTimeout && netErr.Timeout() {
-			return 599, true, nil
+			headStatusCode = 599
+		} else {
+			return 0, false, err
 		}
-		return 0, false, err
+	} else {
+		headStatusCode = resp.StatusCode
 	}
 
 	banHeadStatus := map[int]bool{
 		http.StatusForbidden:        true, // 403
-		520:                        true, // Cloudflare 520
+		520:                         true, // Cloudflare 520
 		http.StatusMethodNotAllowed: true, // 405
 		http.StatusNotImplemented:   true, // 501
+		599:                         true, // 超时
 	}
 
-	if resp != nil && banHeadStatus[resp.StatusCode] && req.Method == http.MethodHead {
-		_ = resp.Body.Close()
+	if banHeadStatus[headStatusCode] {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
 		getReq, err2 := http.NewRequest(http.MethodGet, url, nil)
 		if err2 != nil {
-			return 0, false, err2
+			return uint16(headStatusCode), false, nil
 		}
 		getReq = getReq.WithContext(ctx)
 		getReq.Header = req.Header.Clone()
 
-		resp, err = client.Do(getReq)
-		if err != nil {
-			if netErr, okTimeout := err.(net.Error); okTimeout && netErr.Timeout() {
-				return 599, true, nil
+		getResp, getErr := client.Do(getReq)
+		var getStatusCode int
+		if getErr != nil || getResp == nil {
+			if netErr, okTimeout := getErr.(net.Error); okTimeout && netErr.Timeout() {
+				getStatusCode = 599
+			} else {
+				return uint16(headStatusCode), false, nil
 			}
-			return 0, false, err
+		} else {
+			getStatusCode = getResp.StatusCode
+			defer getResp.Body.Close()
+		}
+
+		if headStatusCode == getStatusCode {
+			status = uint16(headStatusCode)
+			ok = expectedStatus == nil || expectedStatus.Check(status)
+			if banHeadStatus[int(status)] {
+				ok = false
+			}
+			return status, ok, nil
+		} else {
+			return uint16(getStatusCode), false, nil
 		}
 	}
 
-	defer resp.Body.Close()
+	if resp != nil {
+		defer resp.Body.Close()
+		status = uint16(resp.StatusCode)
+		ok = expectedStatus == nil || expectedStatus.Check(status)
+		return status, ok, nil
+	}
 
-	status = uint16(resp.StatusCode)
-	ok = expectedStatus == nil || expectedStatus.Check(status)
-	return status, ok, nil
+	return 0, false, fmt.Errorf("unknown error in StatusTest")
 }

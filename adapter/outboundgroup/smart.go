@@ -1019,7 +1019,7 @@ func (s *Smart) checkNodeQualityDegradation(
 	}
 
 	// 低流量连接检查异常状态码
-	if downloadTotal < 0.01 && metadata != nil && metadata.Host != "" && metadata.DstPort == 443 && metadata.NetWork == C.TCP {
+	if downloadTotal < 0.03 && metadata != nil && metadata.Host != "" && metadata.DstPort == 443 && metadata.NetWork == C.TCP {
 		needTest := false
 		cooldownSeconds := int64(300)
 		now := time.Now().Unix()
@@ -1034,7 +1034,7 @@ func (s *Smart) checkNodeQualityDegradation(
 			expectedStatus, _ := utils.NewUnsignedRanges[uint16]("200-399")
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			url := "https://" + metadata.Host + "/"
+			url := "https://" + metadata.Host + "/?z=" + strconv.FormatInt(rand.Int63(), 10)
 			status, ok, err := proxy.StatusTest(ctx, url, expectedStatus)
 			atomicRecord.Set("status", int64(status))
 			if err == nil && !ok {
