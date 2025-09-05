@@ -183,7 +183,6 @@ func (f *Fetcher[V]) startPullLoop(forceUpdate bool) (err error) {
 	if f.vehicle.Type() == types.File {
 		f.watcher, err = fswatch.NewWatcher(fswatch.Options{
 			Path:     []string{f.vehicle.Path()},
-			Direct:   true,
 			Callback: f.updateCallback,
 		})
 		if err != nil {

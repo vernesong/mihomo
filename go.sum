@@ -98,8 +98,8 @@ github.com/metacubex/amneziawg-go v0.0.0-20250902133113-a7f637c14281 h1:09EM0sOL
 github.com/metacubex/amneziawg-go v0.0.0-20250902133113-a7f637c14281/go.mod h1:MsM/5czONyXMJ3PRr5DbQ4O/BxzAnJWOIcJdLzW6qHY=
 github.com/metacubex/ascon v0.1.0 h1:6ZWxmXYszT1XXtwkf6nxfFhc/OTtQ9R3Vyj1jN32lGM=
 github.com/metacubex/ascon v0.1.0/go.mod h1:eV5oim4cVPPdEL8/EYaTZ0iIKARH9pnhAK/fcT5Kacc=
-github.com/metacubex/bart v0.20.5 h1:XkgLZ17QxfxkqKdGsojoM2Zu01mmHyyQSFzt2/calTM=
-github.com/metacubex/bart v0.20.5/go.mod h1:DCcyfP4MC+Zy7sLK7XeGuMw+P5K9mIRsYOBgiE8icsI=
+github.com/metacubex/bart v0.24.0 h1:EyNiPeVOlg0joSHTzi5oentI0j5M89utUq/5dd76pWM=
+github.com/metacubex/bart v0.24.0/go.mod h1:DCcyfP4MC+Zy7sLK7XeGuMw+P5K9mIRsYOBgiE8icsI=
 github.com/metacubex/bbolt v0.0.0-20250725135710-010dbbbb7a5b h1:j7dadXD8I2KTmMt8jg1JcaP1ANL3JEObJPdANKcSYPY=
 github.com/metacubex/bbolt v0.0.0-20250725135710-010dbbbb7a5b/go.mod h1:+WmP0VJZDkDszvpa83HzfUp6QzARl/IKkMorH4+nODw=
 github.com/metacubex/blake3 v0.1.0 h1:KGnjh/56REO7U+cgZA8dnBhxdP7jByrG7hTP+bu6cqY=

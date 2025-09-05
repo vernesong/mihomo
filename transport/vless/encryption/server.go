@@ -17,7 +17,6 @@ import (
 )
 
 type ServerSession struct {
-	Expire  time.Time
 	PfsKey  []byte
 	NfsKeys sync.Map
 }
@@ -28,16 +27,19 @@ type ServerInstance struct {
 	Hash32s       [][32]byte
 	RelaysLength  int
 	XorMode       uint32
-	Seconds       uint32
+	SecondsFrom   int64
+	SecondsTo     int64
 	PaddingLens   [][3]int
 	PaddingGaps   [][3]int
 
 	RWLock   sync.RWMutex
-	Sessions map[[16]byte]*ServerSession
 	Closed   bool
+	Lasts    map[int64][16]byte
+	Tickets  [][16]byte
+	Sessions map[[16]byte]*ServerSession
 }
 
-func (i *ServerInstance) Init(nfsSKeysBytes [][]byte, xorMode, seconds uint32, padding string) (err error) {
+func (i *ServerInstance) Init(nfsSKeysBytes [][]byte, xorMode uint32, secondsFrom, secondsTo int64, padding string) (err error) {
 	if i.NfsSKeys != nil {
 		return errors.New("already initialized")
 	}
@@ -66,8 +68,15 @@ func (i *ServerInstance) Init(nfsSKeysBytes [][]byte, xorMode, seconds uint32, p
 	}
 	i.RelaysLength -= 32
 	i.XorMode = xorMode
-	if seconds > 0 {
-		i.Seconds = seconds
+	i.SecondsFrom = secondsFrom
+	i.SecondsTo = secondsTo
+	err = ParsePadding(padding, &i.PaddingLens, &i.PaddingGaps)
+	if err != nil {
+		return
+	}
+	if i.SecondsFrom > 0 || i.SecondsTo > 0 {
+		i.Lasts = make(map[int64][16]byte)
+		i.Tickets = make([][16]byte, 0, 1024)
 		i.Sessions = make(map[[16]byte]*ServerSession)
 		go func() {
 			for {
@@ -77,17 +86,24 @@ func (i *ServerInstance) Init(nfsSKeysBytes [][]byte, xorMode, seconds uint32, p
 					i.RWLock.Unlock()
 					return
 				}
-				now := time.Now()
-				for ticket, session := range i.Sessions {
-					if now.After(session.Expire) {
+				minute := time.Now().Unix() / 60
+				last := i.Lasts[minute]
+				delete(i.Lasts, minute)
+				delete(i.Lasts, minute-1) // for insurance
+				if last != [16]byte{} {
+					for j, ticket := range i.Tickets {
 						delete(i.Sessions, ticket)
+						if ticket == last {
+							i.Tickets = i.Tickets[j+1:]
+							break
+						}
 					}
 				}
 				i.RWLock.Unlock()
 			}
 		}()
 	}
-	return ParsePadding(padding, &i.PaddingLens, &i.PaddingGaps)
+	return
 }
 
 func (i *ServerInstance) Close() (err error) {
@@ -131,7 +147,7 @@ func (i *ServerInstance) Handshake(conn net.Conn, fallback *[]byte) (*CommonConn
 				return nil, err
 			}
 			if publicKey.Bytes()[31] > 127 { // we just don't want the observer can change even one bit without breaking the connection, though it has nothing to do with security
-				return nil, errors.New("the highest bit of the last byte of the peer-sent X25519 public key must be 0")
+				return nil, errors.New("the highest bit of the last byte of the peer-sent X25519 public key is not 0")
 			}
 			nfsKey, err = k.ECDH(publicKey)
 			if err != nil {
@@ -179,7 +195,7 @@ func (i *ServerInstance) Handshake(conn net.Conn, fallback *[]byte) (*CommonConn
 	length := DecodeLength(decryptedLength)
 
 	if length == 32 {
-		if i.Seconds == 0 {
+		if i.SecondsFrom == 0 && i.SecondsTo == 0 {
 			return nil, errors.New("0-RTT is not allowed")
 		}
 		encryptedTicket := make([]byte, 32)
@@ -249,15 +265,20 @@ func (i *ServerInstance) Handshake(conn net.Conn, fallback *[]byte) (*CommonConn
 	c.AEAD = NewAEAD(pfsPublicKey, c.UnitedKey, c.UseAES)
 	c.PeerAEAD = NewAEAD(encryptedPfsPublicKey[:1184+32], c.UnitedKey, c.UseAES)
 
-	ticket := make([]byte, 16)
-	rand.Read(ticket)
-	copy(ticket, EncodeLength(int(i.Seconds*4/5)))
-	if i.Seconds > 0 {
+	ticket := [16]byte{}
+	rand.Read(ticket[:])
+	var seconds int64
+	if i.SecondsTo == 0 {
+		seconds = i.SecondsFrom * randBetween(50, 100) / 100
+	} else {
+		seconds = randBetween(i.SecondsFrom, i.SecondsTo)
+	}
+	copy(ticket[:], EncodeLength(int(seconds)))
+	if seconds > 0 {
 		i.RWLock.Lock()
-		i.Sessions[[16]byte(ticket)] = &ServerSession{
-			Expire: time.Now().Add(time.Duration(i.Seconds) * time.Second),
-			PfsKey: pfsKey,
-		}
+		i.Lasts[(time.Now().Unix()+max(i.SecondsFrom, i.SecondsTo))/60+2] = ticket
+		i.Tickets = append(i.Tickets, ticket)
+		i.Sessions[ticket] = &ServerSession{PfsKey: pfsKey}
 		i.RWLock.Unlock()
 	}
 
@@ -266,7 +287,7 @@ func (i *ServerInstance) Handshake(conn net.Conn, fallback *[]byte) (*CommonConn
 	paddingLength, paddingLens, paddingGaps := CreatPadding(i.PaddingLens, i.PaddingGaps)
 	serverHello := make([]byte, pfsKeyExchangeLength+encryptedTicketLength+paddingLength)
 	nfsAEAD.Seal(serverHello[:0], MaxNonce, pfsPublicKey, nil)
-	c.AEAD.Seal(serverHello[:pfsKeyExchangeLength], nil, ticket, nil)
+	c.AEAD.Seal(serverHello[:pfsKeyExchangeLength], nil, ticket[:], nil)
 	padding := serverHello[pfsKeyExchangeLength+encryptedTicketLength:]
 	c.AEAD.Seal(padding[:0], nil, EncodeLength(paddingLength-18), nil)
 	c.AEAD.Seal(padding[:18], nil, padding[18:paddingLength-16], nil)
@@ -300,7 +321,7 @@ func (i *ServerInstance) Handshake(conn net.Conn, fallback *[]byte) (*CommonConn
 	}
 
 	if i.XorMode == 2 {
-		c.Conn = NewXorConn(conn, NewCTR(c.UnitedKey, ticket), NewCTR(c.UnitedKey, iv), 0, 0)
+		c.Conn = NewXorConn(conn, NewCTR(c.UnitedKey, ticket[:]), NewCTR(c.UnitedKey, iv), 0, 0)
 	}
 	return c, nil
 }
