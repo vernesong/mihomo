@@ -32,20 +32,34 @@ var (
 )
 
 type Store struct {
-	db                   *bbolt.DB
-	networkFailureStatus map[string]bool
-	failureStatusLock    sync.RWMutex
-	successCount         map[string]int
-	lastNetworkFailure   map[string]time.Time
+	db *bbolt.DB
+
+	networkFailureManager struct {
+		status         map[string]bool
+		successCount   map[string]int
+		lastFailure    map[string]time.Time
+		lock           sync.RWMutex
+		cacheThrottle  struct {
+			mutex      sync.Mutex
+			lastSet    map[string]time.Time
+			lastClear  map[string]time.Time
+		}
+		writeInterval  time.Duration
+		clearInterval  time.Duration
+	}
 }
 
 func NewStore(db *bbolt.DB) *Store {
 	s := &Store{
-		db:                   db,
-		networkFailureStatus: make(map[string]bool),
-		successCount:         make(map[string]int),
-		lastNetworkFailure:   make(map[string]time.Time),
+		db: db,
 	}
+	s.networkFailureManager.status = make(map[string]bool)
+	s.networkFailureManager.successCount = make(map[string]int)
+	s.networkFailureManager.lastFailure = make(map[string]time.Time)
+	s.networkFailureManager.writeInterval = 5 * time.Second
+	s.networkFailureManager.clearInterval = 5 * time.Second
+	s.networkFailureManager.cacheThrottle.lastSet = make(map[string]time.Time)
+	s.networkFailureManager.cacheThrottle.lastClear = make(map[string]time.Time)
 
 	globalQueueMutex.Lock()
 	if globalOperationQueue == nil {

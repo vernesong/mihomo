@@ -43,7 +43,6 @@ const (
 	DefaultMinSampleCount   = 2
 	RetentionPeriod         = 14 * 24 * time.Hour
 	CacheMaxAge             = 21600
-	NetworkFailureThreshold = 5
 
 	MaxDomainsLimit         = 2000
 	MinDomainsLimit         = 300
@@ -434,26 +433,13 @@ func (s *Store) FlushByLevel(level string, config string, group string) error {
 
 	ClearCacheByLevel(level, config, group)
 
-	s.failureStatusLock.Lock()
 	if level == "all" {
-		s.networkFailureStatus = make(map[string]bool)
-		s.successCount = make(map[string]int)
-		s.lastNetworkFailure = make(map[string]time.Time)
-	} else if level == "group" {
-		groupKey := fmt.Sprintf("%s:%s", group, config)
-		delete(s.networkFailureStatus, groupKey)
-		delete(s.successCount, groupKey)
-		delete(s.lastNetworkFailure, groupKey)
+		s.ClearFailureCache(level, "", "")
 	} else if level == "config" {
-		for key := range s.networkFailureStatus {
-			if strings.Contains(key, ":"+config) {
-				delete(s.networkFailureStatus, key)
-				delete(s.successCount, key)
-				delete(s.lastNetworkFailure, key)
-			}
-		}
+		s.ClearFailureCache(level, config, "")
+	} else if level == "group" {
+		s.ClearFailureCache(level, config, group)
 	}
-	s.failureStatusLock.Unlock()
 
 	if level == "all" {
 		return s.DeleteByPath("smart")

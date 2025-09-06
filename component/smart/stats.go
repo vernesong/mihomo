@@ -21,6 +21,11 @@ var (
 	shardedLocksOnce sync.Once
 )
 
+var (
+	globalAtomicManager *AtomicRecordManager
+	atomicManagerOnce   sync.Once
+)
+
 type AtomicStatsRecord struct {
 	success     atomic.Int64
 	failure     atomic.Int64
@@ -56,11 +61,6 @@ type asnLastUsed struct {
 }
 
 type asnMinHeap []asnLastUsed
-
-var (
-	globalAtomicManager *AtomicRecordManager
-	atomicManagerOnce   sync.Once
-)
 
 func initShardedLocks() {
 	shardedLocksOnce.Do(func() {
@@ -1572,77 +1572,6 @@ func (s *Store) RemoveNodesData(group, config string, nodes []string) error {
 	return nil
 }
 
-// 标记连接失败
-func (s *Store) MarkConnectionFailed(group, config, host string) {
-	if s == nil {
-		return
-	}
-
-	groupKey := fmt.Sprintf("%s:%s", group, config)
-
-	key := FormatCacheKey(KeyTypeFailed, config, group, host)
-	SetCacheValue(key, time.Now())
-
-	failedPrefix := FormatCacheKey(KeyTypeFailed, config, group, "")
-	failedDomains := GetCacheValuesByPrefix(failedPrefix)
-	failedCount := len(failedDomains)
-
-	if failedCount >= NetworkFailureThreshold {
-		s.failureStatusLock.Lock()
-		wasFailure := s.networkFailureStatus[groupKey]
-		s.networkFailureStatus[groupKey] = true
-		s.successCount[groupKey] = 0
-		if !wasFailure {
-			log.Warnln("[SmartStore] Network failure detected for group [%s:%s] after [%d] consecutive failures",
-				group, config, failedCount)
-			s.lastNetworkFailure[groupKey] = time.Now()
-		}
-		s.failureStatusLock.Unlock()
-	}
-}
-
-// 标记连接成功
-func (s *Store) MarkConnectionSuccess(group, config string) {
-	if s == nil {
-		return
-	}
-
-	groupKey := fmt.Sprintf("%s:%s", group, config)
-	s.failureStatusLock.Lock()
-	defer s.failureStatusLock.Unlock()
-
-	if s.networkFailureStatus[groupKey] {
-		if s.successCount == nil {
-			s.successCount = make(map[string]int)
-		}
-
-		s.successCount[groupKey]++
-
-		if s.successCount[groupKey] >= 3 || time.Since(s.lastNetworkFailure[groupKey]) > 30*time.Second {
-			s.networkFailureStatus[groupKey] = false
-			log.Infoln("[SmartStore] Network recovered for group [%s:%s] after %d successful connections",
-				group, config, s.successCount[groupKey])
-			s.successCount[groupKey] = 0
-
-			failedPrefix := FormatCacheKey(KeyTypeFailed, config, group, "")
-			RemoveCacheValuesByPrefix(failedPrefix)
-		}
-	}
-}
-
-// 检查网络故障状态
-func (s *Store) CheckNetworkFailure(group, config string) bool {
-	if s == nil {
-		return false
-	}
-
-	groupKey := fmt.Sprintf("%s:%s", group, config)
-	s.failureStatusLock.RLock()
-	defer s.failureStatusLock.RUnlock()
-
-	return s.networkFailureStatus[groupKey]
-}
-
 // 清理旧的域名记录
 func (s *Store) CleanupOldDomains(group, config string) error {
 	domains := make(map[string]time.Time)
@@ -1735,4 +1664,160 @@ func (s *Store) CleanupExpiredStats(group, config string) error {
 	}
 
 	return nil
+}
+
+func (s *Store) clearThrottlePrefix(prefix string) {
+	n := &s.networkFailureManager
+	n.cacheThrottle.mutex.Lock()
+	for k := range n.cacheThrottle.lastSet {
+		if strings.HasPrefix(k, prefix) {
+			delete(n.cacheThrottle.lastSet, k)
+		}
+	}
+	for k := range n.cacheThrottle.lastClear {
+		if strings.HasPrefix(k, prefix) {
+			delete(n.cacheThrottle.lastClear, k)
+		}
+	}
+	n.cacheThrottle.mutex.Unlock()
+}
+
+// 标记连接失败
+func (s *Store) MarkConnectionFailed(group, config string, proxiesCount int, proxy string) {
+	n := &s.networkFailureManager
+	groupKey := fmt.Sprintf("%s:%s", group, config)
+	key := FormatCacheKey(KeyTypeFailed, config, group, proxy)
+	now := time.Now()
+
+	n.cacheThrottle.mutex.Lock()
+	last := n.cacheThrottle.lastSet[key]
+	if now.Sub(last) >= n.writeInterval {
+		n.cacheThrottle.lastSet[key] = now
+		n.cacheThrottle.mutex.Unlock()
+		SetCacheValue(key, now)
+	} else {
+		n.cacheThrottle.mutex.Unlock()
+	}
+
+	failedPrefix := FormatCacheKey(KeyTypeFailed, config, group, "")
+	failedCount := len(GetCacheValuesByPrefix(failedPrefix))
+	var threshold int
+	if proxiesCount <= 0 {
+		threshold = 3
+	} else {
+		thr := proxiesCount / 2
+		if thr < 3 {
+			thr = 3
+		}
+		if thr > proxiesCount {
+			thr = proxiesCount
+		}
+		threshold = thr
+	}
+
+	n.lock.Lock()
+	defer n.lock.Unlock()
+	if failedCount >= threshold && !n.status[groupKey] {
+		n.status[groupKey] = true
+		n.successCount[groupKey] = 0
+		n.lastFailure[groupKey] = now
+		log.Warnln("[SmartStore] Network failure detected for group [%s:%s] after [%d] consecutive failures", group, config, failedCount)
+	}
+}
+
+// 标记连接成功
+func (s *Store) MarkConnectionSuccess(group, config string) {
+	n := &s.networkFailureManager
+	groupKey := fmt.Sprintf("%s:%s", group, config)
+	n.lock.Lock()
+	defer n.lock.Unlock()
+
+	failedPrefix := FormatCacheKey(KeyTypeFailed, config, group, "")
+	now := time.Now()
+
+	if n.status[groupKey] {
+		n.successCount[groupKey]++
+		if n.successCount[groupKey] >= 3 || now.Sub(n.lastFailure[groupKey]) > 30*time.Second {
+			n.status[groupKey] = false
+			n.successCount[groupKey] = 0
+			log.Infoln("[SmartStore] Network recovered for group [%s:%s]", group, config)
+			RemoveCacheValuesByPrefix(failedPrefix)
+			s.clearThrottlePrefix(failedPrefix)
+		}
+	} else {
+		n.cacheThrottle.mutex.Lock()
+		lastClear := n.cacheThrottle.lastClear[failedPrefix]
+		if now.Sub(lastClear) >= n.clearInterval {
+			n.cacheThrottle.lastClear[failedPrefix] = now
+			n.cacheThrottle.mutex.Unlock()
+			RemoveCacheValuesByPrefix(failedPrefix)
+			s.clearThrottlePrefix(failedPrefix)
+		} else {
+			n.cacheThrottle.mutex.Unlock()
+		}
+	}
+}
+
+// 检查网络故障状态
+func (s *Store) CheckNetworkFailure(group, config string) bool {
+	n := &s.networkFailureManager
+	groupKey := fmt.Sprintf("%s:%s", group, config)
+	n.lock.RLock()
+	defer n.lock.RUnlock()
+	return n.status[groupKey]
+}
+
+// 清理故障缓存
+func (s *Store) ClearFailureCache(level, config, group string) {
+	n := &s.networkFailureManager
+	n.lock.Lock()
+	defer n.lock.Unlock()
+	if level == "all" {
+		n.status = make(map[string]bool)
+		n.successCount = make(map[string]int)
+		n.lastFailure = make(map[string]time.Time)
+		n.cacheThrottle.mutex.Lock()
+		n.cacheThrottle.lastSet = make(map[string]time.Time)
+		n.cacheThrottle.lastClear = make(map[string]time.Time)
+		n.cacheThrottle.mutex.Unlock()
+	} else if level == "group" {
+		groupKey := fmt.Sprintf("%s:%s", group, config)
+		delete(n.status, groupKey)
+		delete(n.successCount, groupKey)
+		delete(n.lastFailure, groupKey)
+		failedPrefix := FormatCacheKey(KeyTypeFailed, config, group, "")
+		n.cacheThrottle.mutex.Lock()
+		for k := range n.cacheThrottle.lastSet {
+			if strings.HasPrefix(k, failedPrefix) {
+				delete(n.cacheThrottle.lastSet, k)
+			}
+		}
+		for k := range n.cacheThrottle.lastClear {
+			if strings.HasPrefix(k, failedPrefix) {
+				delete(n.cacheThrottle.lastClear, k)
+			}
+		}
+		n.cacheThrottle.mutex.Unlock()
+	} else if level == "config" {
+		for key := range n.status {
+			if strings.Contains(key, ":"+config) {
+				delete(n.status, key)
+				delete(n.successCount, key)
+				delete(n.lastFailure, key)
+			}
+		}
+		failedPrefix := FormatCacheKey(KeyTypeFailed, config, "", "")
+		n.cacheThrottle.mutex.Lock()
+		for k := range n.cacheThrottle.lastSet {
+			if strings.HasPrefix(k, failedPrefix) {
+				delete(n.cacheThrottle.lastSet, k)
+			}
+		}
+		for k := range n.cacheThrottle.lastClear {
+			if strings.HasPrefix(k, failedPrefix) {
+				delete(n.cacheThrottle.lastClear, k)
+			}
+		}
+		n.cacheThrottle.mutex.Unlock()
+	}
 }
