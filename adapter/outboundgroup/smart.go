@@ -345,7 +345,7 @@ func (s *Smart) wrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata
 
 	start := time.Now()
 
-	wrappedConn := callback.NewFirstWriteCallBackConn(c, func(err error) {
+	wrappedConn := callback.NewFirstReadCallBackConn(c, func(err error) {
 		latency := time.Since(start).Milliseconds()
 		if err == nil {
 			s.onDialSuccess()
