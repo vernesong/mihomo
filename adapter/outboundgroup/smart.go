@@ -17,6 +17,7 @@ import (
 	"github.com/metacubex/mihomo/common/callback"
 	"github.com/metacubex/mihomo/common/singleflight"
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/mmdb"
 	"github.com/metacubex/mihomo/component/profile/cachefile"
 	"github.com/metacubex/mihomo/component/smart"
 	"github.com/metacubex/mihomo/component/smart/lightgbm"
@@ -82,6 +83,7 @@ type Smart struct {
 	weightModel    *lightgbm.WeightModel
 	strategy       string
 	sampleRate     float64
+	asnAvailable   bool
 }
 
 type (
@@ -428,6 +430,8 @@ func (s *Smart) InitializeCache() {
 		s.startTimedTask(5*time.Minute, flushQueueInterval, "Queue flush", func() {
 			s.store.FlushQueue(false)
 		}, false)
+		// Check ASN database availability
+		s.asnAvailable = mmdb.Verify(C.Path.ASN())
 	})
 
 	s.startTimedTask(5*time.Minute, checkInterval, "Clean up nodes", s.cleanupOrphanedNodeCache, true)
@@ -1205,7 +1209,7 @@ func (s *Smart) saveStatsRecord(cacheKey, domain string, proxy C.Proxy, record *
 }
 
 // 失败连接处理
-func (s *Smart) handleFailedConnection(proxyName, cacheKey, domain string, calculatedWeight float64, weightType string, asnInfo string) (float64, bool) {
+func (s *Smart) handleFailedConnection(proxyName, cacheKey, domain string, calculatedWeight float64, weightType string) (float64, bool) {
 	nodeStateData, _ := s.store.GetNodeStates(s.Name(), s.configName)
 	var nodeState smart.NodeState
 	var isDegraded bool
@@ -1616,7 +1620,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 	var isDegraded bool
 
 	if status == "failed" {
-		degradedWeight, isDegraded = s.handleFailedConnection(proxy.Name(), cacheKey, domain, calculatedWeight, weightType, asnInfo)
+		degradedWeight, isDegraded = s.handleFailedConnection(proxy.Name(), cacheKey, domain, calculatedWeight, weightType)
 	}
 
 	if status == "closed" {
@@ -1950,13 +1954,24 @@ func parseSmartOption(config map[string]any) ([]smartOption, string) {
 }
 
 func (s *Smart) getASNCode(metadata *C.Metadata) string {
-	if metadata == nil || metadata.DstIPASN == "" {
+	if metadata == nil || !metadata.DstIP.IsValid() || metadata.DstIPASN == "unknown" {
 		return ""
 	}
 
-	parts := strings.SplitN(metadata.DstIPASN, " ", 2)
+	if metadata.DstIPASN == "" {
+		if !s.asnAvailable {
+			return ""
+		}
+		asn, aso := mmdb.ASNInstance().LookupASN(metadata.DstIP.AsSlice())
+		if asn == "" {
+			metadata.DstIPASN = "unknown"
+		} else {
+			metadata.DstIPASN = asn + " " + aso
+		}
+		return asn
+	}
 
-	return parts[0]
+	return strings.SplitN(metadata.DstIPASN, " ", 2)[0]
 }
 
 func (s *Smart) Close() error {
