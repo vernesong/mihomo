@@ -217,7 +217,6 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 			}
 
 			finalErr = err
-			s.onDialFailed(proxy.Type(), err, s.GroupBase.healthCheck)
 			if i == maxRetries-1 {
 				break
 			}
@@ -231,6 +230,7 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 			triedProxies[proxy.Name()] = true
 		}
 		if finalErr != nil && s.store != nil {
+			s.onDialFailed(proxy.Type(), finalErr, s.GroupBase.healthCheck)
 			domain, _ := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
 			if domain != "" {
 				s.store.MarkConnectionFailed(s.Name(), s.configName, len(proxies), firstProxyName)
@@ -299,7 +299,6 @@ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 			return pc, nil
 		}
 		finalErr = err
-		s.onDialFailed(proxy.Type(), err, s.GroupBase.healthCheck)
 		if s.store != nil {
 			s.recordConnectionStats("failed", metadata, proxy, 0, 0, 0, 0, 0, 0, 0, false, err)
 		}
@@ -313,6 +312,7 @@ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 		}
 	}
 	if finalErr != nil && s.store != nil {
+		s.onDialFailed(proxy.Type(), finalErr, s.GroupBase.healthCheck)
 		domain, _ := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
 		if domain != "" {
 			s.store.MarkConnectionFailed(s.Name(), s.configName, len(proxies), proxy.Name())
