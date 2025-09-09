@@ -384,10 +384,7 @@ func (s *Smart) Now() string {
 	if s.selected != "" {
 		for _, p := range s.GetProxies(false) {
 			if p.Name() == s.selected {
-				if p.AliveForTestUrl(s.testUrl) {
-					return p.Name()
-				}
-				break
+				return p.Name()
 			}
 		}
 		s.selected = ""
