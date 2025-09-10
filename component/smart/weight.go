@@ -206,29 +206,29 @@ func calculateTrafficFactor(trafficMB, maxRateKB, durationMinutes float64, isSho
 	var baseFactor float64
 	switch {
 	case trafficMB < 0.005: // <5KB
-		baseFactor = 0.08
-	case trafficMB < 0.01: // 5KB~10KB
+		baseFactor = 0.15
+	case trafficMB < 0.01:
 		baseFactor = 0.18 + 0.10*math.Log10(trafficMB/0.005)
 	case trafficMB < 0.05:
-		baseFactor = 0.35 + 0.20*math.Log10(trafficMB/0.01)
+		baseFactor = 0.35 + 0.12*math.Log10(trafficMB/0.01)
 	case trafficMB < 0.1:
-		baseFactor = 0.55 + 0.20*math.Log10(trafficMB/0.05)
+		baseFactor = 0.53 + 0.18*math.Log10(trafficMB/0.05)
 	case trafficMB < 0.5:
-		baseFactor = 0.75 + 0.25*math.Log10(trafficMB/0.1)
+		baseFactor = 0.72 + 0.22*math.Log10(trafficMB/0.1)
 	case trafficMB < 1:
-		baseFactor = 1.0 + 0.20*math.Log10(trafficMB/0.5)
+		baseFactor = 0.98 + 0.18*math.Log10(trafficMB/0.5)
 	case trafficMB < 5:
-		baseFactor = 1.2 + 0.15*math.Log10(trafficMB/1)
+		baseFactor = 1.18 + 0.14*math.Log10(trafficMB/1)
 	case trafficMB < 20:
-		baseFactor = 1.35 + 0.12*math.Log10(trafficMB/5)
+		baseFactor = 1.32 + 0.11*math.Log10(trafficMB/5)
 	case trafficMB < 100:
-		baseFactor = 1.5 + 0.10*math.Log10(trafficMB/20)
+		baseFactor = 1.45 + 0.09*math.Log10(trafficMB/20)
 	case trafficMB < 500:
-		baseFactor = 1.6 + 0.08*math.Log10(trafficMB/100)
+		baseFactor = 1.56 + 0.07*math.Log10(trafficMB/100)
 	case trafficMB < 3000:
-		baseFactor = 1.7 + 0.06*math.Log10(trafficMB/500)
+		baseFactor = 1.66 + 0.05*math.Log10(trafficMB/500)
 	default:
-		baseFactor = 1.8 + 0.05*math.Log10(trafficMB/3000)
+		baseFactor = 1.74 + 0.03*math.Log10(trafficMB/3000)
 	}
 
 	// 吞吐量加成
@@ -243,30 +243,30 @@ func calculateTrafficFactor(trafficMB, maxRateKB, durationMinutes float64, isSho
 	case maxRateKB < 2000:
 		rateBonus = 1.15 + 0.05*((maxRateKB-500)/1500.0)
 	case maxRateKB < 5000:
-		rateBonus = 1.20 + 0.05*((maxRateKB-2000)/3000.0)
+		rateBonus = 1.20 + 0.04*((maxRateKB-2000)/3000.0)
 	case maxRateKB < 20000:
-		rateBonus = 1.25 + 0.05*((maxRateKB-5000)/15000.0)
+		rateBonus = 1.24 + 0.04*((maxRateKB-5000)/15000.0)
 	case maxRateKB < 100000:
-		rateBonus = 1.30 + 0.04*math.Log10(maxRateKB/20000.0)
-		rateBonus = math.Min(rateBonus, 1.35)
+		rateBonus = 1.28 + 0.03*math.Log10(maxRateKB/20000.0)
+		rateBonus = math.Min(rateBonus, 1.32)
 	default:
-		rateBonus = 1.35 + 0.02*math.Log10(maxRateKB/100000.0)
-		rateBonus = math.Min(rateBonus, 1.40)
+		rateBonus = 1.32 + 0.02*math.Log10(maxRateKB/100000.0)
+		rateBonus = math.Min(rateBonus, 1.36)
 	}
 	baseFactor *= rateBonus
 
 	// 平均流量加成
 	var connectionFactor float64
 	if isShort {
-		connectionFactor = 0.8 + 0.2*math.Min(1, throughput/30.0)
+		connectionFactor = 0.85 + 0.15*math.Min(1, throughput/25.0)
 	} else {
 		connectionFactor = 1.0
 		if throughput > 5 {
-			baseFactor *= 1.0 + 0.2*math.Min(1, (throughput-5)/95.0)
+			baseFactor *= 1.0 + 0.15*math.Min(1, (throughput-5)/80.0)
 		}
 	}
 
 	factor := baseFactor * connectionFactor
 
-	return math.Min(1.3, factor)
+	return math.Min(1.25, factor)
 }

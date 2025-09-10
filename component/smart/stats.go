@@ -670,15 +670,15 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
 	baseCount := func() int {
 		switch {
 		case availableNodesCount <= 5:
-			return 1
-		case availableNodesCount <= 10:
 			return 2
-		case availableNodesCount <= 20:
-			return 3
-		case availableNodesCount <= 50:
+		case availableNodesCount <= 10:
 			return 4
+		case availableNodesCount <= 20:
+			return 6
+		case availableNodesCount <= 50:
+			return 8
 		default:
-			return 5
+			return 10
 		}
 	}()
 
@@ -690,16 +690,28 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
 
 	switch {
 	case coverageRatio >= 0.6:
-		requiredNodeCount = baseCount + 1
+		requiredNodeCount = baseCount
+		if requiredNodeCount > 2 {
+			requiredNodeCount = (requiredNodeCount * 3) / 4  // 适当减少
+		}
 	case coverageRatio >= 0.3:
 		requiredNodeCount = baseCount
 	case coverageRatio >= 0.1:
-		requiredNodeCount = (baseCount * 2) / 3
-		if requiredNodeCount < 1 {
-			requiredNodeCount = 1
+		requiredNodeCount = baseCount + 1
+		if requiredNodeCount < 2 {
+			requiredNodeCount = 2
 		}
 	default:
-		requiredNodeCount = 1
+		requiredNodeCount = baseCount + 2
+		if requiredNodeCount < 3 {
+			requiredNodeCount = 3
+		}
+		if requiredNodeCount > availableNodesCount/2 {
+			requiredNodeCount = availableNodesCount / 2
+			if requiredNodeCount < 1 {
+				requiredNodeCount = 1
+			}
+		}
 	}
 
 	if len(nodesWithWeight) >= 3 {
@@ -753,15 +765,15 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
 		}
 	}
 
-	if requiredNodeCount > len(nodesWithWeight) {
-		requiredNodeCount = len(nodesWithWeight)
-	}
-
 	if requiredNodeCount > availableNodesCount/2 {
 		requiredNodeCount = availableNodesCount / 2
 		if requiredNodeCount < 1 {
 			requiredNodeCount = 1
 		}
+	}
+
+	if availableNodesCount > 1 && requiredNodeCount < 2 {
+		requiredNodeCount = 2
 	}
 
 	type nodeWeight struct {
@@ -776,25 +788,13 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
 		return nodeList[i].weight > nodeList[j].weight
 	})
 
-	topN := 3
-	if len(nodeList) < topN {
-		topN = len(nodeList)
-	}
-
 	if len(nodeList) < requiredNodeCount {
-		return nil, nil, errors.New("not enough nodes with valid weights")
-	}
-
-	if topN > requiredNodeCount {
-		topN = requiredNodeCount
-	}
-	if topN == 0 {
 		return nil, nil, errors.New("not enough nodes with valid weights")
 	}
 
 	var bestNodes []string
 	var bestWeights []float64
-	for i := 0; i < topN; i++ {
+	for i := 0; i < len(nodeList); i++ {
 		bestNodes = append(bestNodes, nodeList[i].name)
 		bestWeights = append(bestWeights, nodeList[i].weight)
 	}
@@ -1015,25 +1015,38 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
 
 	var domainItems []prefetchItem
 	var asnItems []prefetchItem
+	var bestNode string
+	var bestWeight float64
 
 	// 域名
 	for domain, activeTypes := range domains {
 		for _, weightType := range activeTypes {
 			bestNodes, bestWeights, err := s.GetBestProxyForTarget(group, config, domain, weightType, true)
-			if err != nil || len(bestNodes) == 0 || bestNodes[0] == "" || bestWeights[0] <= 0 {
+			if err != nil || len(bestNodes) == 0 {
 				continue
 			}
-			bestNode := bestNodes[0]
-			bestWeight := bestWeights[0]
-			if _, exists := availableProxyMap[bestNode]; exists {
-				item := prefetchItem{
-					target:     domain,
-					weightType: weightType,
-					bestNode:   bestNode,
-					bestWeight: bestWeight,
+			found := false
+			for i, node := range bestNodes {
+				if node != "" && bestWeights[i] > 0 {
+					if _, exists := availableProxyMap[node]; exists {
+						bestNode = node
+						bestWeight = bestWeights[i]
+						found = true
+						break
+					}
 				}
-				domainItems = append(domainItems, item)
 			}
+			if !found {
+				continue
+			}
+
+			item := prefetchItem{
+				target:     domain,
+				weightType: weightType,
+				bestNode:   bestNode,
+				bestWeight: bestWeight,
+			}
+			domainItems = append(domainItems, item)
 		}
 	}
 
@@ -1049,20 +1062,32 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
 				continue
 			}
 			bestNodes, bestWeights, err := s.GetBestProxyForTarget(group, config, asn, weightType, true)
-			if err != nil || len(bestNodes) == 0 || bestNodes[0] == "" || bestWeights[0] <= 0 {
+			if err != nil || len(bestNodes) == 0 {
 				continue
 			}
-			bestNode := bestNodes[0]
-			bestWeight := bestWeights[0]
-			if _, exists := availableProxyMap[bestNode]; exists {
-				item := prefetchItem{
-					target:     asn,
-					weightType: weightType,
-					bestNode:   bestNode,
-					bestWeight: bestWeight,
+			var bestNode string
+			var bestWeight float64
+			found := false
+			for i, node := range bestNodes {
+				if node != "" && bestWeights[i] > 0 {
+					if _, exists := availableProxyMap[node]; exists {
+						bestNode = node
+						bestWeight = bestWeights[i]
+						found = true
+						break
+					}
 				}
-				asnItems = append(asnItems, item)
 			}
+			if !found {
+				continue
+			}
+			item := prefetchItem{
+				target:     asn,
+				weightType: weightType,
+				bestNode:   bestNode,
+				bestWeight: bestWeight,
+			}
+			asnItems = append(asnItems, item)
 		}
 	}
 

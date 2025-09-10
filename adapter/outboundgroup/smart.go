@@ -693,17 +693,15 @@ func (s *Smart) selectProxy(metadata *C.Metadata, touch bool) C.Proxy {
 		}
 	}
 
-	findProxyByName := func(name string) C.Proxy {
-		if blockedNodes[name] {
-			return nil
-		}
-
-		for _, p := range proxies {
-			if p.Name() == name {
-				if p.AliveForTestUrl(s.testUrl) {
+	findProxyByName := func(names []string) C.Proxy {
+		for _, name := range names {
+			if blockedNodes[name] {
+				continue
+			}
+			for _, p := range proxies {
+				if p.Name() == name && p.AliveForTestUrl(s.testUrl) {
 					return p
 				}
-				break
 			}
 		}
 		return nil
@@ -717,7 +715,7 @@ func (s *Smart) selectProxy(metadata *C.Metadata, touch bool) C.Proxy {
 	trySelector := func(target string, weightType string) C.Proxy {
 		// 检查解析缓存
 		if cachedProxyName := s.store.GetUnwrapResult(s.Name(), s.configName, target); cachedProxyName != "" {
-			if proxy := findProxyByName(cachedProxyName); proxy != nil {
+			if proxy := findProxyByName([]string{cachedProxyName}); proxy != nil {
 				s.store.DeleteCacheResult(smart.KeyTypeUnwrap, s.Name(), s.configName, target)
 				return proxy
 			}
@@ -725,15 +723,15 @@ func (s *Smart) selectProxy(metadata *C.Metadata, touch bool) C.Proxy {
 
 		// 检查预解析缓存
 		if cachedProxyName, _ := s.store.GetPrefetchResult(s.Name(), s.configName, target, weightType); cachedProxyName != "" {
-			if proxy := findProxyByName(cachedProxyName); proxy != nil {
+			if proxy := findProxyByName([]string{cachedProxyName}); proxy != nil {
 				return proxy
 			}
 		}
 
 		// 实时计算最佳节点
 		bestNodes, _, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, target, weightType, false)
-		if err == nil && len(bestNodes) > 0 && bestNodes[0] != "" {
-			if proxy := findProxyByName(bestNodes[0]); proxy != nil {
+		if err == nil && len(bestNodes) > 0 {
+			if proxy := findProxyByName(bestNodes); proxy != nil {
 				return proxy
 			}
 		}
@@ -824,24 +822,11 @@ func (s *Smart) selectNextProxy(metadata *C.Metadata, availableProxies []C.Proxy
 		}
 	}
 
-	for i := 0; i < 3; i++ {
-		if s.strategy == "sticky-sessions" {
-			s.fallback.ClearStickySession(metadata)
-		}
-		fallbackProxy := s.fallbackToLoadBalance(metadata, availableProxies)
-		if fallbackProxy != nil && !triedProxies[fallbackProxy.Name()] {
-			if fallbackProxy.AliveForTestUrl(s.testUrl) {
-				return fallbackProxy
-			}
-		}
-	}
-
 	for _, p := range availableProxies {
 		if !triedProxies[p.Name()] {
 			if p.AliveForTestUrl(s.testUrl) {
 				return p
 			}
-			return p
 		}
 	}
 
@@ -1011,19 +996,20 @@ func (s *Smart) checkNodeQualityDegradation(
 	success int64, weightType string, lastStatus int64, lastUsedVal int64) (float64, bool) {
 
 	// 零流量连接
-	if connectionDuration > 1000 && downloadTotal == 0 && uploadTotal == 0 {
+	if connectionDuration > 100 && downloadTotal == 0 && uploadTotal == 0 {
 		degradedWeight := math.Max(0.1, newWeight*0.3)
 		log.Debugln("[Smart] Zero-traffic connection detected: [%s] for domain [%s], conn time: %dms, forcing weight degradation from %.4f to %.4f (%s)",
 			proxyName, addressDisplay, connectionDuration, newWeight, degradedWeight, weightType)
 		return degradedWeight, true
 	}
 
-	// 低流量连接检查异常状态码
-	if downloadTotal < 0.03 && metadata != nil && metadata.Host != "" && metadata.DstPort == 443 && metadata.NetWork == C.TCP {
+	// 异常状态码检测
+	if (downloadTotal < 0.03 && metadata != nil && metadata.Host != "" && metadata.DstPort == 443 && metadata.NetWork == C.TCP) ||
+		(rand.Float64() < 0.05 && metadata != nil && metadata.Host != "" && metadata.DstPort == 443 && metadata.NetWork == C.TCP) {
 		needTest := false
 		cooldownSeconds := int64(300)
 		now := time.Now().Unix()
-		if lastStatus == 0 || lastStatus == 403 || lastStatus == 429 || lastStatus == 407 {
+		if lastStatus == 0 || lastStatus == 403 || lastStatus == 429 || lastStatus == 407 || lastStatus == 599 {
 			if now-lastUsedVal > cooldownSeconds {
 				needTest = true
 			}
