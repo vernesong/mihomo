@@ -780,6 +780,14 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
 	if len(nodeList) < topN {
 		topN = len(nodeList)
 	}
+
+	if len(nodeList) < requiredNodeCount {
+		return nil, nil, errors.New("not enough nodes with valid weights")
+	}
+
+	if topN > requiredNodeCount {
+		topN = requiredNodeCount
+	}
 	if topN == 0 {
 		return nil, nil, errors.New("not enough nodes with valid weights")
 	}
