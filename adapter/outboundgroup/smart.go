@@ -5,29 +5,35 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
+	"net"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/dlclark/regexp2"
 	"github.com/metacubex/mihomo/common/callback"
 	"github.com/metacubex/mihomo/common/singleflight"
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/mmdb"
 	"github.com/metacubex/mihomo/component/profile/cachefile"
 	"github.com/metacubex/mihomo/component/smart"
 	"github.com/metacubex/mihomo/component/smart/lightgbm"
+	"github.com/metacubex/mihomo/component/tcp"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/tunnel"
 	"github.com/metacubex/mihomo/tunnel/statistic"
-
-	"github.com/dlclark/regexp2"
+	"github.com/samber/lo"
 )
 
 const (
@@ -161,6 +167,83 @@ func (s *Smart) GetConfigFilename() string {
 	return s.configName
 }
 
+// ref: component/dialer/dialer.go:314
+func parallelDialContext[T interface {
+	comparable
+	io.Closer
+}](proxies []C.Proxy, fn func(C.Proxy) (T, error)) (T, error) {
+	results := make(chan struct {
+		conn  T
+		error error
+	})
+	returned := make(chan struct{})
+	defer close(returned)
+	racer := func(proxy C.Proxy) {
+		result := struct {
+			conn  T
+			error error
+		}{}
+		defer func() {
+			select {
+			case results <- result:
+			case <-returned:
+				if result.conn != lo.Empty[T]() && result.error == nil {
+					_ = result.conn.Close()
+				}
+			}
+		}()
+		result.conn, result.error = fn(proxy)
+	}
+
+	for _, proxy := range proxies {
+		go racer(proxy)
+	}
+	var errs []error
+	for i := 0; i < len(proxies); i++ {
+		res := <-results
+		if res.error == nil {
+			return res.conn, nil
+		}
+		errs = append(errs, res.error)
+	}
+
+	if len(errs) > 0 {
+		return lo.Empty[T](), errors.Join(errs...)
+	}
+	return lo.Empty[T](), os.ErrDeadlineExceeded
+}
+
+func (s *Smart) dialContext(ctx context.Context, proxy C.Proxy, metadata *C.Metadata, start time.Time) (c C.Conn, err error) {
+	var nc net.Conn
+	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+		d := dialer.NewDialer(dialer.WithCallback(func(conn net.Conn, err error) {
+			if err == nil {
+				nc = conn
+			}
+		}))
+		c, err = proxy.DialContextWithDialer(ctx, d, metadata)
+		if err == C.ErrNotSupport {
+			c, err = proxy.DialContext(ctx, metadata)
+		}
+	} else {
+		c, err = proxy.DialContext(ctx, metadata)
+	}
+	if err != nil {
+		s.recordConnectionStats("failed", metadata, proxy, 0, 0, 0, 0, 0, 0, 0, false, err)
+		return nil, err
+	}
+	if nc != nil {
+		if tc, ok := nc.(*net.TCPConn); ok {
+			if err = tcp.WaitAllAcks(ctx, tc); err != nil {
+				s.recordConnectionStats("failed", metadata, proxy, 0, 0, 0, 0, 0, 0, 0, false, err)
+				return nil, err
+			}
+		}
+	}
+	s.recordConnectionStats("success", metadata, proxy, time.Since(start).Milliseconds(), 0, 0, 0, 0, 0, 0, false, nil)
+	return c, nil
+}
+
 func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {
 	proxies := s.GetProxies(true)
 	if len(proxies) == 0 {
@@ -169,27 +252,58 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 
 	tryDial := func(proxy C.Proxy, proxies []C.Proxy, triedProxies map[string]bool, maxRetries int, wrapMetric bool) (C.Conn, error) {
 		var finalErr error
+		var try C.Proxy
+		const parallelDials = 3
+		tries := make([]C.Proxy, 0, parallelDials)
 		for i := 0; i < maxRetries; i++ {
-			historyConnectTime := s.getHistoryConnectStats(metadata, proxy)
+			tries = tries[:0]
+			maxTries := parallelDials
+			if len(proxies) < maxTries {
+				maxTries = len(proxies)
+			}
+			for i := 0; i < maxTries; i++ {
+				if i == 0 {
+					try = proxy
+				} else {
+					try = s.selectNextProxy(metadata, proxies, triedProxies)
+					if triedProxies[try.Name()] {
+						break
+					}
+				}
+				tries = append(tries, try)
+				triedProxies[try.Name()] = true
+			}
+			var historyConnectTime int64
+			for _, t := range tries {
+				hct := s.getHistoryConnectStats(metadata, t)
+				if hct > historyConnectTime {
+					historyConnectTime = hct
+				}
+			}
 			const thresholdRatio = 2.0
+			const dialTimeout = C.DefaultTCPTimeout / parallelDials // enough
 			var timeout time.Duration
 			if historyConnectTime > 0 {
 				timeout = time.Duration(float64(historyConnectTime)*thresholdRatio) * time.Millisecond
-				if timeout > C.DefaultTCPTimeout {
-					timeout = C.DefaultTCPTimeout
+				if timeout > dialTimeout {
+					timeout = dialTimeout
 				}
 			} else {
-				timeout = C.DefaultTCPTimeout
+				timeout = dialTimeout
 			}
 			ctxDial, cancel := context.WithTimeout(ctx, timeout)
 			start := time.Now()
-			c, err := proxy.DialContext(ctxDial, metadata)
-			cancel()
-			connectTime := time.Since(start).Milliseconds()
+			c, err := parallelDialContext(tries, func(proxy C.Proxy) (c C.Conn, err error) {
+				return s.dialContext(ctxDial, proxy, metadata, start)
+			})
+			go func() {
+				<-ctxDial.Done()
+				cancel()
+			}()
 
 			if err == nil {
 				if s.store != nil && wrapMetric {
-					wrappedConn, wrapErr := s.wrapConnWithMetric(c, proxy, metadata, connectTime)
+					wrappedConn, wrapErr := s.wrapConnWithMetric(c, proxy, metadata)
 					if wrapErr != nil {
 						c.Close()
 						finalErr = wrapErr
@@ -332,7 +446,7 @@ func (s *Smart) IsL3Protocol(metadata *C.Metadata) bool {
 	return s.Unwrap(metadata, false).IsL3Protocol(metadata)
 }
 
-func (s *Smart) wrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata, connectTime int64) (C.Conn, error) {
+func (s *Smart) wrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata) (C.Conn, error) {
 	c.AppendToChains(s)
 	c = s.registerClosureMetricsCallback(c, proxy, metadata)
 
@@ -342,7 +456,7 @@ func (s *Smart) wrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata
 		latency := time.Since(start).Milliseconds()
 		if err == nil {
 			s.onDialSuccess()
-			s.recordConnectionStats("success", metadata, proxy, connectTime, latency, 0, 0, 0, 0, 0, false, nil)
+			s.recordConnectionStats("success", metadata, proxy, 0, latency, 0, 0, 0, 0, 0, false, nil)
 		} else {
 			s.onDialFailed(proxy.Type(), err, s.GroupBase.healthCheck)
 			s.recordConnectionStats("failed", metadata, proxy, 0, 0, 0, 0, 0, 0, 0, false, err)
@@ -1181,7 +1295,7 @@ func (s *Smart) handleFailedConnection(proxyName, cacheKey, domain string, calcu
 	var nodeState smart.NodeState
 	var isDegraded bool
 
-	const domainCountThreshold = 10        // 不同失败域名数量阈值
+	const domainCountThreshold = 10 // 不同失败域名数量阈值
 	const mildFailureCountThreshold = 20
 	const mediumFailureCountThreshold = 50
 	const severeFailureCountThreshold = 80
@@ -1243,13 +1357,13 @@ func (s *Smart) handleFailedConnection(proxyName, cacheKey, domain string, calcu
 
 		additionalBlock := 0
 		if nodeState.FailureCount >= severeFailureCountThreshold {
-			nodeState.DegradedFactor = nodeState.DegradedFactor*0.7
+			nodeState.DegradedFactor = nodeState.DegradedFactor * 0.7
 			additionalBlock = 30
 		} else if nodeState.FailureCount >= mediumFailureCountThreshold {
-			nodeState.DegradedFactor = nodeState.DegradedFactor*0.8
+			nodeState.DegradedFactor = nodeState.DegradedFactor * 0.8
 			additionalBlock = 20
 		} else if nodeState.FailureCount >= mildFailureCountThreshold {
-			nodeState.DegradedFactor = nodeState.DegradedFactor*0.9
+			nodeState.DegradedFactor = nodeState.DegradedFactor * 0.9
 			additionalBlock = 10
 		}
 		if nodeState.BlockedUntil.After(time.Now()) {

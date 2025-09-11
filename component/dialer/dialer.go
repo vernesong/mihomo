@@ -31,8 +31,13 @@ var (
 	fallbackTimeout              = 300 * time.Millisecond
 )
 
-func DialContext(ctx context.Context, network, address string, options ...Option) (net.Conn, error) {
+func DialContext(ctx context.Context, network, address string, options ...Option) (conn net.Conn, err error) {
 	opt := applyOptions(options...)
+	if opt.callback != nil {
+		defer func() {
+			opt.callback.fn(conn, err)
+		}()
+	}
 
 	if opt.network == 4 || opt.network == 6 {
 		if strings.Contains(network, "tcp") {
