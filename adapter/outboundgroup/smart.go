@@ -90,6 +90,7 @@ type Smart struct {
 	weightModel    *lightgbm.WeightModel
 	strategy       string
 	sampleRate     float64
+	noParallelDial bool
 }
 
 type priorityRule struct {
@@ -168,7 +169,7 @@ func (s *Smart) GetConfigFilename() string {
 }
 
 // ref: component/dialer/dialer.go:314
-func parallelDialContext[T interface {
+func doParallelDialContext[T interface {
 	comparable
 	io.Closer
 }](proxies []C.Proxy, fn func(C.Proxy) (T, error)) (C.Proxy, T, error) {
@@ -216,7 +217,98 @@ func parallelDialContext[T interface {
 	return nil, lo.Empty[T](), os.ErrDeadlineExceeded
 }
 
-func (s *Smart) dialContext(ctx context.Context, proxy C.Proxy, metadata *C.Metadata, start time.Time) (c C.Conn, err error) {
+func (s *Smart) parallelDialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {
+	availableProxies := s.GetProxies(true)
+	if len(availableProxies) == 0 {
+		return nil, errors.New("no proxy available")
+	}
+
+	triedProxies := make(map[string]bool)
+
+	getBatch := func(proxies []C.Proxy, i int) ([]C.Proxy, time.Duration) {
+		const parallelDials = 3
+		begin := i * parallelDials
+		if begin >= len(proxies) {
+			return nil, 0
+		}
+		end := begin + parallelDials
+		if end > len(proxies) {
+			end = len(proxies)
+		}
+		batch := proxies[begin:end]
+		var historyConnectTime int64
+		for _, p := range batch {
+			triedProxies[p.Name()] = true
+			hct := s.getHistoryConnectStats(metadata, p)
+			if hct > historyConnectTime {
+				historyConnectTime = hct
+			}
+		}
+		const thresholdRatio = 2.0
+		const dialTimeout = C.DefaultTCPTimeout / parallelDials * thresholdRatio
+		var timeout time.Duration
+		if historyConnectTime > 0 {
+			timeout = time.Duration(float64(historyConnectTime)*thresholdRatio) * time.Millisecond
+			if timeout > dialTimeout {
+				timeout = dialTimeout
+			}
+		} else {
+			timeout = dialTimeout
+		}
+		return batch, timeout
+	}
+
+	tryDial := func(proxies []C.Proxy) (C.Conn, error) {
+		var finalErr error
+		for i := 0; i < maxRetries; i++ {
+			batch, timeout := getBatch(proxies, i)
+			ctxDial, cancel := context.WithTimeout(ctx, timeout)
+			start := time.Now()
+			p, c, err := doParallelDialContext(batch, func(proxy C.Proxy) (c C.Conn, err error) {
+				return s.singleDialContext(ctxDial, proxy, metadata, start)
+			})
+			go func() {
+				<-ctxDial.Done()
+				cancel()
+			}()
+
+			if err == nil {
+				if s.store != nil {
+					return s.parallelWrapConnWithMetric(c, p, metadata), nil
+				}
+				c.AppendToChains(s)
+				s.onDialSuccess()
+				return c, nil
+			}
+
+			finalErr = err
+			if s.selected != "" {
+				break
+			}
+		}
+		if finalErr != nil && s.store != nil {
+			s.onDialFailed(proxies[0].Type(), finalErr, s.GroupBase.healthCheck)
+			s.store.MarkConnectionFailed(s.Name(), s.configName, len(proxies), triedProxies)
+		}
+		return nil, finalErr
+	}
+
+	if s.store != nil && s.store.CheckNetworkFailure(s.Name(), s.configName) {
+		proxies := s.selectFallbacks(metadata, availableProxies)
+		if len(proxies) == 0 {
+			return nil, errors.New("no proxy found in network failure mode")
+		}
+		return tryDial(proxies)
+	}
+
+	proxies := s.selectProxies(metadata, availableProxies)
+	if len(proxies) == 0 {
+		proxies = availableProxies
+	}
+	return tryDial(proxies)
+}
+
+func (s *Smart) singleDialContext(ctx context.Context, proxy C.Proxy, metadata *C.Metadata, start time.Time) (c C.Conn, err error) {
 	var nc net.Conn
 	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
 		d := dialer.NewDialer(dialer.WithCallback(func(conn net.Conn, err error) {
@@ -248,6 +340,10 @@ func (s *Smart) dialContext(ctx context.Context, proxy C.Proxy, metadata *C.Meta
 }
 
 func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {
+	if !s.noParallelDial {
+		return s.parallelDialContext(ctx, metadata)
+	}
+
 	proxies := s.GetProxies(true)
 	if len(proxies) == 0 {
 		return nil, errors.New("no proxy available")
@@ -255,58 +351,27 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 
 	tryDial := func(proxy C.Proxy, proxies []C.Proxy, triedProxies map[string]bool, maxRetries int, wrapMetric bool) (C.Conn, error) {
 		var finalErr error
-		var try C.Proxy
-		const parallelDials = 3
-		tries := make([]C.Proxy, 0, parallelDials)
 		for i := 0; i < maxRetries; i++ {
-			tries = tries[:0]
-			maxTries := parallelDials
-			if len(proxies) < maxTries {
-				maxTries = len(proxies)
-			}
-			for i := 0; i < maxTries; i++ {
-				if i == 0 {
-					try = proxy
-				} else {
-					try = s.selectNextProxy(metadata, proxies, triedProxies)
-					if triedProxies[try.Name()] {
-						break
-					}
-				}
-				tries = append(tries, try)
-				triedProxies[try.Name()] = true
-			}
-			var historyConnectTime int64
-			for _, t := range tries {
-				hct := s.getHistoryConnectStats(metadata, t)
-				if hct > historyConnectTime {
-					historyConnectTime = hct
-				}
-			}
+			historyConnectTime := s.getHistoryConnectStats(metadata, proxy)
 			const thresholdRatio = 2.0
-			const dialTimeout = C.DefaultTCPTimeout / parallelDials // enough
 			var timeout time.Duration
 			if historyConnectTime > 0 {
 				timeout = time.Duration(float64(historyConnectTime)*thresholdRatio) * time.Millisecond
-				if timeout > dialTimeout {
-					timeout = dialTimeout
+				if timeout > C.DefaultTCPTimeout {
+					timeout = C.DefaultTCPTimeout
 				}
 			} else {
-				timeout = dialTimeout
+				timeout = C.DefaultTCPTimeout
 			}
 			ctxDial, cancel := context.WithTimeout(ctx, timeout)
 			start := time.Now()
-			p, c, err := parallelDialContext(tries, func(proxy C.Proxy) (c C.Conn, err error) {
-				return s.dialContext(ctxDial, proxy, metadata, start)
-			})
-			go func() {
-				<-ctxDial.Done()
-				cancel()
-			}()
+			c, err := proxy.DialContext(ctxDial, metadata)
+			cancel()
+			connectTime := time.Since(start).Milliseconds()
 
 			if err == nil {
 				if s.store != nil && wrapMetric {
-					wrappedConn, wrapErr := s.wrapConnWithMetric(c, p, metadata)
+					wrappedConn, wrapErr := s.wrapConnWithMetric(c, proxy, metadata, connectTime)
 					if wrapErr != nil {
 						c.Close()
 						finalErr = wrapErr
@@ -430,6 +495,10 @@ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 }
 
 func (s *Smart) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
+	if !s.noParallelDial {
+		return s.parallelUnwrap(metadata, touch)
+	}
+
 	proxy := s.selectProxy(metadata, touch)
 
 	if proxy != nil && s.store != nil {
@@ -437,7 +506,7 @@ func (s *Smart) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 		if metadata != nil {
 			domain, _ = smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
 			if domain != "" {
-				s.store.StoreUnwrapResult(s.Name(), s.configName, domain, proxy.Name())
+				s.store.StoreUnwrapResult(s.Name(), s.configName, domain, []string{proxy.Name()})
 			}
 		}
 	}
@@ -445,11 +514,34 @@ func (s *Smart) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 	return proxy
 }
 
+func (s *Smart) parallelUnwrap(metadata *C.Metadata, touch bool) C.Proxy {
+	proxies := s.selectProxies(metadata, s.GetProxies(touch))
+
+	if len(proxies) > 0 && s.store != nil {
+		domain := ""
+		if metadata != nil {
+			domain, _ = smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
+			if domain != "" {
+				names := make([]string, 0, len(proxies))
+				for _, p := range proxies {
+					names = append(names, p.Name())
+				}
+				s.store.StoreUnwrapResult(s.Name(), s.configName, domain, names)
+			}
+		}
+	}
+
+	if len(proxies) > 0 {
+		return proxies[0]
+	}
+	return nil
+}
+
 func (s *Smart) IsL3Protocol(metadata *C.Metadata) bool {
 	return s.Unwrap(metadata, false).IsL3Protocol(metadata)
 }
 
-func (s *Smart) wrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata) (C.Conn, error) {
+func (s *Smart) wrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata, connectTime int64) (C.Conn, error) {
 	c.AppendToChains(s)
 	c = s.registerClosureMetricsCallback(c, proxy, metadata)
 
@@ -459,7 +551,7 @@ func (s *Smart) wrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata
 		latency := time.Since(start).Milliseconds()
 		if err == nil {
 			s.onDialSuccess()
-			s.recordConnectionStats("success", metadata, proxy, 0, latency, 0, 0, 0, 0, 0, false, nil)
+			s.recordConnectionStats("success", metadata, proxy, connectTime, latency, 0, 0, 0, 0, 0, false, nil)
 		} else {
 			s.onDialFailed(proxy.Type(), err, s.GroupBase.healthCheck)
 			s.recordConnectionStats("failed", metadata, proxy, 0, 0, 0, 0, 0, 0, 0, false, err)
@@ -467,6 +559,24 @@ func (s *Smart) wrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata
 	})
 
 	return wrappedConn, nil
+}
+
+func (s *Smart) parallelWrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata) C.Conn {
+	c.AppendToChains(s)
+	c = s.registerClosureMetricsCallback(c, proxy, metadata)
+
+	start := time.Now()
+
+	return callback.NewFirstReadCallBackConn(c, func(err error) {
+		latency := time.Since(start).Milliseconds()
+		if err == nil {
+			s.onDialSuccess()
+			s.recordConnectionStats("success", metadata, proxy, 0, latency, 0, 0, 0, 0, 0, false, nil)
+		} else {
+			s.onDialFailed(proxy.Type(), err, s.GroupBase.healthCheck)
+			s.recordConnectionStats("failed", metadata, proxy, 0, 0, 0, 0, 0, 0, 0, false, err)
+		}
+	})
 }
 
 func (s *Smart) Set(name string) error {
@@ -831,16 +941,16 @@ func (s *Smart) selectProxy(metadata *C.Metadata, touch bool) C.Proxy {
 
 	trySelector := func(target string, weightType string) C.Proxy {
 		// 检查解析缓存
-		if cachedProxyName := s.store.GetUnwrapResult(s.Name(), s.configName, target); cachedProxyName != "" {
-			if proxy := findProxyByName([]string{cachedProxyName}); proxy != nil {
+		if cachedProxyNames := s.store.GetUnwrapResult(s.Name(), s.configName, target); len(cachedProxyNames) > 0 {
+			if proxy := findProxyByName(cachedProxyNames); proxy != nil {
 				s.store.DeleteCacheResult(smart.KeyTypeUnwrap, s.Name(), s.configName, target)
 				return proxy
 			}
 		}
 
 		// 检查预解析缓存
-		if cachedProxyName, _ := s.store.GetPrefetchResult(s.Name(), s.configName, target, weightType); cachedProxyName != "" {
-			if proxy := findProxyByName([]string{cachedProxyName}); proxy != nil {
+		if cachedProxyNames, _ := s.store.GetPrefetchResult(s.Name(), s.configName, target, weightType); len(cachedProxyNames) > 0 {
+			if proxy := findProxyByName(cachedProxyNames); proxy != nil {
 				return proxy
 			}
 		}
@@ -966,6 +1076,143 @@ func (s *Smart) fallbackToLoadBalance(metadata *C.Metadata, proxies []C.Proxy) C
 		}
 	}
 	return proxies[0]
+}
+
+func (s *Smart) selectFallbacks(metadata *C.Metadata, proxies []C.Proxy) []C.Proxy {
+	if len(proxies) == 0 {
+		return nil
+	}
+
+	if metadata == nil {
+		return proxies
+	}
+
+	fallbacks := make([]C.Proxy, 0, len(proxies))
+	var first C.Proxy
+	if s.fallback != nil {
+		first = s.fallback.Unwrap(metadata, true)
+		if first != nil {
+			fallbacks = append(fallbacks, first)
+		}
+	}
+	piv := 0
+	for i, p := range proxies {
+		if p == first {
+			piv = i
+			break
+		}
+	}
+	fallbacks = append(fallbacks, proxies[piv:]...)
+	fallbacks = append(fallbacks, proxies[:piv]...)
+	return fallbacks
+}
+
+func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy) []C.Proxy {
+	if metadata == nil {
+		return proxies
+	}
+
+	if len(proxies) == 0 {
+		return nil
+	}
+
+	if s.selected != "" {
+		for _, p := range proxies {
+			if p.Name() == s.selected {
+				return []C.Proxy{p}
+			}
+		}
+	}
+
+	if s.store == nil {
+		return proxies
+	}
+
+	blockedNodes := make(map[string]bool)
+	stateData, _ := s.store.GetNodeStates(s.Name(), s.configName)
+	for nodeName, data := range stateData {
+		var state smart.NodeState
+		if json.Unmarshal(data, &state) == nil {
+			if !state.BlockedUntil.IsZero() && state.BlockedUntil.After(time.Now()) {
+				blockedNodes[nodeName] = true
+			}
+		}
+	}
+
+	proxyByName := make(map[string]C.Proxy)
+	for _, p := range proxies {
+		proxyByName[p.Name()] = p
+	}
+	findProxiesByNames := func(names []string) []C.Proxy {
+		proxies := make([]C.Proxy, 0, len(names))
+		for _, name := range names {
+			if !blockedNodes[name] {
+				if p, ok := proxyByName[name]; ok && p.AliveForTestUrl(s.testUrl) {
+					proxies = append(proxies, p)
+				}
+			}
+		}
+		return proxies
+	}
+
+	weightType := smart.WeightTypeTCP
+	if metadata.NetWork == C.UDP {
+		weightType = smart.WeightTypeUDP
+	}
+
+	trySelector := func(target string, weightType string) []C.Proxy {
+		// 检查解析缓存
+		if cachedProxyNames := s.store.GetUnwrapResult(s.Name(), s.configName, target); len(cachedProxyNames) != 0 {
+			if proxies := findProxiesByNames(cachedProxyNames); len(proxies) > 0 {
+				s.store.DeleteCacheResult(smart.KeyTypeUnwrap, s.Name(), s.configName, target)
+				return proxies
+			}
+		}
+
+		// 检查预解析缓存
+		if cachedProxyNames, _ := s.store.GetPrefetchResult(s.Name(), s.configName, target, weightType); len(cachedProxyNames) != 0 {
+			if proxies := findProxiesByNames(cachedProxyNames); len(proxies) > 0 {
+				return proxies
+			}
+		}
+
+		// 实时计算最佳节点
+		bestNodes, _, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, target, weightType, false)
+		if err == nil && len(bestNodes) != 0 {
+			if proxies := findProxiesByNames(bestNodes); len(proxies) > 0 {
+				return proxies
+			}
+		}
+
+		return nil
+	}
+
+	// 尝试使用域名信息选择
+	domain, _ := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
+	if domain != "" {
+		if proxies := trySelector(domain, weightType); len(proxies) > 0 {
+			return proxies
+		}
+	}
+
+	// 尝试使用ASN信息选择（50%概率）
+	if rand.Float64() < 0.5 {
+		asnNumber := s.getASNCode(metadata)
+		if asnNumber != "" {
+			asnWeightType := weightType
+			if weightType == smart.WeightTypeTCP {
+				asnWeightType = smart.WeightTypeTCPASN + ":" + asnNumber
+			} else {
+				asnWeightType = smart.WeightTypeUDPASN + ":" + asnNumber
+			}
+
+			if proxies := trySelector(asnNumber, asnWeightType); len(proxies) > 0 {
+				return proxies
+			}
+		}
+	}
+
+	return s.selectFallbacks(metadata, proxies)
 }
 
 func (s *Smart) SupportUDP() bool {
@@ -1883,19 +2130,24 @@ func (s *Smart) cleanupDegradedNodePreferenceCache(metadata *C.Metadata, domain,
 
 	// 处理域名相关缓存
 	bestNodes, bestWeights, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, domain, weightType, false)
-	var bestNode string
-	var bestWeight float64
-	for i := 0; i < len(bestNodes); i++ {
+	var i int
+	for i = 0; i < len(bestNodes); i++ {
 		if bestNodes[i] != "" && bestNodes[i] != nodeName {
-			bestNode = bestNodes[i]
-			bestWeight = bestWeights[i]
 			break
 		}
 	}
-	if err == nil && bestNode != "" && bestWeight > currentWeight {
-		s.store.StorePrefetchResult(s.Name(), s.configName, domain, weightType, bestNode, bestWeight)
-		log.Debugln("[Smart] Added new prefetch result for domain: [%s] -> [%s] (weight: %.4f, type: %s)",
-			addressDisplay, bestNode, bestWeight, weightType)
+	if len(bestNodes) > i+1 {
+		bestNodes = append(bestNodes[:i], bestNodes[i+1:]...)
+		bestWeights = append(bestWeights[:i], bestWeights[i+1:]...)
+	} else {
+		bestNodes = bestNodes[:i]
+		bestWeights = bestWeights[:i]
+	}
+	if err == nil && len(bestNodes) > 0 && bestWeights[0] > currentWeight {
+		s.store.StorePrefetchResult(s.Name(), s.configName, domain, weightType, bestNodes, bestWeights)
+		log.Debugln("[Smart] Added new prefetch result for domain: [%s] -> %v (weight: %v, type: %s)",
+			domain, bestNodes, bestWeights, weightType)
+
 	}
 
 	// 处理ASN相关缓存
@@ -1909,19 +2161,23 @@ func (s *Smart) cleanupDegradedNodePreferenceCache(metadata *C.Metadata, domain,
 		s.store.DeleteCacheResult(smart.KeyTypePrefetch, s.Name(), s.configName, asnInfo)
 
 		bestNodes, bestWeights, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, asnInfo, fullAsnWeightType, false)
-		var asnBestNode string
-		var asnBestWeight float64
-		for i := 0; i < len(bestNodes); i++ {
+		var i int
+		for i = 0; i < len(bestNodes); i++ {
 			if bestNodes[i] != "" && bestNodes[i] != nodeName {
-				asnBestNode = bestNodes[i]
-				asnBestWeight = bestWeights[i]
 				break
 			}
 		}
-		if err == nil && asnBestNode != "" && asnBestWeight > currentWeight {
-			s.store.StorePrefetchResult(s.Name(), s.configName, asnInfo, fullAsnWeightType, asnBestNode, asnBestWeight)
-			log.Debugln("[Smart] Added new ASN prefetch result: [%s] -> [%s] (weight: %.4f, type: %s)",
-				asnInfo, asnBestNode, asnBestWeight, fullAsnWeightType)
+		if len(bestNodes) > i+1 {
+			bestNodes = append(bestNodes[:i], bestNodes[i+1:]...)
+			bestWeights = append(bestWeights[:i], bestWeights[i+1:]...)
+		} else {
+			bestNodes = bestNodes[:i]
+			bestWeights = bestWeights[:i]
+		}
+		if err == nil && len(bestNodes) > 0 && bestWeights[0] > currentWeight {
+			s.store.StorePrefetchResult(s.Name(), s.configName, asnInfo, fullAsnWeightType, bestNodes, bestWeights)
+			log.Debugln("[Smart] Added new ASN prefetch result: [%s] -> %v (weights: %v, type: %s)",
+				asnInfo, bestNodes, bestWeights, fullAsnWeightType)
 		}
 	}
 
@@ -2007,6 +2263,12 @@ func smartWithSampleRate(sampleRate float64) smartOption {
 	}
 }
 
+func smartWithNoParallelDial(npd bool) smartOption {
+	return func(s *Smart) {
+		s.noParallelDial = npd
+	}
+}
+
 func parseSmartOption(config map[string]any) ([]smartOption, string) {
 	opts := []smartOption{}
 
@@ -2038,6 +2300,12 @@ func parseSmartOption(config map[string]any) ([]smartOption, string) {
 			opts = append(opts, smartWithSampleRate(float64(v)))
 		case int:
 			opts = append(opts, smartWithSampleRate(float64(v)))
+		}
+	}
+
+	if elm, ok := config["no-parallel-dial"]; ok {
+		if npd, ok := elm.(bool); ok {
+			opts = append(opts, smartWithNoParallelDial(npd))
 		}
 	}
 

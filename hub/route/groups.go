@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"time"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/render"
@@ -202,9 +202,9 @@ func getAllGroupWeights(w http.ResponseWriter, r *http.Request) {
 	errorsMap := make(map[string]string)
 
 	var (
-		mu   sync.Mutex
-		wg   sync.WaitGroup
-		sem  = make(chan struct{}, 5)
+		mu    sync.Mutex
+		wg    sync.WaitGroup
+		sem   = make(chan struct{}, 5)
 		store = smartStore.GetStore()
 	)
 

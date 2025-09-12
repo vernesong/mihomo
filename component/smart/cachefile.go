@@ -35,17 +35,17 @@ type Store struct {
 	db *bbolt.DB
 
 	networkFailureManager struct {
-		status         map[string]bool
-		successCount   map[string]int
-		lastFailure    map[string]time.Time
-		lock           sync.RWMutex
-		cacheThrottle  struct {
-			mutex      sync.Mutex
-			lastSet    map[string]time.Time
-			lastClear  map[string]time.Time
+		status        map[string]bool
+		successCount  map[string]int
+		lastFailure   map[string]time.Time
+		lock          sync.RWMutex
+		cacheThrottle struct {
+			mutex     sync.Mutex
+			lastSet   map[string]time.Time
+			lastClear map[string]time.Time
 		}
-		writeInterval  time.Duration
-		clearInterval  time.Duration
+		writeInterval time.Duration
+		clearInterval time.Duration
 	}
 }
 
