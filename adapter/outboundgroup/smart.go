@@ -171,8 +171,9 @@ func (s *Smart) GetConfigFilename() string {
 func parallelDialContext[T interface {
 	comparable
 	io.Closer
-}](proxies []C.Proxy, fn func(C.Proxy) (T, error)) (T, error) {
+}](proxies []C.Proxy, fn func(C.Proxy) (T, error)) (C.Proxy, T, error) {
 	results := make(chan struct {
+		proxy C.Proxy
 		conn  T
 		error error
 	})
@@ -180,6 +181,7 @@ func parallelDialContext[T interface {
 	defer close(returned)
 	racer := func(proxy C.Proxy) {
 		result := struct {
+			proxy C.Proxy
 			conn  T
 			error error
 		}{}
@@ -193,6 +195,7 @@ func parallelDialContext[T interface {
 			}
 		}()
 		result.conn, result.error = fn(proxy)
+		result.proxy = proxy
 	}
 
 	for _, proxy := range proxies {
@@ -202,15 +205,15 @@ func parallelDialContext[T interface {
 	for i := 0; i < len(proxies); i++ {
 		res := <-results
 		if res.error == nil {
-			return res.conn, nil
+			return res.proxy, res.conn, nil
 		}
 		errs = append(errs, res.error)
 	}
 
 	if len(errs) > 0 {
-		return lo.Empty[T](), errors.Join(errs...)
+		return nil, lo.Empty[T](), errors.Join(errs...)
 	}
-	return lo.Empty[T](), os.ErrDeadlineExceeded
+	return nil, lo.Empty[T](), os.ErrDeadlineExceeded
 }
 
 func (s *Smart) dialContext(ctx context.Context, proxy C.Proxy, metadata *C.Metadata, start time.Time) (c C.Conn, err error) {
@@ -293,7 +296,7 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 			}
 			ctxDial, cancel := context.WithTimeout(ctx, timeout)
 			start := time.Now()
-			c, err := parallelDialContext(tries, func(proxy C.Proxy) (c C.Conn, err error) {
+			p, c, err := parallelDialContext(tries, func(proxy C.Proxy) (c C.Conn, err error) {
 				return s.dialContext(ctxDial, proxy, metadata, start)
 			})
 			go func() {
@@ -303,7 +306,7 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 
 			if err == nil {
 				if s.store != nil && wrapMetric {
-					wrappedConn, wrapErr := s.wrapConnWithMetric(c, proxy, metadata)
+					wrappedConn, wrapErr := s.wrapConnWithMetric(c, p, metadata)
 					if wrapErr != nil {
 						c.Close()
 						finalErr = wrapErr
