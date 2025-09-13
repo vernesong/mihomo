@@ -495,10 +495,6 @@ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 }
 
 func (s *Smart) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
-	if !s.noParallelDial {
-		return s.parallelUnwrap(metadata, touch)
-	}
-
 	proxy := s.selectProxy(metadata, touch)
 
 	if proxy != nil && s.store != nil {
@@ -506,35 +502,12 @@ func (s *Smart) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 		if metadata != nil {
 			domain, _ = smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
 			if domain != "" {
-				s.store.StoreUnwrapResult(s.Name(), s.configName, domain, []string{proxy.Name()})
+				s.store.StoreUnwrapResult(s.Name(), s.configName, domain, proxy.Name())
 			}
 		}
 	}
 
 	return proxy
-}
-
-func (s *Smart) parallelUnwrap(metadata *C.Metadata, touch bool) C.Proxy {
-	proxies := s.selectProxies(metadata, s.GetProxies(touch))
-
-	if len(proxies) > 0 && s.store != nil {
-		domain := ""
-		if metadata != nil {
-			domain, _ = smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
-			if domain != "" {
-				names := make([]string, 0, len(proxies))
-				for _, p := range proxies {
-					names = append(names, p.Name())
-				}
-				s.store.StoreUnwrapResult(s.Name(), s.configName, domain, names)
-			}
-		}
-	}
-
-	if len(proxies) > 0 {
-		return proxies[0]
-	}
-	return nil
 }
 
 func (s *Smart) IsL3Protocol(metadata *C.Metadata) bool {
@@ -941,16 +914,16 @@ func (s *Smart) selectProxy(metadata *C.Metadata, touch bool) C.Proxy {
 
 	trySelector := func(target string, weightType string) C.Proxy {
 		// 检查解析缓存
-		if cachedProxyNames := s.store.GetUnwrapResult(s.Name(), s.configName, target); len(cachedProxyNames) > 0 {
-			if proxy := findProxyByName(cachedProxyNames); proxy != nil {
+		if cachedProxyName := s.store.GetUnwrapResult(s.Name(), s.configName, target); cachedProxyName != "" {
+			if proxy := findProxyByName([]string{cachedProxyName}); proxy != nil {
 				s.store.DeleteCacheResult(smart.KeyTypeUnwrap, s.Name(), s.configName, target)
 				return proxy
 			}
 		}
 
 		// 检查预解析缓存
-		if cachedProxyNames, _ := s.store.GetPrefetchResult(s.Name(), s.configName, target, weightType); len(cachedProxyNames) > 0 {
-			if proxy := findProxyByName(cachedProxyNames); proxy != nil {
+		if cachedProxyName, _ := s.store.GetPrefetchResult(s.Name(), s.configName, target, weightType); cachedProxyName != "" {
+			if proxy := findProxyByName([]string{cachedProxyName}); proxy != nil {
 				return proxy
 			}
 		}
@@ -1161,22 +1134,6 @@ func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy) []C.Proxy
 	}
 
 	trySelector := func(target string, weightType string) []C.Proxy {
-		// 检查解析缓存
-		if cachedProxyNames := s.store.GetUnwrapResult(s.Name(), s.configName, target); len(cachedProxyNames) != 0 {
-			if proxies := findProxiesByNames(cachedProxyNames); len(proxies) > 0 {
-				s.store.DeleteCacheResult(smart.KeyTypeUnwrap, s.Name(), s.configName, target)
-				return proxies
-			}
-		}
-
-		// 检查预解析缓存
-		if cachedProxyNames, _ := s.store.GetPrefetchResult(s.Name(), s.configName, target, weightType); len(cachedProxyNames) != 0 {
-			if proxies := findProxiesByNames(cachedProxyNames); len(proxies) > 0 {
-				return proxies
-			}
-		}
-
-		// 实时计算最佳节点
 		bestNodes, _, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, target, weightType, false)
 		if err == nil && len(bestNodes) != 0 {
 			if proxies := findProxiesByNames(bestNodes); len(proxies) > 0 {
@@ -2130,24 +2087,19 @@ func (s *Smart) cleanupDegradedNodePreferenceCache(metadata *C.Metadata, domain,
 
 	// 处理域名相关缓存
 	bestNodes, bestWeights, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, domain, weightType, false)
-	var i int
-	for i = 0; i < len(bestNodes); i++ {
+	var bestNode string
+	var bestWeight float64
+	for i := 0; i < len(bestNodes); i++ {
 		if bestNodes[i] != "" && bestNodes[i] != nodeName {
+			bestNode = bestNodes[i]
+			bestWeight = bestWeights[i]
 			break
 		}
 	}
-	if len(bestNodes) > i+1 {
-		bestNodes = append(bestNodes[:i], bestNodes[i+1:]...)
-		bestWeights = append(bestWeights[:i], bestWeights[i+1:]...)
-	} else {
-		bestNodes = bestNodes[:i]
-		bestWeights = bestWeights[:i]
-	}
-	if err == nil && len(bestNodes) > 0 && bestWeights[0] > currentWeight {
-		s.store.StorePrefetchResult(s.Name(), s.configName, domain, weightType, bestNodes, bestWeights)
-		log.Debugln("[Smart] Added new prefetch result for domain: [%s] -> %v (weight: %v, type: %s)",
-			domain, bestNodes, bestWeights, weightType)
-
+	if err == nil && bestNode != "" && bestWeight > currentWeight {
+		s.store.StorePrefetchResult(s.Name(), s.configName, domain, weightType, bestNode, bestWeight)
+		log.Debugln("[Smart] Added new prefetch result for domain: [%s] -> [%s] (weight: %.4f, type: %s)",
+			addressDisplay, bestNode, bestWeight, weightType)
 	}
 
 	// 处理ASN相关缓存
@@ -2161,23 +2113,19 @@ func (s *Smart) cleanupDegradedNodePreferenceCache(metadata *C.Metadata, domain,
 		s.store.DeleteCacheResult(smart.KeyTypePrefetch, s.Name(), s.configName, asnInfo)
 
 		bestNodes, bestWeights, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, asnInfo, fullAsnWeightType, false)
-		var i int
-		for i = 0; i < len(bestNodes); i++ {
+		var asnBestNode string
+		var asnBestWeight float64
+		for i := 0; i < len(bestNodes); i++ {
 			if bestNodes[i] != "" && bestNodes[i] != nodeName {
+				asnBestNode = bestNodes[i]
+				asnBestWeight = bestWeights[i]
 				break
 			}
 		}
-		if len(bestNodes) > i+1 {
-			bestNodes = append(bestNodes[:i], bestNodes[i+1:]...)
-			bestWeights = append(bestWeights[:i], bestWeights[i+1:]...)
-		} else {
-			bestNodes = bestNodes[:i]
-			bestWeights = bestWeights[:i]
-		}
-		if err == nil && len(bestNodes) > 0 && bestWeights[0] > currentWeight {
-			s.store.StorePrefetchResult(s.Name(), s.configName, asnInfo, fullAsnWeightType, bestNodes, bestWeights)
-			log.Debugln("[Smart] Added new ASN prefetch result: [%s] -> %v (weights: %v, type: %s)",
-				asnInfo, bestNodes, bestWeights, fullAsnWeightType)
+		if err == nil && asnBestNode != "" && asnBestWeight > currentWeight {
+			s.store.StorePrefetchResult(s.Name(), s.configName, asnInfo, fullAsnWeightType, asnBestNode, asnBestWeight)
+			log.Debugln("[Smart] Added new ASN prefetch result: [%s] -> [%s] (weight: %.4f, type: %s)",
+				asnInfo, asnBestNode, asnBestWeight, fullAsnWeightType)
 		}
 	}
 

@@ -63,32 +63,32 @@ func RemoveCacheValuesByPrefix(prefix string) {
 }
 
 // 存储预取结果
-func (s *Store) StorePrefetchResult(group, config string, target string, weightType string, proxyNames []string, weights []float64) {
-	if target == "" || len(proxyNames) == 0 {
+func (s *Store) StorePrefetchResult(group, config string, target string, weightType string, proxyName string, weight float64) {
+	if target == "" || proxyName == "" {
 		return
 	}
 
 	cacheKey := FormatCacheKey(KeyTypePrefetch, config, group, target)
 
-	var prefetchMap PrefetchMap
+	var prefetchMap map[string]interface{}
 	existingValue, found := GetCacheValue(cacheKey)
 	if found {
 		switch v := existingValue.(type) {
-		case PrefetchMap:
-			prefetchMap = make(PrefetchMap, len(v)+1)
+		case map[string]interface{}:
+			prefetchMap = make(map[string]interface{}, len(v)+1)
 			for k, v2 := range v {
 				prefetchMap[k] = v2
 			}
 		default:
-			prefetchMap = make(PrefetchMap)
+			prefetchMap = make(map[string]interface{})
 		}
 	} else {
-		prefetchMap = make(PrefetchMap)
+		prefetchMap = make(map[string]interface{})
 	}
 
-	prefetchMap[weightType] = NodeWithWeight{
-		Nodes:   proxyNames,
-		Weights: weights,
+	prefetchMap[weightType] = map[string]interface{}{
+		"node":   proxyName,
+		"weight": weight,
 	}
 	SetCacheValue(cacheKey, prefetchMap)
 
@@ -117,21 +117,20 @@ func (s *Store) StorePrefetchResult(group, config string, target string, weightT
 }
 
 // 获取预取结果
-func (s *Store) GetPrefetchResult(group, config string, target string, weightType string) ([]string, []float64) {
+func (s *Store) GetPrefetchResult(group, config string, target string, weightType string) (string, float64) {
 	if target == "" {
-		return nil, nil
+		return "", 0
 	}
 
 	cacheKey := FormatCacheKey(KeyTypePrefetch, config, group, target)
 
 	if value, ok := GetCacheValue(cacheKey); ok {
-		if m, ok := value.(PrefetchMap); ok {
+		if m, ok := value.(map[string]interface{}); ok {
 			if res, exists := m[weightType]; exists {
-				if len(res.Nodes) > 0 && len(res.Weights) == len(res.Nodes) {
-					return res.Nodes, res.Weights
-				}
-				if len(res.Node) > 0 {
-					return []string{res.Node}, []float64{res.Weight}
+				if resMap, ok := res.(map[string]interface{}); ok {
+					node, _ := resMap["node"].(string)
+					weight, _ := resMap["weight"].(float64)
+					return node, weight
 				}
 			}
 		}
@@ -140,14 +139,14 @@ func (s *Store) GetPrefetchResult(group, config string, target string, weightTyp
 	globalQueueMutex.RLock()
 	for _, op := range globalOperationQueue {
 		if op.Type == OpSavePrefetch && op.Group == group && op.Config == config && op.Domain == target {
-			var prefetchMap PrefetchMap
+			var prefetchMap map[string]interface{}
 			if err := json.Unmarshal(op.Data, &prefetchMap); err == nil {
 				if res, exists := prefetchMap[weightType]; exists {
-					if len(res.Nodes) > 0 && len(res.Weights) == len(res.Nodes) {
-						return res.Nodes, res.Weights
-					}
-					if len(res.Node) > 0 {
-						return []string{res.Node}, []float64{res.Weight}
+					if resMap, ok := res.(map[string]interface{}); ok {
+						node, _ := resMap["node"].(string)
+						weight, _ := resMap["weight"].(float64)
+						globalQueueMutex.RUnlock()
+						return node, weight
 					}
 				}
 			}
@@ -158,16 +157,14 @@ func (s *Store) GetPrefetchResult(group, config string, target string, weightTyp
 	dbKey := FormatDBKey("smart", KeyTypePrefetch, config, group, target)
 	data, err := s.DBViewGetItem(dbKey)
 	if err == nil && data != nil {
-		var prefetchMap PrefetchMap
+		var prefetchMap map[string]interface{}
 		if err = json.Unmarshal(data, &prefetchMap); err == nil {
 			if res, exists := prefetchMap[weightType]; exists {
-				if len(res.Nodes) > 0 && len(res.Weights) == len(res.Nodes) {
+				if resMap, ok := res.(map[string]interface{}); ok {
+					node, _ := resMap["node"].(string)
+					weight, _ := resMap["weight"].(float64)
 					SetCacheValue(cacheKey, prefetchMap)
-					return res.Nodes, res.Weights
-				}
-				if len(res.Node) > 0 {
-					SetCacheValue(cacheKey, prefetchMap)
-					return []string{res.Node}, []float64{res.Weight}
+					return node, weight
 				}
 			}
 		}
@@ -176,12 +173,12 @@ func (s *Store) GetPrefetchResult(group, config string, target string, weightTyp
 		if err = json.Unmarshal(data, &oldMap); err == nil {
 			if node, exists := oldMap[weightType]; exists {
 				SetCacheValue(cacheKey, oldMap)
-				return []string{node}, []float64{0}
+				return node, 0
 			}
 		}
 	}
 
-	return nil, nil
+	return "", 0
 }
 
 // 预加载所有预计算结果
@@ -213,7 +210,7 @@ func (s *Store) LoadAllPrefetchResults(group, config string, limit int) int {
 			continue
 		}
 
-		var prefetchMap PrefetchMap
+		var prefetchMap map[string]interface{}
 		if err := json.Unmarshal(v, &prefetchMap); err != nil {
 			parseFailures++
 			continue
@@ -236,28 +233,28 @@ func (s *Store) LoadAllPrefetchResults(group, config string, limit int) int {
 	return loadCount
 }
 
-func (s *Store) StoreUnwrapResult(group, config string, target string, proxyNames []string) {
-	if target == "" || len(proxyNames) == 0 {
+func (s *Store) StoreUnwrapResult(group, config string, target string, proxyName string) {
+	if target == "" || proxyName == "" {
 		return
 	}
 
 	key := FormatCacheKey(KeyTypeUnwrap, config, group, target)
-	SetCacheValue(key, proxyNames)
+	SetCacheValue(key, proxyName)
 }
 
-func (s *Store) GetUnwrapResult(group, config string, target string) []string {
+func (s *Store) GetUnwrapResult(group, config string, target string) string {
 	if target == "" {
-		return nil
+		return ""
 	}
 
 	key := FormatCacheKey(KeyTypeUnwrap, config, group, target)
 	if value, ok := GetCacheValue(key); ok {
-		if proxyNames, ok := value.([]string); ok {
-			return proxyNames
+		if proxyName, isString := value.(string); isString {
+			return proxyName
 		}
 	}
 
-	return nil
+	return ""
 }
 
 // 删除缓存结果
