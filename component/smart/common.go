@@ -442,7 +442,7 @@ func (s *Store) FlushByLevel(level string, config string, group string) error {
 	}
 
 	if level == "all" {
-		return s.DeleteByPath("smart")
+		s.DeleteByPath("smart")
 	} else if level == "config" {
 		s.DeleteByPath(FormatDBKey("smart", KeyTypeStats, config))
 		s.DeleteByPath(FormatDBKey("smart", KeyTypeNode, config))

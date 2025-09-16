@@ -5,13 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"math/rand"
-	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,18 +19,15 @@ import (
 	"github.com/metacubex/mihomo/common/callback"
 	"github.com/metacubex/mihomo/common/singleflight"
 	"github.com/metacubex/mihomo/common/utils"
-	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/mmdb"
 	"github.com/metacubex/mihomo/component/profile/cachefile"
 	"github.com/metacubex/mihomo/component/smart"
 	"github.com/metacubex/mihomo/component/smart/lightgbm"
-	"github.com/metacubex/mihomo/component/tcp"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/tunnel"
 	"github.com/metacubex/mihomo/tunnel/statistic"
-	"github.com/samber/lo"
 )
 
 const (
@@ -68,24 +62,35 @@ type smartOption func(*Smart)
 type Smart struct {
 	*GroupBase
 	store          *smart.Store
+	fallback       *LoadBalance
+	dataCollector  *lightgbm.DataCollector
+	weightModel    *lightgbm.WeightModel
+	ctx            context.Context
+	cancel         context.CancelFunc
+
 	configName     string
 	selected       string
 	testUrl        string
 	expectedStatus string
-	disableUDP     bool
-	fallback       *LoadBalance
-	Hidden         bool
+	strategy       string
 	Icon           string
+
 	policyPriority []priorityRule
-	ctx            context.Context
-	cancel         context.CancelFunc
 	wg             sync.WaitGroup
+
+	sampleRate     float64
+
+	disableUDP     bool
+	Hidden         bool
 	useLightGBM    bool
 	collectData    bool
-	dataCollector  *lightgbm.DataCollector
-	weightModel    *lightgbm.WeightModel
-	strategy       string
-	sampleRate     float64
+}
+
+type dialResult struct {
+	proxyIndex  int
+	conn        C.Conn
+	connectTime int64
+	error       error
 }
 
 type priorityRule struct {
@@ -164,57 +169,82 @@ func (s *Smart) GetConfigFilename() string {
 }
 
 // ref: component/dialer/dialer.go:314
-func doParallelDialContext[T interface {
-	comparable
-	io.Closer
-}](proxies []C.Proxy, fn func(C.Proxy) (T, error)) (C.Proxy, T, error) {
-	results := make(chan struct {
-		proxy C.Proxy
-		conn  T
-		error error
-	})
-	returned := make(chan struct{})
-	defer close(returned)
-	racer := func(proxy C.Proxy) {
-		result := struct {
-			proxy C.Proxy
-			conn  T
-			error error
-		}{}
-		defer func() {
-			select {
-			case results <- result:
-			case <-returned:
-				if result.conn != lo.Empty[T]() && result.error == nil {
-					_ = result.conn.Close()
-				}
-			}
-		}()
-		result.conn, result.error = fn(proxy)
-		result.proxy = proxy
+func (s *Smart) ParallelDialContext(ctx context.Context, proxies []C.Proxy, metadata *C.Metadata, start time.Time, singleDialFunc func(context.Context, C.Proxy, *C.Metadata, time.Time) (C.Conn, int64, error)) (C.Proxy, C.Conn, int64, error) {
+	if len(proxies) == 1 {
+		conn, connectTime, err := singleDialFunc(ctx, proxies[0], metadata, start)
+		return proxies[0], conn, connectTime, err
 	}
 
-	for _, proxy := range proxies {
-		go racer(proxy)
-	}
-	var errs []error
-	for i := 0; i < len(proxies); i++ {
-		res := <-results
-		if res.error == nil {
-			return res.proxy, res.conn, nil
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	results := make(chan dialResult, len(proxies))
+
+	errs := make([]error, 0, len(proxies))
+
+	racer := func(proxyIndex int) {
+		if ctx.Err() != nil {
+			return
 		}
-		errs = append(errs, res.error)
+		
+		conn, connectTime, err := singleDialFunc(ctx, proxies[proxyIndex], metadata, start)
+		
+		result := dialResult{
+			proxyIndex:  proxyIndex,
+			conn:        conn,
+			connectTime: connectTime,
+			error:       err,
+		}
+		
+		select {
+		case results <- result:
+		case <-ctx.Done():
+			if conn != nil && err == nil {
+				_ = conn.Close()
+			}
+		}
+	}
+
+	for i := 0; i < len(proxies); i++ {
+		go racer(i)
+	}
+
+	completedCount := 0
+	for completedCount < len(proxies) {
+		select {
+		case res := <-results:
+			completedCount++
+			if res.error == nil {
+				cancel()
+				return proxies[res.proxyIndex], res.conn, res.connectTime, nil
+			}
+			errs = append(errs, res.error)
+			
+		case <-ctx.Done():
+			return nil, nil, 0, ctx.Err()
+		}
 	}
 
 	if len(errs) > 0 {
-		return nil, lo.Empty[T](), errors.Join(errs...)
+		return nil, nil, 0, errors.Join(errs...)
 	}
-	return nil, lo.Empty[T](), os.ErrDeadlineExceeded
+	return nil, nil, 0, os.ErrDeadlineExceeded
+}
+
+func (s *Smart) singleDialContext(ctx context.Context, proxy C.Proxy, metadata *C.Metadata, start time.Time) (c C.Conn, connectTime int64, err error) {
+	c, err = proxy.DialContext(ctx, metadata)
+	connectTime = time.Since(start).Milliseconds()
+
+	if err != nil && err != context.Canceled {
+		s.recordConnectionStats("failed", metadata, proxy, 0, 0, 0, 0, 0, 0, 0, false, err)
+		return nil, 0, err
+	}
+
+	return c, connectTime, nil
 }
 
 func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {
 	availableProxies := s.GetProxies(true)
-
 	triedProxies := make(map[string]bool)
 
 	getBatch := func(proxies []C.Proxy, i int) ([]C.Proxy, time.Duration) {
@@ -227,7 +257,7 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 		if end > len(proxies) {
 			end = len(proxies)
 		}
-		batch := proxies[begin:end]
+		batch := proxies[begin:end:end]
 		var historyConnectTime int64
 		for _, p := range batch {
 			triedProxies[p.Name()] = true
@@ -253,33 +283,44 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 	tryDial := func(proxies []C.Proxy) (C.Conn, error) {
 		var finalErr error
 		for i := 0; i < maxRetries; i++ {
+			if i > 0 {
+				baseDelay := time.Duration(math.Pow(2, float64(i-1))) * 50 * time.Millisecond
+				jitterRange := 0.2
+				jitter := 1.0 + (rand.Float64()*2-1)*jitterRange
+				backoffDuration := time.Duration(float64(baseDelay) * jitter)
+				
+				select {
+				case <-time.After(backoffDuration):
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			
 			batch, timeout := getBatch(proxies, i)
+			if len(batch) == 0 {
+				break
+			}
+			
 			ctxDial, cancel := context.WithTimeout(ctx, timeout)
 			start := time.Now()
-			p, c, err := doParallelDialContext(batch, func(proxy C.Proxy) (c C.Conn, err error) {
-				return s.singleDialContext(ctxDial, proxy, metadata, start)
-			})
-			go func() {
-				<-ctxDial.Done()
-				cancel()
-			}()
+			p, c, connectTime, err := s.ParallelDialContext(ctxDial, batch, metadata, start, s.singleDialContext)
+			cancel()
 
 			if err == nil {
 				if s.store != nil {
-					return s.WrapConnWithMetric(c, p, metadata), nil
+					return s.WrapConnWithMetric(c, p, metadata, connectTime), nil
 				}
 				c.AppendToChains(s)
-				s.onDialSuccess()
 				return c, nil
 			}
-
 			finalErr = err
+			
+			
 			if s.selected != "" && len(proxies) == 1 && proxies[0].Name() == s.selected {
 				break
 			}
 		}
 		if finalErr != nil && s.store != nil {
-			s.onDialFailed(proxies[0].Type(), finalErr, s.GroupBase.healthCheck)
 			s.store.MarkConnectionFailed(s.Name(), s.configName, len(proxies), triedProxies, metadata)
 		}
 		return nil, finalErr
@@ -291,39 +332,7 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 	}
 
 	proxies := s.selectProxies(metadata, availableProxies)
-
 	return tryDial(proxies)
-}
-
-func (s *Smart) singleDialContext(ctx context.Context, proxy C.Proxy, metadata *C.Metadata, start time.Time) (c C.Conn, err error) {
-	var nc net.Conn
-	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
-		d := dialer.NewDialer(dialer.WithCallback(func(conn net.Conn, err error) {
-			if err == nil {
-				nc = conn
-			}
-		}))
-		c, err = proxy.DialContextWithDialer(ctx, d, metadata)
-		if err == C.ErrNotSupport {
-			c, err = proxy.DialContext(ctx, metadata)
-		}
-	} else {
-		c, err = proxy.DialContext(ctx, metadata)
-	}
-	if err != nil {
-		s.recordConnectionStats("failed", metadata, proxy, 0, 0, 0, 0, 0, 0, 0, false, err)
-		return nil, err
-	}
-	if nc != nil {
-		if tc, ok := nc.(*net.TCPConn); ok {
-			if err = tcp.WaitAllAcks(ctx, tc); err != nil {
-				s.recordConnectionStats("failed", metadata, proxy, 0, 0, 0, 0, 0, 0, 0, false, err)
-				return nil, err
-			}
-		}
-	}
-	s.recordConnectionStats("success", metadata, proxy, time.Since(start).Milliseconds(), 0, 0, 0, 0, 0, 0, false, nil)
-	return c, nil
 }
 
 func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (pc C.PacketConn, err error) {
@@ -410,7 +419,6 @@ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 
 		if err == nil {
 			pc.AppendToChains(s)
-			s.onDialSuccess()
 			if s.store != nil {
 				s.recordConnectionStats("success", metadata, proxy, connectTime, 0, 0, 0, 0, 0, 0, false, nil)
 				pc = s.registerPacketClosureMetricsCallback(pc, proxy, metadata)
@@ -425,10 +433,7 @@ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 			break
 		}
 	}
-	if finalErr != nil && s.store != nil {
-		s.onDialFailed(proxy.Type(), finalErr, s.GroupBase.healthCheck)
-		s.store.MarkConnectionFailed(s.Name(), s.configName, len(proxies), triedProxies, metadata)
-	}
+
 	return nil, finalErr
 }
 
@@ -456,7 +461,7 @@ func (s *Smart) IsL3Protocol(metadata *C.Metadata) bool {
 	return s.Unwrap(metadata, false).IsL3Protocol(metadata)
 }
 
-func (s *Smart) WrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata) C.Conn {
+func (s *Smart) WrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata, connectTime int64) C.Conn {
 	c.AppendToChains(s)
 	c = s.registerClosureMetricsCallback(c, proxy, metadata)
 
@@ -465,11 +470,9 @@ func (s *Smart) WrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata
 	return callback.NewFirstReadCallBackConn(c, func(err error) {
 		latency := time.Since(start).Milliseconds()
 		if err == nil {
-			s.onDialSuccess()
-			s.recordConnectionStats("success", metadata, proxy, 0, latency, 0, 0, 0, 0, 0, false, nil)
+			s.recordConnectionStats("success", metadata, proxy, connectTime, latency, 0, 0, 0, 0, 0, false, nil)
 		} else {
-			s.onDialFailed(proxy.Type(), err, s.GroupBase.healthCheck)
-			s.recordConnectionStats("failed", metadata, proxy, 0, 0, 0, 0, 0, 0, 0, false, err)
+			s.recordConnectionStats("failed", metadata, proxy, connectTime, 0, 0, 0, 0, 0, 0, false, err)
 		}
 	})
 }
@@ -1410,7 +1413,7 @@ func formatTimeUnit(val float64) string {
 }
 
 // 日志记录
-func (s *Smart) logConnectionStats(record *smart.StatsRecord, metadata *C.Metadata, baseWeight, priorityFactor float64,
+func (s *Smart) logConnectionStats(status string, record *smart.StatsRecord, metadata *C.Metadata, baseWeight, priorityFactor float64,
 	addressDisplay, proxyName string, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate float64,
 	connectionDuration int64, asnInfo string, isModelPredicted bool) {
 
@@ -1438,11 +1441,11 @@ func (s *Smart) logConnectionStats(record *smart.StatsRecord, metadata *C.Metada
 		weightSource = "LightGBM"
 	}
 
-	log.Debugln("[Smart] Updated weights: (Model: [%s], TCP: [%.4f], UDP: [%.4f], TCP ASN: [%.4f], UDP ASN: [%.4f], Base: [%.4f], Priority: [%.2f]) "+
+	log.Debugln("[Smart] Status: [%s], Updated weights: (Model: [%s], TCP: [%.4f], UDP: [%.4f], TCP ASN: [%.4f], UDP ASN: [%.4f], Base: [%.4f], Priority: [%.2f]) "+
 		"For (Group: [%s] - Node: [%s] - Network: [%s] - Address: [%s] - ASN: [%s]) "+
 		"- Current: (Up: [%s], Down: [%s], Max Up Speed: [%s], Max Down Speed: [%s], Duration: [%s]) "+
 		"- History: (Success: [%d], Failure: [%d], Connect: [%s], Latency: [%s], Total Up: [%s], Total Down: [%s], Max Up Speed: [%s], Max Down Speed: [%s], Avg Duration: [%s])",
-		weightSource, record.Weights[smart.WeightTypeTCP], record.Weights[smart.WeightTypeUDP], tcpAsnWeight, udpAsnWeight, baseWeight, priorityFactor,
+		status, weightSource, record.Weights[smart.WeightTypeTCP], record.Weights[smart.WeightTypeUDP], tcpAsnWeight, udpAsnWeight, baseWeight, priorityFactor,
 		s.Name(), proxyName, strings.ToUpper(metadata.NetWork.String()), addressDisplay, asnDisplayInfo,
 		formatTrafficUnit(uploadTotal*1024*1024, false),
 		formatTrafficUnit(downloadTotal*1024*1024, false),
@@ -1564,16 +1567,16 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 
 	switch status {
 	case "success":
+		atomicRecord.Add("success", int64(1))
+		success := atomicRecord.Get("success").(int64)
+
 		if connectTime > 0 {
-			atomicRecord.Add("success", int64(1))
-			success := atomicRecord.Get("success").(int64)
 			oldConnectTime := atomicRecord.Get("connectTime").(int64)
 			newConnectTime := updateAverageValue(oldConnectTime, connectTime, success)
 			atomicRecord.Set("connectTime", newConnectTime)
 		}
 
 		if latency > 0 {
-			success := atomicRecord.Get("success").(int64)
 			oldLatency := atomicRecord.Get("latency").(int64)
 			newLatency := updateAverageValue(oldLatency, latency, success)
 			atomicRecord.Set("latency", newLatency)
@@ -1721,29 +1724,27 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 		if asnInfo != "" {
 			s.updateAsnWeights(atomicRecord, asnInfo, calculatedWeight, metadata.NetWork == C.UDP)
 		}
-	}
 
-	statsSnapshot := atomicRecord.CreateStatsSnapshot()
+		statsSnapshot := atomicRecord.CreateStatsSnapshot()
 
-	if isDegraded {
-		go s.cleanupDegradedNodePreferenceCache(metadata, domain, addressDisplay, proxy.Name(), calculatedWeight, weightType, asnInfo)
-	}
+		if isDegraded {
+			go s.cleanupDegradedNodePreferenceCache(metadata, domain, addressDisplay, proxy.Name(), calculatedWeight, weightType, asnInfo)
+		}
 
-	// 日志输出
-	if status == "closed" {
+		// 数据收集
+		if needDataCollection {
+			s.collectConnectionData(status, statsSnapshot, metadata, uploadTotalMB, downloadTotalMB, maxUploadRateKB, maxDownloadRateKB, baseWeight, proxy.Name(), isModelPredicted)
+		}
+
+		// 保存统计记录
+		s.saveStatsRecord(cacheKey, domain, proxy, statsSnapshot, time.Now())
+
+		// 日志输出
 		if !fromLongConnProcess {
-			s.logConnectionStats(statsSnapshot, metadata, baseWeight, priorityFactor, addressDisplay, proxy.Name(),
+			s.logConnectionStats(status, statsSnapshot, metadata, baseWeight, priorityFactor, addressDisplay, proxy.Name(),
 				uploadTotalMB, downloadTotalMB, maxUploadRateKB, maxDownloadRateKB, connectionDuration, asnInfo, isModelPredicted)
 		}
 	}
-
-	// 数据收集
-	if needDataCollection {
-		s.collectConnectionData(status, statsSnapshot, metadata, uploadTotalMB, downloadTotalMB, maxUploadRateKB, maxDownloadRateKB, baseWeight, proxy.Name(), isModelPredicted)
-	}
-
-	// 保存统计记录
-	s.saveStatsRecord(cacheKey, domain, proxy, statsSnapshot, time.Now())
 }
 
 func (s *Smart) registerClosureMetricsCallback(c C.Conn, proxy C.Proxy, metadata *C.Metadata) C.Conn {

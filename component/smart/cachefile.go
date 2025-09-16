@@ -280,78 +280,85 @@ func (s *Store) BatchSaveConnStats(operations []StoreOperation) error {
 	}
 
 	existingOps := getGlobalQueueSnapshot()
+	existingOpsCopy := make([]StoreOperation, len(existingOps))
+	copy(existingOpsCopy, existingOps)
 
-	initialMapSize := len(existingOps) + len(operations)
+	initialMapSize := len(existingOpsCopy) + len(operations)
 	opMap := make(map[string]*StoreOperation, initialMapSize)
 	lookupToKeys := make(map[string][]string, initialMapSize/2)
 	cacheBatch := sync.Map{}
 
-	for i := range existingOps {
-		op := &existingOps[i]
+	for i, op := range existingOpsCopy {
+		var opKey string
+		var lookupKey string
+
+		if op.Type == OpSaveStats {
+			lookupKey = fmt.Sprintf("%s:%s:%s:%s", op.Group, op.Config, op.Domain, op.Node)
+			opKey = fmt.Sprintf("%s:%d", lookupKey, i)
+		} else {
+			lookupKey = fmt.Sprintf("%d:%s:%s:%s:%s", op.Type, op.Group, op.Config, op.Domain, op.Node)
+			opKey = fmt.Sprintf("%s:%d", lookupKey, i)
+		}
+
+		opMap[opKey] = &existingOpsCopy[i]
+	}
+
+	for opKey, op := range opMap {
 		var lookupKey string
 		if op.Type == OpSaveStats {
 			lookupKey = fmt.Sprintf("%s:%s:%s:%s", op.Group, op.Config, op.Domain, op.Node)
 		} else {
 			lookupKey = fmt.Sprintf("%d:%s:%s:%s:%s", op.Type, op.Group, op.Config, op.Domain, op.Node)
 		}
-		opKey := fmt.Sprintf("%s:%d", lookupKey, i)
-		opMap[opKey] = op
 		lookupToKeys[lookupKey] = append(lookupToKeys[lookupKey], opKey)
 	}
 
 	concurrency := 2
 	batchSize := 100
+
 	b, _ := batch.New[struct{}](context.Background(), batch.WithConcurrencyNum[struct{}](concurrency))
 	processGroup := singleflight.Group[struct{}]{}
-	var mu sync.Mutex
 
-	numBatches := (len(operations) + batchSize - 1) / batchSize
-	for i := 0; i < numBatches; i++ {
-		start := i * batchSize
-		end := (i + 1) * batchSize
-		if end > len(operations) {
-			end = len(operations)
+	for batchStart := 0; batchStart < len(operations); batchStart += batchSize {
+		batchEnd := batchStart + batchSize
+		if batchEnd > len(operations) {
+			batchEnd = len(operations)
 		}
 
-		batchOps := operations[start:end]
-		b.Go(fmt.Sprintf("batch-%d", i), func() (struct{}, error) {
-			for _, op := range batchOps {
+		batchIndex := batchStart
+		b.Go(fmt.Sprintf("batch-%d", batchIndex/batchSize), func() (struct{}, error) {
+			start, end := batchIndex, batchEnd
+			for i := start; i < end; i++ {
+				op := operations[i]
 				var lookupKey string
 
 				if op.Type == OpSaveStats {
 					lookupKey = fmt.Sprintf("%s:%s:%s:%s", op.Group, op.Config, op.Domain, op.Node)
 
 					processGroup.Do(lookupKey, func() (struct{}, error) {
-						var cacheKey string
-						var record *StatsRecord
-						if op.Data != nil {
-							cacheKey = FormatCacheKey(KeyTypeStats, op.Config, op.Group, op.Domain, op.Node)
-							var tempRecord StatsRecord
-							if json.Unmarshal(op.Data, &tempRecord) == nil {
-								record = &tempRecord
-							}
-						}
-
-						mu.Lock()
-						defer mu.Unlock()
-
-						matchingKeys := lookupToKeys[lookupKey]
-						if len(matchingKeys) == 0 {
+						matchingKeys, found := lookupToKeys[lookupKey]
+						if !found || len(matchingKeys) == 0 {
 							newKey := fmt.Sprintf("%s:%d", lookupKey, len(opMap))
-							opCopy := op
-							opMap[newKey] = &opCopy
+							opMap[newKey] = &op
 							lookupToKeys[lookupKey] = append(lookupToKeys[lookupKey], newKey)
 
-							if record != nil {
-								cacheBatch.Store(cacheKey, record)
+							if op.Data != nil {
+								cacheKey := FormatCacheKey(KeyTypeStats, op.Config, op.Group, op.Domain, op.Node)
+								var record StatsRecord
+								if json.Unmarshal(op.Data, &record) == nil {
+									cacheBatch.Store(cacheKey, &record)
+								}
 							}
 							return struct{}{}, nil
 						}
 
 						existingOp := opMap[matchingKeys[0]]
-						var existingRecord StatsRecord
+						var existingRecord, newRecord StatsRecord
 
-						if json.Unmarshal(existingOp.Data, &existingRecord) == nil && record != nil {
+						if existingOp.Data != nil && op.Data != nil &&
+							json.Unmarshal(existingOp.Data, &existingRecord) == nil &&
+							json.Unmarshal(op.Data, &newRecord) == nil {
+
 							oldWeights := make(map[string]float64, len(existingRecord.Weights))
 							if existingRecord.Weights != nil {
 								for k, v := range existingRecord.Weights {
@@ -359,7 +366,7 @@ func (s *Store) BatchSaveConnStats(operations []StoreOperation) error {
 								}
 							}
 
-							existingRecord = *record
+							existingRecord = newRecord
 
 							if existingRecord.Success > 1000000 {
 								existingRecord.Success = existingRecord.Success / 2
@@ -380,8 +387,11 @@ func (s *Store) BatchSaveConnStats(operations []StoreOperation) error {
 								}
 							}
 
-							if mergedData, err := json.Marshal(existingRecord); err == nil {
+							mergedData, err := json.Marshal(existingRecord)
+							if err == nil {
 								existingOp.Data = mergedData
+
+								cacheKey := FormatCacheKey(KeyTypeStats, op.Config, op.Group, op.Domain, op.Node)
 								cacheBatch.Store(cacheKey, &existingRecord)
 							}
 						}
@@ -390,41 +400,33 @@ func (s *Store) BatchSaveConnStats(operations []StoreOperation) error {
 					})
 				} else {
 					lookupKey = fmt.Sprintf("%d:%s:%s:%s:%s", op.Type, op.Group, op.Config, op.Domain, op.Node)
-					
-					var cacheKey string
-					var cacheValue interface{}
+
+					newKey := fmt.Sprintf("%s:%d", lookupKey, len(opMap))
+					opMap[newKey] = &op
+					lookupToKeys[lookupKey] = append(lookupToKeys[lookupKey], newKey)
+
 					if op.Data != nil {
+						var cacheKey string
 						switch op.Type {
 						case OpSaveNodeState:
 							cacheKey = FormatCacheKey(KeyTypeNode, op.Config, op.Group, op.Node)
 							var nodeState NodeState
 							if json.Unmarshal(op.Data, &nodeState) == nil {
-								cacheValue = nodeState
+								cacheBatch.Store(cacheKey, nodeState)
 							}
 						case OpSavePrefetch:
 							cacheKey = FormatCacheKey(KeyTypePrefetch, op.Config, op.Group, op.Domain)
 							var prefetchMap PrefetchMap
 							if json.Unmarshal(op.Data, &prefetchMap) == nil {
-								cacheValue = prefetchMap
+								cacheBatch.Store(cacheKey, prefetchMap)
 							}
 						case OpSaveRanking:
 							cacheKey = FormatCacheKey(KeyTypeRanking, op.Config, op.Group, "")
 							var rankingData RankingData
 							if json.Unmarshal(op.Data, &rankingData) == nil {
-								cacheValue = rankingData
+								cacheBatch.Store(cacheKey, rankingData)
 							}
 						}
-					}
-
-					mu.Lock()
-					newKey := fmt.Sprintf("%s:%d", lookupKey, len(opMap))
-					opCopy := op
-					opMap[newKey] = &opCopy
-					lookupToKeys[lookupKey] = append(lookupToKeys[lookupKey], newKey)
-					mu.Unlock()
-
-					if cacheValue != nil {
-						cacheBatch.Store(cacheKey, cacheValue)
 					}
 				}
 			}
@@ -640,29 +642,7 @@ func (s *Store) GetSubBytesByPath(prefix string, all bool) (map[string][]byte, e
 
 // 删除指定路径前缀的数据
 func (s *Store) DeleteByPath(path string) error {
-	keysToDelete := []string{}
-
-	matchingData, err := s.DBViewPrefixScan(path, 10000)
-	if err != nil {
-		return err
-	}
-
-	for pathStr := range matchingData {
-		cacheKey := ExtractCachePrefixFromPath(pathStr)
-		if cacheKey != "" {
-			keysToDelete = append(keysToDelete, cacheKey)
-		}
-	}
-
-	err = s.DBBatchDeletePrefix(path)
-
-	if err == nil && len(keysToDelete) > 0 {
-		for _, key := range keysToDelete {
-			DeleteCacheValue(key)
-		}
-	}
-
-	return err
+	return s.DBBatchDeletePrefix(path)
 }
 
 // 从数据库获取单个条目

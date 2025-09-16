@@ -24,10 +24,6 @@ type NetDialer interface {
 	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 }
 
-type callback struct {
-	fn func(conn net.Conn, err error)
-}
-
 type option struct {
 	interfaceName string
 	fallbackBind  bool
@@ -39,7 +35,6 @@ type option struct {
 	mpTcp         bool
 	resolver      resolver.Resolver
 	netDialer     NetDialer
-	callback      *callback
 }
 
 type Option func(opt *option)
@@ -111,12 +106,6 @@ func WithMPTCP(mpTcp bool) Option {
 func WithNetDialer(netDialer NetDialer) Option {
 	return func(opt *option) {
 		opt.netDialer = netDialer
-	}
-}
-
-func WithCallback(cb func(conn net.Conn, err error)) Option {
-	return func(opt *option) {
-		opt.callback = &callback{cb}
 	}
 }
 

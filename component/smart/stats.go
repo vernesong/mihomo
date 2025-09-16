@@ -329,14 +329,16 @@ func (s *Store) GetNodeWeightRanking(group, config string, onlyCache bool, proxi
 	nodeStatesMap := make(map[string]NodeState)
 	stateData, _ := s.GetNodeStates(group, config)
 
+	var nodeState NodeState
+
 	for nodeName, data := range stateData {
-		var state NodeState
-		if json.Unmarshal(data, &state) == nil {
-			if !state.BlockedUntil.IsZero() && state.BlockedUntil.After(time.Now()) {
+		nodeState = NodeState{}
+		if json.Unmarshal(data, &nodeState) == nil {
+			if !nodeState.BlockedUntil.IsZero() && nodeState.BlockedUntil.After(time.Now()) {
 				continue
 			}
 
-			nodeStatesMap[nodeName] = state
+			nodeStatesMap[nodeName] = nodeState
 
 			nodeDataMap[nodeName] = &struct {
 				tcpWeights    float64
@@ -350,8 +352,8 @@ func (s *Store) GetNodeWeightRanking(group, config string, onlyCache bool, proxi
 				degradeFactor: 1.0,
 			}
 
-			if state.Degraded {
-				nodeDataMap[nodeName].degradeFactor = state.DegradedFactor
+			if nodeState.Degraded {
+				nodeDataMap[nodeName].degradeFactor = nodeState.DegradedFactor
 			}
 		}
 	}
@@ -387,6 +389,8 @@ func (s *Store) GetNodeWeightRanking(group, config string, onlyCache bool, proxi
 		return nil, err
 	}
 
+	var statsRecord StatsRecord
+
 	for _, nodeStats := range allStats {
 		for nodeName, data := range nodeStats {
 			nodeData, ok := nodeDataMap[nodeName]
@@ -394,37 +398,37 @@ func (s *Store) GetNodeWeightRanking(group, config string, onlyCache bool, proxi
 				continue
 			}
 
-			var record StatsRecord
-			if json.Unmarshal(data, &record) != nil {
+			statsRecord = StatsRecord{}
+			if json.Unmarshal(data, &statsRecord) != nil {
 				continue
 			}
 
-			samples := record.Success + record.Failure
+			samples := statsRecord.Success + statsRecord.Failure
 			if samples < DefaultMinSampleCount {
 				continue
 			}
 
-			timeDecay := getTimeDecay(record.LastUsed.Unix())
+			timeDecay := getTimeDecay(statsRecord.LastUsed.Unix())
 			timeDecayedSamples := float64(samples) * timeDecay
 
-			if record.Weights == nil {
+			if statsRecord.Weights == nil {
 				continue
 			}
 
 			// 处理TCP权重
-			if tcpWeight, ok := record.Weights[WeightTypeTCP]; ok && tcpWeight > 0 {
+			if tcpWeight, ok := statsRecord.Weights[WeightTypeTCP]; ok && tcpWeight > 0 {
 				nodeData.tcpWeights += tcpWeight * timeDecay * float64(samples)
 				nodeData.tcpSamples += int(timeDecayedSamples)
 			}
 
 			// 处理UDP权重
-			if udpWeight, ok := record.Weights[WeightTypeUDP]; ok && udpWeight > 0 {
+			if udpWeight, ok := statsRecord.Weights[WeightTypeUDP]; ok && udpWeight > 0 {
 				nodeData.udpWeights += udpWeight * timeDecay * float64(samples)
 				nodeData.udpSamples += int(timeDecayedSamples)
 			}
 
 			// 处理ASN权重 - 只统计数量，具体权重在第二次遍历中处理
-			for key := range record.Weights {
+			for key := range statsRecord.Weights {
 				if strings.HasPrefix(key, WeightTypeTCPASN) || strings.HasPrefix(key, WeightTypeUDPASN) {
 					nodeData.asnSamples++
 				}
@@ -432,6 +436,7 @@ func (s *Store) GetNodeWeightRanking(group, config string, onlyCache bool, proxi
 		}
 	}
 
+	// 第二次遍历处理ASN权重
 	for _, nodeStats := range allStats {
 		for nodeName, data := range nodeStats {
 			nodeData, ok := nodeDataMap[nodeName]
@@ -439,15 +444,14 @@ func (s *Store) GetNodeWeightRanking(group, config string, onlyCache bool, proxi
 				continue
 			}
 
-			var record StatsRecord
-			if json.Unmarshal(data, &record) != nil {
+			statsRecord = StatsRecord{}
+			if json.Unmarshal(data, &statsRecord) != nil {
 				continue
 			}
 
-			timeDecay := getTimeDecay(record.LastUsed.Unix())
+			timeDecay := getTimeDecay(statsRecord.LastUsed.Unix())
 
-			// 处理ASN权重 - 现在已经确定此节点有ASN样本
-			for key, weight := range record.Weights {
+			for key, weight := range statsRecord.Weights {
 				if strings.HasPrefix(key, WeightTypeTCPASN) && weight > 0 {
 					// ASN权重贡献限制为25%
 					asnBonus := weight * timeDecay * 0.25
@@ -695,7 +699,7 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
 	case coverageRatio >= 0.6:
 		requiredNodeCount = baseCount
 		if requiredNodeCount > 2 {
-			requiredNodeCount = (requiredNodeCount * 3) / 4 // 适当减少
+			requiredNodeCount = (requiredNodeCount * 3) / 4
 		}
 	case coverageRatio >= 0.3:
 		requiredNodeCount = baseCount
@@ -785,8 +789,15 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
 	}
 	var nodeList []nodeWeight
 	for node, weight := range nodesWithWeight {
-		nodeList = append(nodeList, nodeWeight{node, weight})
+		if weight >= 0.4 {
+			nodeList = append(nodeList, nodeWeight{node, weight})
+		}
 	}
+
+	if len(nodeList) == 0 {
+		return nil, nil, errors.New("no best node with enough weight")
+	}
+
 	sort.Slice(nodeList, func(i, j int) bool {
 		return nodeList[i].weight > nodeList[j].weight
 	})
@@ -800,11 +811,6 @@ func (s *Store) GetBestProxyForTarget(group, config string, target string, weigh
 	for i := 0; i < len(nodeList) && i < 9; i++ {
 		bestNodes = append(bestNodes, nodeList[i].name)
 		bestWeights = append(bestWeights, nodeList[i].weight)
-	}
-
-	// force retry exploring if best weight was degraded
-	if len(bestWeights) > 0 && bestWeights[0] < 0.4 && len(nodesWithWeight) < availableNodesCount {
-		return nil, nil, errors.New("no suitable node")
 	}
 
 	return bestNodes, bestWeights, nil
@@ -1022,7 +1028,7 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
 	// 域名
 	for domain, activeTypes := range domains {
 		for _, weightType := range activeTypes {
-			bestNodes, bestWeights, err := s.GetBestProxyForTarget(group, config, domain, weightType, true)
+			bestNodes, bestWeights, err := s.GetBestProxyForTarget(group, config, domain, weightType, false)
 			if err != nil || len(bestNodes) == 0 {
 				continue
 			}
@@ -1057,7 +1063,7 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
 			} else {
 				continue
 			}
-			bestNodes, bestWeights, err := s.GetBestProxyForTarget(group, config, asn, weightType, true)
+			bestNodes, bestWeights, err := s.GetBestProxyForTarget(group, config, asn, weightType, false)
 			if err != nil || len(bestNodes) == 0 {
 				continue
 			}
@@ -1170,68 +1176,54 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
 func (s *Store) GetNodeStates(group, config string) (map[string][]byte, error) {
 	pathPrefix := FormatDBKey("smart", KeyTypeNode, config, group, "")
 	cacheKeyPrefix := FormatCacheKey(KeyTypeNode, config, group, "")
-	cacheResults := GetCacheValuesByPrefix(cacheKeyPrefix)
 
-	if len(cacheResults) > 0 {
-		result := make(map[string][]byte, len(cacheResults))
-		for key, value := range cacheResults {
-			parts := strings.Split(key, ":")
-			if len(parts) > 0 {
-				nodeName := parts[len(parts)-1]
-				var data []byte
-				var err error
+	resultCacheKey := cacheKeyPrefix + ":result"
+	cachedResult, hasResult := GetCacheValue(resultCacheKey)
 
-				switch v := value.(type) {
-				case NodeState:
-					data, err = json.Marshal(v)
-				default:
-					continue
-				}
-				if err == nil && data != nil {
-					result[nodeName] = data
-				}
+	var result map[string][]byte
+
+	if hasResult {
+		if resultMap, ok := cachedResult.(map[string][]byte); ok {
+			result = make(map[string][]byte, len(resultMap))
+			for k, v := range resultMap {
+				result[k] = v
 			}
 		}
+	}
 
-		if allFromCache {
-			ops := getGlobalQueueSnapshot()
-			for _, op := range ops {
-				if op.Type == OpSaveNodeState && op.Group == group && op.Config == config {
-					result[op.Node] = op.Data
-				}
-			}
-			
-			if len(result) > 0 {
-				return result, nil
+	if result == nil {
+		rawResult, err := s.GetSubBytesByPath(pathPrefix, true)
+		if err != nil {
+			return nil, err
+		}
+
+		result = make(map[string][]byte, len(rawResult))
+		for fullPath, data := range rawResult {
+			parts := strings.Split(fullPath, "/")
+			if len(parts) > 0 {
+				nodeName := parts[len(parts)-1]
+				result[nodeName] = data
+				
+				SetCacheValue(FormatCacheKey(KeyTypeNode, config, group, nodeName), data)
 			}
 		}
 		
-		return result, nil
-	}
-
-	rawResult, err := s.GetSubBytesByPath(pathPrefix, true)
-	if err != nil {
-		return nil, err
-	}
-
-	result := make(map[string][]byte)
-	for fullPath, data := range rawResult {
-		parts := strings.Split(fullPath, "/")
-		if len(parts) > 0 {
-			nodeName := parts[len(parts)-1]
-			result[nodeName] = data
-			var nodeState NodeState
-			if json.Unmarshal(data, &nodeState) == nil {
-				SetCacheValue(FormatCacheKey(KeyTypeNode, config, group, nodeName), nodeState)
-			}
-		}
+		SetCacheValue(resultCacheKey, result)
 	}
 
 	ops := getGlobalQueueSnapshot()
+	hasQueueUpdates := false
 	for _, op := range ops {
 		if op.Type == OpSaveNodeState && op.Group == group && op.Config == config {
 			result[op.Node] = op.Data
+			hasQueueUpdates = true
+			
+			SetCacheValue(FormatCacheKey(KeyTypeNode, config, group, op.Node), op.Data)
 		}
+	}
+
+	if hasQueueUpdates {
+		SetCacheValue(resultCacheKey, result)
 	}
 
 	return result, nil
@@ -1240,7 +1232,6 @@ func (s *Store) GetNodeStates(group, config string) (map[string][]byte, error) {
 // 获取域名的统计数据
 func (s *Store) GetStatsForDomain(group, config, domain string) (map[string][]byte, error) {
 	cacheKeyPrefix := FormatCacheKey(KeyTypeStats, config, group, domain)
-
 	cacheResults := GetCacheValuesByPrefix(cacheKeyPrefix)
 
 	if len(cacheResults) > 0 {
@@ -1256,8 +1247,7 @@ func (s *Store) GetStatsForDomain(group, config, domain string) (map[string][]by
 
 				switch v := value.(type) {
 				case []byte:
-					data = make([]byte, len(v))
-					copy(data, v)
+					data = v
 				case StatsRecord:
 					data, err = json.Marshal(v)
 				default:
@@ -1299,12 +1289,7 @@ func (s *Store) GetStatsForDomain(group, config, domain string) (map[string][]by
 			result[nodeName] = data
 
 			cacheKey := FormatCacheKey(KeyTypeStats, config, group, domain, nodeName)
-			var record StatsRecord
-			if json.Unmarshal(data, &record) == nil {
-				SetCacheValue(cacheKey, record)
-			} else {
-				SetCacheValue(cacheKey, data)
-			}
+			SetCacheValue(cacheKey, data)
 		}
 	}
 
@@ -1321,7 +1306,8 @@ func (s *Store) GetStatsForDomain(group, config, domain string) (map[string][]by
 // 获取所有统计数据
 func (s *Store) GetAllStats(group, config string, all bool) (map[string]map[string][]byte, error) {
 	cacheKeyPrefix := FormatCacheKey(KeyTypeStats, config, group, "")
-	cacheResults := GetCacheValuesByPrefix(cacheKeyPrefix)
+	resultCacheKey := cacheKeyPrefix + ":result"
+	cachedResult, hasResult := GetCacheValue(resultCacheKey)
 
 	globalCacheParams.mutex.RLock()
 	configMaxDomains := globalCacheParams.MaxDomains
@@ -1334,67 +1320,29 @@ func (s *Store) GetAllStats(group, config string, all bool) (map[string]map[stri
 		maxDomainsLimit = configMaxDomains
 	}
 
-	result := make(map[string]map[string][]byte)
-	domainsCount := 0
+	var result map[string]map[string][]byte
+	needUpdateCache := false
 
-	for key, value := range cacheResults {
-		if domainsCount >= maxDomainsLimit {
-			break
-		}
-		parts := strings.Split(key, ":")
-		if len(parts) >= 5 {
-			domain := parts[len(parts)-2]
-			nodeName := parts[len(parts)-1]
-			if _, exists := result[domain]; !exists {
-				if domainsCount >= maxDomainsLimit {
-					break
+	if hasResult {
+		if resultMap, ok := cachedResult.(map[string]map[string][]byte); ok {
+			result = make(map[string]map[string][]byte, len(resultMap))
+			for domain, nodeStats := range resultMap {
+				result[domain] = make(map[string][]byte, len(nodeStats))
+				for node, data := range nodeStats {
+					result[domain][node] = data
 				}
-				result[domain] = make(map[string][]byte)
-				domainsCount++
-			}
-			var data []byte
-			var err error
-			switch v := value.(type) {
-			case []byte:
-				data = make([]byte, len(v))
-				copy(data, v)
-			case StatsRecord:
-				data, err = json.Marshal(v)
-			default:
-				continue
-			}
-			if err == nil && data != nil {
-				result[domain][nodeName] = data
 			}
 		}
 	}
 
-	ops := getGlobalQueueSnapshot()
-	for _, op := range ops {
-		if op.Type == OpSaveStats && op.Group == group && op.Config == config {
-			domain := op.Domain
-			nodeName := op.Node
-			if _, exists := result[domain]; !exists {
-				if domainsCount >= maxDomainsLimit {
-					continue
-				}
-				result[domain] = make(map[string][]byte)
-				domainsCount++
-			}
-			result[domain][nodeName] = op.Data
-		}
-	}
-
-	if len(result) < maxDomainsLimit {
+	if result == nil {
+		result = make(map[string]map[string][]byte)
 		pathPrefix := FormatDBKey("smart", KeyTypeStats, config, group, "")
 		rawResult, err := s.DBViewPrefixScan(pathPrefix, maxDomainsLimit)
 		if err != nil {
 			return nil, err
 		}
 		for path, data := range rawResult {
-			if len(result) >= maxDomainsLimit {
-				break
-			}
 			parts := strings.Split(path, "/")
 			if len(parts) < 6 {
 				continue
@@ -1404,17 +1352,42 @@ func (s *Store) GetAllStats(group, config string, all bool) (map[string]map[stri
 			if _, exists := result[domain]; !exists {
 				result[domain] = make(map[string][]byte)
 			}
-			if _, exists := result[domain][node]; !exists {
-				result[domain][node] = data
-				cacheKey := FormatCacheKey(KeyTypeStats, config, group, domain, node)
-				var record StatsRecord
-				if json.Unmarshal(data, &record) == nil {
-					SetCacheValue(cacheKey, record)
-				} else {
-					SetCacheValue(cacheKey, data)
-				}
-			}
+			result[domain][node] = data
+			SetCacheValue(FormatCacheKey(KeyTypeStats, config, group, domain, node), data)
 		}
+		needUpdateCache = true
+	}
+
+	ops := getGlobalQueueSnapshot()
+	hasQueueUpdates := false
+	for _, op := range ops {
+		if op.Type == OpSaveStats && op.Group == group && op.Config == config {
+			domain := op.Domain
+			nodeName := op.Node
+			if _, exists := result[domain]; !exists {
+				result[domain] = make(map[string][]byte)
+			}
+			result[domain][nodeName] = op.Data
+			hasQueueUpdates = true
+			SetCacheValue(FormatCacheKey(KeyTypeStats, config, group, domain, nodeName), op.Data)
+		}
+	}
+
+	if len(result) > maxDomainsLimit {
+		trimmed := make(map[string]map[string][]byte)
+		count := 0
+		for domain, nodeStats := range result {
+			if count >= maxDomainsLimit {
+				break
+			}
+			trimmed[domain] = nodeStats
+			count++
+		}
+		result = trimmed
+	}
+
+	if hasQueueUpdates || needUpdateCache {
+		SetCacheValue(resultCacheKey, result)
 	}
 
 	return result, nil
@@ -1454,7 +1427,23 @@ func (s *Store) GetAllDomainRecords(group, config string) ([]DomainRecord, error
 // 删除域名记录
 func (s *Store) DeleteDomainRecords(group, config, domain string) error {
 	key := FormatDBKey("smart", KeyTypeStats, config, group, domain, "")
-	return s.DeleteByPath(key)
+	if err := s.DeleteByPath(key); err != nil {
+		return err
+	}
+
+	statsCachePrefix := FormatCacheKey(KeyTypeStats, config, group, domain)
+	RemoveCacheValuesByPrefix(statsCachePrefix)
+
+	resultCacheKey := FormatCacheKey(KeyTypeStats, config, group, "") + ":result"
+	cachedResult, hasResult := GetCacheValue(resultCacheKey)
+	if hasResult {
+		if resultMap, ok := cachedResult.(map[string]map[string][]byte); ok {
+			delete(resultMap, domain)
+			SetCacheValue(resultCacheKey, resultMap)
+		}
+	}
+
+	return nil
 }
 
 // 获取缓存中的所有组名
@@ -1555,24 +1544,38 @@ func (s *Store) RemoveNodesData(group, config string, nodes []string) error {
 	}
 
 	for _, nodeName := range nodes {
-		nodePath := FormatDBKey("smart", KeyTypeNode, config, group, nodeName)
-		if err := s.DeleteByPath(nodePath); err != nil {
-			log.Warnln("[SmartStore] Failed to delete node state for [%s]: %v", nodeName, err)
-		}
+		s.DeleteCacheResult(KeyTypeNode, group, config, nodeName)
+	}
 
-		cacheKey := FormatCacheKey(KeyTypeNode, config, group, nodeName)
-		DeleteCacheValue(cacheKey)
+	nodeResultCacheKey := FormatCacheKey(KeyTypeNode, config, group, "") + ":result"
+	cachedNodeResult, hasNodeResult := GetCacheValue(nodeResultCacheKey)
+	if hasNodeResult {
+		if nodeResultMap, ok := cachedNodeResult.(map[string][]byte); ok {
+			for _, nodeName := range nodes {
+				delete(nodeResultMap, nodeName)
+			}
+			SetCacheValue(nodeResultCacheKey, nodeResultMap)
+		}
 	}
 
 	for domain, nodeNames := range domainNodePairs {
 		for _, nodeName := range nodeNames {
-			statsCacheKey := FormatCacheKey(KeyTypeStats, config, group, domain, nodeName)
-			DeleteCacheValue(statsCacheKey)
+			s.DeleteCacheResult(KeyTypeStats, config, group, domain+":"+nodeName)
+		}
+	}
 
-			statsPath := FormatDBKey("smart", KeyTypeStats, config, group, domain, nodeName)
-			if err := s.DeleteByPath(statsPath); err != nil {
-				log.Warnln("[SmartStore] Failed to delete stats for [%s], domain [%s]: %v", nodeName, domain, err)
+	resultCacheKey := FormatCacheKey(KeyTypeStats, config, group, "") + ":result"
+	cachedResult, hasResult := GetCacheValue(resultCacheKey)
+	if hasResult {
+		if resultMap, ok := cachedResult.(map[string]map[string][]byte); ok {
+			for domain, nodeNames := range domainNodePairs {
+				for _, nodeName := range nodeNames {
+					if nodeStats, exists := resultMap[domain]; exists {
+						delete(nodeStats, nodeName)
+					}
+				}
 			}
+			SetCacheValue(resultCacheKey, resultMap)
 		}
 	}
 
@@ -1625,15 +1628,11 @@ func (s *Store) CleanupOldDomains(group, config string) error {
 			}
 			// 同时清理预取结果（缓存和DB）
 			s.DeleteCacheResult(KeyTypePrefetch, group, config, info.domain)
-			prefetchDBKey := FormatDBKey("smart", KeyTypePrefetch, config, group, info.domain)
-			_ = s.DeleteByPath(prefetchDBKey)
 		}
 
 		log.Debugln("[SmartStore] Cleaned up [%d] old domain records, keeping the latest [%d] (group %s)",
 			len(toDelete), maxDomains, group)
 	}
-
-	RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeStats, config, group, ""))
 
 	return nil
 }

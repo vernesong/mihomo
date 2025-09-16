@@ -429,6 +429,10 @@ func (s *Store) PreloadFrequentData(group, config string, proxies []string) {
 func ClearCacheByLevel(level string, config string, group string) {
 	if level == "all" {
 		RemoveCacheValuesByPrefix("")
+		DeleteCacheValue(FormatCacheKey(KeyTypeStats, "", "", "") + ":result")
+		DeleteCacheValue(FormatCacheKey(KeyTypeNode, "", "", "") + ":result")
+		DeleteCacheValue(FormatCacheKey(KeyTypeRanking, "", "", "") + ":result")
+		DeleteCacheValue(FormatCacheKey(KeyTypePrefetch, "", "", "") + ":result")
 	} else if level == "config" {
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeUnwrap, config, "", ""))
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeFailed, config, "", ""))
@@ -436,6 +440,10 @@ func ClearCacheByLevel(level string, config string, group string) {
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeStats, config, "", ""))
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeRanking, config, "", ""))
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypePrefetch, config, "", ""))
+		DeleteCacheValue(FormatCacheKey(KeyTypeStats, config, "", "") + ":result")
+		DeleteCacheValue(FormatCacheKey(KeyTypeNode, config, "", "") + ":result")
+		DeleteCacheValue(FormatCacheKey(KeyTypeRanking, config, "", "") + ":result")
+		DeleteCacheValue(FormatCacheKey(KeyTypePrefetch, config, "", "") + ":result")
 	} else if level == "group" {
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeUnwrap, config, group, ""))
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeFailed, config, group, ""))
@@ -443,6 +451,10 @@ func ClearCacheByLevel(level string, config string, group string) {
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeStats, config, group, ""))
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeRanking, config, group, ""))
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypePrefetch, config, group, ""))
+		DeleteCacheValue(FormatCacheKey(KeyTypeStats, config, group, "") + ":result")
+		DeleteCacheValue(FormatCacheKey(KeyTypeNode, config, group, "") + ":result")
+		DeleteCacheValue(FormatCacheKey(KeyTypeRanking, config, group, "") + ":result")
+		DeleteCacheValue(FormatCacheKey(KeyTypePrefetch, config, group, "") + ":result")
 	}
 
 	domainCache.Clear()
