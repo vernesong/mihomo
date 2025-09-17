@@ -330,6 +330,11 @@ func (p *Proxy) StatusTest(ctx context.Context, url string, expectedStatus utils
 		return 0, false, err
 	}
 
+	tlsConfig, err := ca.GetTLSConfig(ca.Option{})
+	if err != nil {
+		return
+	}
+
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			return p.DialContext(ctx, &addr)
@@ -339,7 +344,7 @@ func (p *Proxy) StatusTest(ctx context.Context, url string, expectedStatus utils
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		TLSClientConfig:       ca.GetGlobalTLSConfig(&tls.Config{}),
+		TLSClientConfig:       tlsConfig,
 	}
 
 	client := http.Client{
