@@ -170,7 +170,7 @@ func FormatDBKey(first string, parts ...string) string {
 	return strings.Join(elements, "/")
 }
 
-// 获取有效顶级域名加一二级域名并归一
+// 获取有效顶级域名加一二级域名并使用通配符处理
 func GetEffectiveDomain(host string, dstIP string) (string, string) {
 	rawHost := host
 
@@ -251,19 +251,35 @@ func GetEffectiveDomain(host string, dstIP string) (string, string) {
 	}
 
 	if domainCache != nil {
-		if val, _ := domainCache.GetOrStore(h, func() string {
+		if result, _ := domainCache.GetOrStore(h, func() string {
 			return compute()
-		}); val != "" {
-			return val, rawHost
+		}); result != "" {
+			if strings.HasPrefix(result, "*.") {
+				domainCache.Set(result, result)
+				domainCache.Set(h, result)
+				return result, rawHost
+			}
+
+			if result == h {
+				parts := strings.Split(h, ".")
+				if len(parts) == 2 {
+					wildcard := "*." + h
+					domainCache.Set(h, wildcard)
+					domainCache.Set(wildcard, wildcard)
+					return wildcard, rawHost
+				}
+				if len(parts) > 2 {
+					wildcard := "*." + parts[len(parts)-2] + "." + parts[len(parts)-1]
+					if cachedVal, ok := domainCache.Get(wildcard); ok && cachedVal != "" {
+						domainCache.Set(h, cachedVal)
+						return cachedVal, rawHost
+					}
+				}
+			}
 		}
 	}
 
-	final := compute()
-	if domainCache != nil {
-		domainCache.Set(h, final)
-	}
-
-	return final, rawHost
+	return compute(), rawHost
 }
 
 // 限制值在指定范围内
