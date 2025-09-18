@@ -1284,10 +1284,23 @@ func (s *Smart) handleFailedConnection(proxyName, cacheKey, domain string, calcu
 	var nodeState smart.NodeState
 	var isDegraded bool
 
-	const domainCountThreshold = 10 // 不同失败域名数量阈值
-	const mildFailureCountThreshold = 20
-	const mediumFailureCountThreshold = 50
-	const severeFailureCountThreshold = 80
+	avgFailure := 0
+	totalDomains := 0
+	for _, data := range nodeStateData {
+		var ns smart.NodeState
+		if json.Unmarshal(data, &ns) == nil {
+			for _, cnt := range ns.DomainFailureCount {
+				avgFailure += cnt
+				totalDomains++
+			}
+		}
+	}
+	if totalDomains > 0 {
+		avgFailure /= totalDomains
+	}
+	domainCountThreshold := avgFailure + 15
+	mildFailureCountThreshold := avgFailure + 20
+	maxDomainCount := domainCountThreshold * 4
 
 	if data, exists := nodeStateData[proxyName]; exists {
 		if json.Unmarshal(data, &nodeState) != nil {
@@ -1319,42 +1332,30 @@ func (s *Smart) handleFailedConnection(proxyName, cacheKey, domain string, calcu
 	}
 
 	failedDomainCount := 0
+	maxSingleDomainFailure := mildFailureCountThreshold * 2
 	for _, cnt := range nodeState.DomainFailureCount {
-		if cnt >= mildFailureCountThreshold {
+		cappedCnt := cnt
+		if cappedCnt > maxSingleDomainFailure {
+			cappedCnt = maxSingleDomainFailure
+		}
+		if cappedCnt >= mildFailureCountThreshold {
 			failedDomainCount++
 		}
 	}
 
+	// 线性降级
 	if failedDomainCount >= domainCountThreshold {
-		switch {
-		case failedDomainCount >= domainCountThreshold*4:
-			nodeState.Degraded = true
-			nodeState.DegradedFactor = 0.4
-			nodeState.BlockedUntil = time.Now().Add(60 * time.Minute)
-			isDegraded = true
-		case failedDomainCount >= domainCountThreshold*2:
-			nodeState.Degraded = true
-			nodeState.DegradedFactor = 0.6
-			nodeState.BlockedUntil = time.Now().Add(45 * time.Minute)
-			isDegraded = true
-		default:
-			nodeState.Degraded = true
-			nodeState.DegradedFactor = 0.8
-			nodeState.BlockedUntil = time.Now().Add(30 * time.Minute)
-			isDegraded = true
+		k := 0.7
+		linearFactor := 1.0 - k*float64(failedDomainCount-domainCountThreshold)/float64(maxDomainCount-domainCountThreshold)
+		if linearFactor < 0.2 {
+			linearFactor = 0.2
 		}
+		nodeState.Degraded = true
+		nodeState.DegradedFactor = linearFactor
+		nodeState.BlockedUntil = time.Now().Add(time.Duration(30+failedDomainCount*2) * time.Minute)
+		isDegraded = true
 
-		additionalBlock := 0
-		if nodeState.FailureCount >= severeFailureCountThreshold {
-			nodeState.DegradedFactor = nodeState.DegradedFactor * 0.7
-			additionalBlock = 30
-		} else if nodeState.FailureCount >= mediumFailureCountThreshold {
-			nodeState.DegradedFactor = nodeState.DegradedFactor * 0.8
-			additionalBlock = 20
-		} else if nodeState.FailureCount >= mildFailureCountThreshold {
-			nodeState.DegradedFactor = nodeState.DegradedFactor * 0.9
-			additionalBlock = 10
-		}
+		additionalBlock := int(float64(nodeState.FailureCount) / 10)
 		if nodeState.BlockedUntil.After(time.Now()) {
 			nodeState.BlockedUntil = nodeState.BlockedUntil.Add(time.Duration(additionalBlock) * time.Minute)
 		} else {
