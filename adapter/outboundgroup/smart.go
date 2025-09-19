@@ -1507,7 +1507,7 @@ func updateAverageValue(oldValue int64, newValue int64, count int64) int64 {
 	var newAverage int64
 
 	if oldValue > 0 && count > 1 {
-		newAverage = (oldValue*5 + newValue*5) / 6
+		newAverage = (oldValue*5 + newValue) / 6
 	} else {
 		newAverage = newValue
 	}
