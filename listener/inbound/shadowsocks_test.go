@@ -10,6 +10,7 @@ import (
 
 	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/listener/inbound"
+	"github.com/metacubex/mihomo/transport/kcptun"
 	shadowtls "github.com/metacubex/mihomo/transport/sing-shadowtls"
 
 	shadowsocks "github.com/metacubex/sing-shadowsocks"
@@ -21,7 +22,7 @@ import (
 
 var noneList = []string{shadowsocks.MethodNone}
 var shadowsocksCipherLists = [][]string{noneList, shadowaead.List, shadowaead_2022.List, shadowstream.List}
-var shadowsocksCipherShortLists = [][]string{noneList, shadowaead.List[:5]} // for test shadowTLS
+var shadowsocksCipherShortLists = [][]string{noneList, shadowaead.List[:5]} // for test shadowTLS and kcptun
 var shadowsocksPassword32 string
 var shadowsocksPassword16 string
 
@@ -32,11 +33,11 @@ func init() {
 	shadowsocksPassword16 = base64.StdEncoding.EncodeToString(passwordBytes[:16])
 }
 
-func testInboundShadowSocks(t *testing.T, inboundOptions inbound.ShadowSocksOption, outboundOptions outbound.ShadowSocksOption, cipherLists [][]string) {
+func testInboundShadowSocks(t *testing.T, inboundOptions inbound.ShadowSocksOption, outboundOptions outbound.ShadowSocksOption, cipherLists [][]string, enableSingMux bool) {
 	t.Parallel()
 	for _, cipherList := range cipherLists {
 		for i, cipher := range cipherList {
-			enableSingMux := i == 0
+			enableSingMux := enableSingMux && i == 0
 			cipher := cipher
 			t.Run(cipher, func(t *testing.T) {
 				inboundOptions, outboundOptions := inboundOptions, outboundOptions // don't modify outside options value
@@ -100,19 +101,19 @@ func testInboundShadowSocks0(t *testing.T, inboundOptions inbound.ShadowSocksOpt
 func TestInboundShadowSocks_Basic(t *testing.T) {
 	inboundOptions := inbound.ShadowSocksOption{}
 	outboundOptions := outbound.ShadowSocksOption{}
-	testInboundShadowSocks(t, inboundOptions, outboundOptions, shadowsocksCipherLists)
+	testInboundShadowSocks(t, inboundOptions, outboundOptions, shadowsocksCipherLists, true)
 }
 
 func testInboundShadowSocksShadowTls(t *testing.T, inboundOptions inbound.ShadowSocksOption, outboundOptions outbound.ShadowSocksOption) {
 	t.Parallel()
 	t.Run("Conn", func(t *testing.T) {
 		inboundOptions, outboundOptions := inboundOptions, outboundOptions // don't modify outside options value
-		testInboundShadowSocks(t, inboundOptions, outboundOptions, shadowsocksCipherShortLists)
+		testInboundShadowSocks(t, inboundOptions, outboundOptions, shadowsocksCipherShortLists, true)
 	})
 	t.Run("UConn", func(t *testing.T) {
 		inboundOptions, outboundOptions := inboundOptions, outboundOptions // don't modify outside options value
 		outboundOptions.ClientFingerprint = "chrome"
-		testInboundShadowSocks(t, inboundOptions, outboundOptions, shadowsocksCipherShortLists)
+		testInboundShadowSocks(t, inboundOptions, outboundOptions, shadowsocksCipherShortLists, true)
 	})
 }
 
@@ -162,4 +163,18 @@ func TestInboundShadowSocks_ShadowTlsv3(t *testing.T) {
 		PluginOpts: map[string]any{"host": realityDest, "password": shadowsocksPassword16, "fingerprint": tlsFingerprint, "version": 3},
 	}
 	testInboundShadowSocksShadowTls(t, inboundOptions, outboundOptions)
+}
+
+func TestInboundShadowSocks_KcpTun(t *testing.T) {
+	inboundOptions := inbound.ShadowSocksOption{
+		KcpTun: inbound.KcpTun{
+			Enable: true,
+			Key:    shadowsocksPassword16,
+		},
+	}
+	outboundOptions := outbound.ShadowSocksOption{
+		Plugin:     kcptun.Mode,
+		PluginOpts: map[string]any{"key": shadowsocksPassword16},
+	}
+	testInboundShadowSocks(t, inboundOptions, outboundOptions, shadowsocksCipherShortLists, false)
 }

@@ -534,6 +534,37 @@ proxies: # socks5
       version-hint: "tls12"
       restls-script: "1000?100<1,500~100,350~100,600~100,400~200"
 
+  - name: "ss-kcptun"
+    type: ss
+    server: [YOUR_SERVER_IP]
+    port: 443
+    cipher: chacha20-ietf-poly1305
+    password: [YOUR_SS_PASSWORD]
+    plugin: kcptun
+    plugin-opts:
+      key: it's a secrect # pre-shared secret between client and server
+      crypt: aes # aes, aes-128, aes-192, salsa20, blowfish, twofish, cast5, 3des, tea, xtea, xor, sm4, none, null
+      mode: fast # profiles: fast3, fast2, fast, normal, manual
+      conn: 1 # set num of UDP connections to server
+      autoexpire: 0 # set auto expiration time(in seconds) for a single UDP connection, 0 to disable
+      scavengettl: 600 # set how long an expired connection can live (in seconds)
+      mtu: 1350 # set maximum transmission unit for UDP packets
+      sndwnd: 128 # set send window size(num of packets)
+      rcvwnd: 512 # set receive window size(num of packets)
+      datashard: 10 # set reed-solomon erasure coding - datashard
+      parityshard: 3 # set reed-solomon erasure coding - parityshard
+      dscp: 0 # set DSCP(6bit)
+      nocomp: false # disable compression
+      acknodelay: false # flush ack immediately when a packet is received
+      nodelay: 0
+      interval: 50
+      resend: false
+      sockbuf: 4194304 # per-socket buffer in bytes
+      smuxver: 1 # specify smux version, available 1,2
+      smuxbuf: 4194304 # the overall de-mux buffer in bytes
+      streambuf: 2097152 # per stream receive buffer in bytes, smux v2+
+      keepalive: 10 # seconds between heartbeats
+
   # vmess
   # cipher 支持 auto/aes-128-gcm/chacha20-poly1305/none
   - name: "vmess"
@@ -993,8 +1024,8 @@ proxies: # socks5
   - name: mieru
     type: mieru
     server: 1.2.3.4
-    port: 2999
-    # port-range: 2090-2099 #（不可同时填写 port 和 port-range）
+    port: 2999 # 支持使用 ports 格式，例如 2999,3999 或 2999-3010,3950,3995-3999
+    # port-range: 2090-2099 # 已废弃，请使用 port
     transport: TCP # 只支持 TCP
     udp: true # 支持 UDP over TCP
     username: user
@@ -1336,6 +1367,30 @@ listeners:
     #       password: password
     #   handshake:
     #     dest: test.com:443
+    # kcp-tun:
+    #   enable: false
+    #   key: it's a secrect # pre-shared secret between client and server
+    #   crypt: aes # aes, aes-128, aes-192, salsa20, blowfish, twofish, cast5, 3des, tea, xtea, xor, sm4, none, null
+    #   mode: fast # profiles: fast3, fast2, fast, normal, manual
+    #   conn: 1 # set num of UDP connections to server
+    #   autoexpire: 0 # set auto expiration time(in seconds) for a single UDP connection, 0 to disable
+    #   scavengettl: 600 # set how long an expired connection can live (in seconds)
+    #   mtu: 1350 # set maximum transmission unit for UDP packets
+    #   sndwnd: 128 # set send window size(num of packets)
+    #   rcvwnd: 512 # set receive window size(num of packets)
+    #   datashard: 10 # set reed-solomon erasure coding - datashard
+    #   parityshard: 3 # set reed-solomon erasure coding - parityshard
+    #   dscp: 0 # set DSCP(6bit)
+    #   nocomp: false # disable compression
+    #   acknodelay: false # flush ack immediately when a packet is received
+    #   nodelay: 0
+    #   interval: 50
+    #   resend: false
+    #   sockbuf: 4194304 # per-socket buffer in bytes
+    #   smuxver: 1 # specify smux version, available 1,2
+    #   smuxbuf: 4194304 # the overall de-mux buffer in bytes
+    #   streambuf: 2097152 # per stream receive buffer in bytes, smux v2+
+    #   keepalive: 10 # seconds between heartbeats
 
   - name: vmess-in-1
     type: vmess

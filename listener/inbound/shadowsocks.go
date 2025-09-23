@@ -16,6 +16,7 @@ type ShadowSocksOption struct {
 	UDP       bool      `inbound:"udp,omitempty"`
 	MuxOption MuxOption `inbound:"mux-option,omitempty"`
 	ShadowTLS ShadowTLS `inbound:"shadow-tls,omitempty"`
+	KcpTun    KcpTun    `inbound:"kcp-tun,omitempty"`
 }
 
 func (o ShadowSocksOption) Equal(config C.InboundConfig) bool {
@@ -45,6 +46,7 @@ func NewShadowSocks(options *ShadowSocksOption) (*ShadowSocks, error) {
 			Udp:       options.UDP,
 			MuxOption: options.MuxOption.Build(),
 			ShadowTLS: options.ShadowTLS.Build(),
+			KcpTun:    options.KcpTun.Build(),
 		},
 	}, nil
 }

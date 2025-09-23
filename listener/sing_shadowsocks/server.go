@@ -14,6 +14,7 @@ import (
 	"github.com/metacubex/mihomo/listener/sing"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/ntp"
+	"github.com/metacubex/mihomo/transport/kcptun"
 
 	shadowsocks "github.com/metacubex/sing-shadowsocks"
 	"github.com/metacubex/sing-shadowsocks/shadowaead"
@@ -138,6 +139,12 @@ func New(config LC.ShadowsocksServer, tunnel C.Tunnel, additions ...inbound.Addi
 		}
 	}
 
+	var kcptunServer *kcptun.Server
+	if config.KcpTun.Enable {
+		kcptunServer = kcptun.NewServer(config.KcpTun.Config)
+		config.Udp = true
+	}
+
 	for _, addr := range strings.Split(config.Listen, ",") {
 		addr := addr
 
@@ -153,6 +160,14 @@ func New(config LC.ShadowsocksServer, tunnel C.Tunnel, additions ...inbound.Addi
 			}
 
 			sl.udpListeners = append(sl.udpListeners, ul)
+
+			if kcptunServer != nil {
+				go kcptunServer.Serve(ul, func(c net.Conn) {
+					sl.HandleConn(c, tunnel)
+				})
+
+				continue // skip tcp listener
+			}
 
 			go func() {
 				conn := bufio.NewPacketConn(ul)
