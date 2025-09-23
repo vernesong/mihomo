@@ -957,14 +957,6 @@ func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy) []C.Proxy
 		return nil
 	}
 
-	// 尝试使用域名信息选择
-	domain, _ := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
-	if domain != "" {
-		if selected := trySelector(domain, weightType); len(selected) > 0 {
-			return fillProxies(selected, proxies, 9)
-		}
-	}
-
 	// 尝试使用ASN信息选择（50%概率）
 	if rand.Float64() < 0.5 {
 		asnNumber := s.getASNCode(metadata)
@@ -979,6 +971,14 @@ func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy) []C.Proxy
 			if selected := trySelector(asnNumber, asnWeightType); len(selected) > 0 {
 				return fillProxies(selected, proxies, 9)
 			}
+		}
+	}
+
+	// 尝试使用域名信息选择
+	domain, _ := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
+	if domain != "" {
+		if selected := trySelector(domain, weightType); len(selected) > 0 {
+			return fillProxies(selected, proxies, 9)
 		}
 	}
 
