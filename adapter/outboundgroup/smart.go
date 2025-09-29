@@ -448,7 +448,21 @@ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 }
 
 func (s *Smart) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
-	proxies := s.selectProxies(metadata, s.GetProxies(touch))
+	proxies := s.GetProxies(touch)
+
+	if metadata == nil {
+		return proxies[0]
+	}
+
+	if s.selected != "" {
+		for _, p := range proxies {
+			if p.Name() == s.selected {
+				return p
+			}
+		}
+	}
+
+	proxies = s.selectProxies(metadata, proxies)
 	domain, _ := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
 	if domain != "" {
 		names := make([]string, 0, len(proxies))
