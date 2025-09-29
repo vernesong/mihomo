@@ -150,6 +150,7 @@ type DNS struct {
 	PreferH3              bool
 	IPv6                  bool
 	IPv6Timeout           uint
+	UseHosts              bool
 	UseSystemHosts        bool
 	NameServer            []dns.NameServer
 	Fallback              []dns.NameServer
@@ -161,7 +162,6 @@ type DNS struct {
 	CacheAlgorithm        string
 	CacheMaxSize          int
 	FakeIPRange           *fakeip.Pool
-	Hosts                 *trie.DomainTrie[resolver.HostValue]
 	NameServerPolicy      []dns.Policy
 	ProxyServerNameserver []dns.NameServer
 	DirectNameServer      []dns.NameServer
@@ -693,7 +693,7 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 	}
 	config.Hosts = hosts
 
-	dnsCfg, err := parseDNS(rawCfg, hosts, ruleProviders)
+	dnsCfg, err := parseDNS(rawCfg, ruleProviders)
 	if err != nil {
 		return nil, err
 	}
@@ -1358,7 +1358,7 @@ func parseNameServerPolicy(nsPolicy *orderedmap.OrderedMap[string, any], rulePro
 	return policy, nil
 }
 
-func parseDNS(rawCfg *RawConfig, hosts *trie.DomainTrie[resolver.HostValue], ruleProviders map[string]providerTypes.RuleProvider) (*DNS, error) {
+func parseDNS(rawCfg *RawConfig, ruleProviders map[string]providerTypes.RuleProvider) (*DNS, error) {
 	cfg := rawCfg.DNS
 	if cfg.Enable && len(cfg.NameServer) == 0 {
 		return nil, fmt.Errorf("if DNS configuration is turned on, NameServer cannot be empty")
@@ -1374,6 +1374,7 @@ func parseDNS(rawCfg *RawConfig, hosts *trie.DomainTrie[resolver.HostValue], rul
 		PreferH3:       cfg.PreferH3,
 		IPv6Timeout:    cfg.IPv6Timeout,
 		IPv6:           cfg.IPv6,
+		UseHosts:       cfg.UseHosts,
 		UseSystemHosts: cfg.UseSystemHosts,
 		EnhancedMode:   cfg.EnhancedMode,
 		CacheAlgorithm: cfg.CacheAlgorithm,
@@ -1505,10 +1506,6 @@ func parseDNS(rawCfg *RawConfig, hosts *trie.DomainTrie[resolver.HostValue], rul
 				dnsCfg.FallbackDomainFilter = append(dnsCfg.FallbackDomainFilter, matcher)
 			}
 		}
-	}
-
-	if cfg.UseHosts {
-		dnsCfg.Hosts = hosts
 	}
 
 	return dnsCfg, nil

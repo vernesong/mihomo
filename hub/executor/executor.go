@@ -246,20 +246,18 @@ func updateDNS(c *config.DNS, generalIPv6 bool) {
 	if !c.Enable {
 		resolver.DefaultResolver = nil
 		resolver.DefaultHostMapper = nil
-		resolver.DefaultLocalServer = nil
+		resolver.DefaultService = nil
 		resolver.ProxyServerHostResolver = nil
 		resolver.DirectHostResolver = nil
-		dns.ReCreateServer("", nil, nil)
+		dns.ReCreateServer("", nil)
 		return
 	}
-	cfg := dns.Config{
+
+	r := dns.NewResolver(dns.Config{
 		Main:                 c.NameServer,
 		Fallback:             c.Fallback,
 		IPv6:                 c.IPv6 && generalIPv6,
 		IPv6Timeout:          c.IPv6Timeout,
-		EnhancedMode:         c.EnhancedMode,
-		Pool:                 c.FakeIPRange,
-		Hosts:                c.Hosts,
 		FallbackIPFilter:     c.FallbackIPFilter,
 		FallbackDomainFilter: c.FallbackDomainFilter,
 		Default:              c.DefaultNameserver,
@@ -269,19 +267,23 @@ func updateDNS(c *config.DNS, generalIPv6 bool) {
 		DirectFollowPolicy:   c.DirectFollowPolicy,
 		CacheAlgorithm:       c.CacheAlgorithm,
 		CacheMaxSize:         c.CacheMaxSize,
-	}
-
-	r := dns.NewResolver(cfg)
-	m := dns.NewEnhancer(cfg)
+	})
+	m := dns.NewEnhancer(dns.EnhancerConfig{
+		EnhancedMode: c.EnhancedMode,
+		Pool:         c.FakeIPRange,
+		UseHosts:     c.UseHosts,
+	})
 
 	// reuse cache of old host mapper
 	if old := resolver.DefaultHostMapper; old != nil {
 		m.PatchFrom(old.(*dns.ResolverEnhancer))
 	}
 
+	s := dns.NewService(r.Resolver, m)
+
 	resolver.DefaultResolver = r
 	resolver.DefaultHostMapper = m
-	resolver.DefaultLocalServer = dns.NewLocalServer(r.Resolver, m)
+	resolver.DefaultService = s
 	resolver.UseSystemHosts = c.UseSystemHosts
 
 	if r.ProxyResolver.Invalid() {
@@ -296,7 +298,7 @@ func updateDNS(c *config.DNS, generalIPv6 bool) {
 		resolver.DirectHostResolver = r.Resolver
 	}
 
-	dns.ReCreateServer(c.Listen, r.Resolver, m)
+	dns.ReCreateServer(c.Listen, s)
 }
 
 func updateHosts(tree *trie.DomainTrie[resolver.HostValue]) {

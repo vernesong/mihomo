@@ -1,13 +1,12 @@
 package dns
 
 import (
-	stdContext "context"
-	"errors"
+	"context"
 	"net"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/common/sockopt"
-	"github.com/metacubex/mihomo/context"
+	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/log"
 
 	D "github.com/miekg/dns"
@@ -21,39 +20,32 @@ var (
 )
 
 type Server struct {
-	handler   handler
+	service   resolver.Service
 	tcpServer *D.Server
 	udpServer *D.Server
 }
 
 // ServeDNS implement D.Handler ServeDNS
 func (s *Server) ServeDNS(w D.ResponseWriter, r *D.Msg) {
-	msg, err := handlerWithContext(stdContext.Background(), s.handler, r)
+	msg, err := s.service.ServeMsg(context.Background(), r)
 	if err != nil {
-		D.HandleFailed(w, r)
+		m := new(D.Msg)
+		m.SetRcode(r, D.RcodeServerFailure)
+		// does not matter if this write fails
+		w.WriteMsg(m)
 		return
 	}
 	msg.Compress = true
 	w.WriteMsg(msg)
 }
 
-func handlerWithContext(stdCtx stdContext.Context, handler handler, msg *D.Msg) (*D.Msg, error) {
-	if len(msg.Question) == 0 {
-		return nil, errors.New("at least one question is required")
-	}
-
-	ctx := context.NewDNSContext(stdCtx, msg)
-	return handler(ctx, msg)
+func (s *Server) SetService(service resolver.Service) {
+	s.service = service
 }
 
-func (s *Server) SetHandler(handler handler) {
-	s.handler = handler
-}
-
-func ReCreateServer(addr string, resolver *Resolver, mapper *ResolverEnhancer) {
-	if addr == address && resolver != nil {
-		handler := NewHandler(resolver, mapper)
-		server.SetHandler(handler)
+func ReCreateServer(addr string, service resolver.Service) {
+	if addr == address && service != nil {
+		server.SetService(service)
 		return
 	}
 
@@ -67,10 +59,10 @@ func ReCreateServer(addr string, resolver *Resolver, mapper *ResolverEnhancer) {
 		server.udpServer = nil
 	}
 
-	server.handler = nil
+	server.service = nil
 	address = ""
 
-	if addr == "" {
+	if addr == "" || service == nil {
 		return
 	}
 
@@ -87,8 +79,7 @@ func ReCreateServer(addr string, resolver *Resolver, mapper *ResolverEnhancer) {
 	}
 
 	address = addr
-	handler := NewHandler(resolver, mapper)
-	server = &Server{handler: handler}
+	server = &Server{service: service}
 
 	go func() {
 		p, err := inbound.ListenPacket("udp", addr)

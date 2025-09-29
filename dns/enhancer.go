@@ -12,6 +12,7 @@ type ResolverEnhancer struct {
 	mode     C.DNSMode
 	fakePool *fakeip.Pool
 	mapping  *lru.LruCache[netip.Addr, string]
+	useHosts bool
 }
 
 func (h *ResolverEnhancer) FakeIPEnabled() bool {
@@ -103,7 +104,13 @@ func (h *ResolverEnhancer) StoreFakePoolState() {
 	}
 }
 
-func NewEnhancer(cfg Config) *ResolverEnhancer {
+type EnhancerConfig struct {
+	EnhancedMode C.DNSMode
+	Pool         *fakeip.Pool
+	UseHosts     bool
+}
+
+func NewEnhancer(cfg EnhancerConfig) *ResolverEnhancer {
 	var fakePool *fakeip.Pool
 	var mapping *lru.LruCache[netip.Addr, string]
 
@@ -116,5 +123,6 @@ func NewEnhancer(cfg Config) *ResolverEnhancer {
 		mode:     cfg.EnhancedMode,
 		fakePool: fakePool,
 		mapping:  mapping,
+		useHosts: cfg.UseHosts,
 	}
 }
