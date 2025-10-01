@@ -40,6 +40,11 @@ func InitCache() {
 		lru.WithSize[string, int](2000),
 		lru.WithAge[string, int](int64(300)),
 	)
+
+	nodeStatesCache = lru.New[string, map[string][]byte](
+		lru.WithSize[string, map[string][]byte](1000),
+		lru.WithAge[string, map[string][]byte](int64(300)),
+	)
 }
 
 // 从全局缓存获取值
@@ -134,8 +139,21 @@ func (s *Store) GetPrefetchResult(group, config string, target string, weightTyp
 		return nil, nil
 	}
 
-	cacheKey := FormatCacheKey(KeyTypePrefetch, config, group, target)
+	ops := getGlobalQueueSnapshot()
+	for _, op := range ops {
+		if op.Type == OpSavePrefetch && op.Group == group && op.Config == config && op.Domain == target {
+			var prefetchMap PrefetchMap
+			if err := json.Unmarshal(op.Data, &prefetchMap); err == nil {
+				if res, exists := prefetchMap[weightType]; exists {
+					if len(res.Nodes) > 0 && len(res.Weights) == len(res.Nodes) {
+						return res.Nodes, res.Weights
+					}
+				}
+			}
+		}
+	}
 
+	cacheKey := FormatCacheKey(KeyTypePrefetch, config, group, target)
 	if value, ok := GetCacheValue(cacheKey); ok {
 		switch v := value.(type) {
 		case PrefetchMap:
@@ -148,20 +166,6 @@ func (s *Store) GetPrefetchResult(group, config string, target string, weightTyp
 			var pm PrefetchMap
 			if json.Unmarshal(v, &pm) == nil {
 				if res, exists := pm[weightType]; exists {
-					if len(res.Nodes) > 0 && len(res.Weights) == len(res.Nodes) {
-						return res.Nodes, res.Weights
-					}
-				}
-			}
-		}
-	}
-
-	ops := getGlobalQueueSnapshot()
-	for _, op := range ops {
-		if op.Type == OpSavePrefetch && op.Group == group && op.Config == config && op.Domain == target {
-			var prefetchMap PrefetchMap
-			if err := json.Unmarshal(op.Data, &prefetchMap); err == nil {
-				if res, exists := prefetchMap[weightType]; exists {
 					if len(res.Nodes) > 0 && len(res.Weights) == len(res.Nodes) {
 						return res.Nodes, res.Weights
 					}
@@ -374,6 +378,11 @@ func (s *Store) AdjustCacheParameters() {
 		lru.WithAge[string, int](int64(300)),
 	)
 
+	nodeStatesCache = lru.New[string, map[string][]byte](
+		lru.WithSize[string, map[string][]byte](1000),
+		lru.WithAge[string, map[string][]byte](int64(300)),
+	)
+
 	var entries map[string]interface{}
 	var preserveRatio float64
 
@@ -494,6 +503,8 @@ func ClearCacheByLevel(level string, config string, group string) {
 	domainCache.Clear()
 
 	prefixCountCache.Clear()
+
+	nodeStatesCache.Clear()
 }
 
 // 从数据库路径提取缓存键

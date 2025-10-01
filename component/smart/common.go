@@ -42,7 +42,7 @@ const (
 
 const (
 	DefaultMinSampleCount = 2
-	RetentionPeriod       = 14 * 24 * time.Hour
+	RetentionPeriod       = 7 * 24 * time.Hour
 	CacheMaxAge           = 21600
 
 	MaxDomainsLimit         = 2000
@@ -91,6 +91,8 @@ var (
 	domainCache *lru.LruCache[string, string]
 
 	prefixCountCache *lru.LruCache[string, int]
+
+	nodeStatesCache *lru.LruCache[string, map[string][]byte]
 )
 
 type (
@@ -286,13 +288,7 @@ func GetEffectiveDomain(host string, dstIP string) (string, string) {
 
 // 限制值在指定范围内
 func ClampValue(value, min, max int) int {
-	if value < min {
-		return min
-	}
-	if value > max {
-		return max
-	}
-	return value
+	return int(math.Min(math.Max(float64(value), float64(min)), float64(max)))
 }
 
 // 时间衰减

@@ -1192,6 +1192,11 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
 
 // GetNodeStates 获取节点状态
 func (s *Store) GetNodeStates(group, config string) (map[string][]byte, error) {
+	cacheKey := fmt.Sprintf("%s:%s", group, config)
+	if cached, ok := nodeStatesCache.Get(cacheKey); ok {
+		return cached, nil
+	}
+
 	pathPrefix := FormatDBKey("smart", KeyTypeNode, config, group, "")
 	result := make(map[string][]byte)
 
@@ -1215,30 +1220,37 @@ func (s *Store) GetNodeStates(group, config string) (map[string][]byte, error) {
 		}
 	}
 
+	nodeStatesCache.Set(cacheKey, result)
+
 	return result, nil
 }
 
 // 获取域名的统计数据
 func (s *Store) GetStatsForDomain(group, config, domain string) (map[string][]byte, error) {
+	result := make(map[string][]byte)
+
+	ops := getGlobalQueueSnapshot()
+	for _, op := range ops {
+		if op.Type == OpSaveStats && op.Group == group && op.Config == config && op.Domain == domain {
+			result[op.Node] = op.Data
+		}
+	}
+
+	if len(result) > 0 {
+		return result, nil
+	}
+
 	pathPrefix := FormatDBKey("smart", KeyTypeStats, config, group, domain, "")
 	rawResult, err := s.GetSubBytesByPath(pathPrefix)
 	if err != nil {
 		return nil, err
 	}
 
-	result := make(map[string][]byte)
 	for fullPath, data := range rawResult {
 		parts := strings.Split(fullPath, "/")
 		if len(parts) > 0 {
 			nodeName := parts[len(parts)-1]
 			result[nodeName] = data
-		}
-	}
-
-	ops := getGlobalQueueSnapshot()
-	for _, op := range ops {
-		if op.Type == OpSaveStats && op.Group == group && op.Config == config && op.Domain == domain {
-			result[op.Node] = op.Data
 		}
 	}
 
