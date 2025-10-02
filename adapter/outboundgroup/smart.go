@@ -58,6 +58,31 @@ var (
 	asnAvailable         bool
 )
 
+var cdnASNs = map[string]struct{}{
+	"13335": {}, // Cloudflare
+	"12222": {}, // Akamai
+	"16625": {}, // Akamai
+	"20940": {}, // Akamai
+	"31110": {}, // Akamai
+	"35994": {}, // Akamai
+	"54113": {}, // Fastly
+	"22822": {}, // Limelight Networks
+	"15133": {}, // EdgeCast (Verizon)
+	"19551": {}, // Incapsula (Imperva)
+	"20446": {}, // StackPath / Bunny
+	"60068": {}, // CDN77
+	"16509": {}, // Amazon CloudFront
+	"36408": {}, // CDNetworks
+	"4809":  {}, // ChinaCache
+	"199524":{}, // Gcore
+	"212238":{}, // BelugaCDN
+	"55933": {}, // QUANTIL
+	"43260": {}, // Medianova
+	"43317": {}, // CDNvideo
+	"43996": {}, // CDNsun
+	"52320": {}, // GlobeNet
+}
+
 type smartOption func(*Smart)
 
 type Smart struct {
@@ -477,6 +502,10 @@ func (s *Smart) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 
 func (s *Smart) IsL3Protocol(metadata *C.Metadata) bool {
 	return s.Unwrap(metadata, false).IsL3Protocol(metadata)
+}
+
+func (s *Smart) SupportUDP() bool {
+	return !s.disableUDP
 }
 
 func (s *Smart) WrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata, connectTime int64) C.Conn {
@@ -937,10 +966,10 @@ func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy) []C.Proxy
 		return nil
 	}
 
-	// 尝试使用ASN信息选择（50%概率）
-	if rand.Float64() < 0.5 {
-		asnNumber := s.getASNCode(metadata)
-		if asnNumber != "" {
+	// 尝试使用ASN信息选择
+	asnNumber := s.getASNCode(metadata)
+	if asnNumber != "" {
+		if _, isCDN := cdnASNs[asnNumber]; !isCDN {
 			asnWeightType := weightType
 			if weightType == smart.WeightTypeTCP {
 				asnWeightType = smart.WeightTypeTCPASN + ":" + asnNumber
@@ -963,10 +992,6 @@ func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy) []C.Proxy
 	}
 
 	return s.selectFallbacks(metadata, proxies)
-}
-
-func (s *Smart) SupportUDP() bool {
-	return !s.disableUDP
 }
 
 func (s *Smart) MarshalJSON() ([]byte, error) {
