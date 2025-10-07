@@ -119,8 +119,6 @@ func UpdateLgbmModelDatabase() error {
 	updatingLgbm.Store(true)
 	defer updatingLgbm.Store(false)
 
-	log.Infoln("[Smart] Updating LightGBM model")
-
 	if err := updateLgbmModel(); err != nil {
 		log.Errorln("[Smart] update LightGBM model error: %s", err.Error())
 		return err

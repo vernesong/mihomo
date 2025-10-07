@@ -7,10 +7,10 @@ import (
 
 var (
 	presetSceneParams = map[string]SceneParams{
-		"interactive": {0.4, 0.2, 0.4, 1.2, 1.0, 1.3, 0.3},
-		"streaming":   {0.5, 0.1, 0.4, 1.5, 0.8, 1.2, 0.2},
-		"transfer":    {0.6, 0.2, 0.2, 1.8, 0.7, 0.9, 0.1},
-		"web":         {0.5, 0.3, 0.2, 0.8, 0.6, 1.0, 0.2},
+		"interactive": {0.6, 0.1, 0.3, 1.2, 1.0, 1.3, 0.3},
+		"streaming":   {0.5, 0.2, 0.3, 1.5, 0.8, 1.2, 0.2},
+		"transfer":    {0.5, 0.2, 0.3, 1.8, 0.7, 0.9, 0.1},
+		"web":         {0.5, 0.1, 0.4, 0.8, 0.6, 1.0, 0.2},
 	}
 )
 
@@ -79,11 +79,11 @@ func CalculateWeight(success, failure, connectTime, latency int64, isUDP bool, u
 	}
 
 	successRate := decayedSuccess / decayedTotal
-	connectScore := math.Exp(-float64(connectTime)/1000.0) * timeFactor
-	latencyScore := math.Exp(-float64(latency)/1000.0) * timeFactor
+	connectScore := math.Exp(-float64(connectTime)/1500.0) * timeFactor
+	latencyScore := math.Exp(-float64(latency)/1500.0) * timeFactor
 
-	connectScore = math.Min(1, connectScore)
-	latencyScore = math.Min(1, latencyScore)
+	connectScore = math.Min(0.8, connectScore)
+	latencyScore = math.Min(0.8, latencyScore)
 
 	connectScore = math.Max(0.3, connectScore)
 	latencyScore = math.Max(0.3, latencyScore)
@@ -212,34 +212,32 @@ func calculateTrafficFactor(trafficMB, maxRateKB, durationMinutes float64, isSho
 		return 0.0
 	}
 
-	throughput := trafficMB / math.Max(1.0, durationMinutes)
-
 	var baseFactor float64
 	switch {
 	case trafficMB < 0.005: // <5KB
-		baseFactor = 0.15
+		baseFactor = 0.10 + 0.05*math.Log10(trafficMB/0.001)
 	case trafficMB < 0.01:
-		baseFactor = 0.18 + 0.10*math.Log10(trafficMB/0.005)
+		baseFactor = 0.18 + 0.08*math.Log10(trafficMB/0.005)
 	case trafficMB < 0.05:
-		baseFactor = 0.35 + 0.12*math.Log10(trafficMB/0.01)
+		baseFactor = 0.35 + 0.10*math.Log10(trafficMB/0.01)
 	case trafficMB < 0.1:
-		baseFactor = 0.53 + 0.18*math.Log10(trafficMB/0.05)
+		baseFactor = 0.53 + 0.15*math.Log10(trafficMB/0.05)
 	case trafficMB < 0.5:
-		baseFactor = 0.72 + 0.22*math.Log10(trafficMB/0.1)
+		baseFactor = 0.72 + 0.18*math.Log10(trafficMB/0.1)
 	case trafficMB < 1:
-		baseFactor = 0.98 + 0.18*math.Log10(trafficMB/0.5)
+		baseFactor = 0.98 + 0.15*math.Log10(trafficMB/0.5)
 	case trafficMB < 5:
-		baseFactor = 1.18 + 0.14*math.Log10(trafficMB/1)
+		baseFactor = 1.18 + 0.10*math.Log10(trafficMB/1)
 	case trafficMB < 20:
-		baseFactor = 1.32 + 0.11*math.Log10(trafficMB/5)
+		baseFactor = 1.32 + 0.08*math.Log10(trafficMB/5)
 	case trafficMB < 100:
-		baseFactor = 1.45 + 0.09*math.Log10(trafficMB/20)
+		baseFactor = 1.45 + 0.06*math.Log10(trafficMB/20)
 	case trafficMB < 500:
-		baseFactor = 1.56 + 0.07*math.Log10(trafficMB/100)
+		baseFactor = 1.56 + 0.05*math.Log10(trafficMB/100)
 	case trafficMB < 3000:
-		baseFactor = 1.66 + 0.05*math.Log10(trafficMB/500)
+		baseFactor = 1.66 + 0.04*math.Log10(trafficMB/500)
 	default:
-		baseFactor = 1.74 + 0.03*math.Log10(trafficMB/3000)
+		baseFactor = 1.74 + 0.02*math.Log10(trafficMB/3000)
 	}
 
 	// 吞吐量加成
@@ -268,6 +266,7 @@ func calculateTrafficFactor(trafficMB, maxRateKB, durationMinutes float64, isSho
 
 	// 平均流量加成
 	var connectionFactor float64
+	throughput := trafficMB / math.Max(1.0, durationMinutes)
 	if isShort {
 		connectionFactor = 0.85 + 0.15*math.Min(1, throughput/25.0)
 	} else {
