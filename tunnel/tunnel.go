@@ -666,10 +666,14 @@ func match(metadata *C.Metadata, helper C.RuleMatchHelper) (C.Proxy, C.Rule, err
 
 			// parse multi-layer nesting
 			passed := false
+			smart := false
 			for adapter := adapter; adapter != nil; adapter = adapter.Unwrap(metadata, false) {
 				if adapter.Type() == C.Pass {
 					passed = true
 					break
+				}
+				if adapter.Type() == C.Smart {
+					smart = true
 				}
 			}
 			if passed {
@@ -680,6 +684,11 @@ func match(metadata *C.Metadata, helper C.RuleMatchHelper) (C.Proxy, C.Rule, err
 			if metadata.NetWork == C.UDP && !adapter.SupportUDP() {
 				log.Debugln("%s UDP is not supported", adapter.Name())
 				continue
+			}
+
+			// Smart ASN select need resolve ip first
+			if smart {
+				helper.ResolveIP()
 			}
 
 			return adapter, rule, nil

@@ -19,7 +19,9 @@ import (
 
 	"github.com/dlclark/regexp2"
 	"github.com/metacubex/mihomo/common/callback"
+	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/geodata"
 	"github.com/metacubex/mihomo/component/mmdb"
 	"github.com/metacubex/mihomo/component/profile/cachefile"
 	"github.com/metacubex/mihomo/component/smart"
@@ -514,9 +516,11 @@ func (s *Smart) WrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata
 	var firstReadErr error
 	var firstReadLatency int64
 
-	c = callback.NewFirstWriteCallBackConn(c, func(err error) {
-		firstWriteErr = err
-	})
+	if N.NeedHandshake(c) {
+		c = callback.NewFirstWriteCallBackConn(c, func(err error) {
+			firstWriteErr = err
+		})
+	}
 
 	c = callback.NewFirstReadCallBackConn(c, func(err error) {
 		firstReadLatency = time.Since(start).Milliseconds()
@@ -582,7 +586,15 @@ func (s *Smart) InitSmart() {
 		s.startTimedTask(5*time.Minute, flushQueueInterval, "Queue flush", func() {
 			s.store.FlushQueue(false)
 		}, false)
-		asnAvailable = mmdb.Verify(C.Path.ASN())
+
+		// try load ASN database
+		if !asnAvailable {
+			if err := geodata.InitASN(); err == nil {
+				asnAvailable = true
+			} else {
+				log.Warnln("[Smart] Failed to load ASN database: %v", err)
+			}
+		}
 	})
 
 	s.startTimedTask(5*time.Minute, checkInterval, "Clean up nodes", s.cleanupOrphanedNodeCache, true)
