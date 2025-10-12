@@ -357,10 +357,6 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 			} else {
 				return s.WrapConnWithMetric(c, p, metadata, connectTime), nil
 			}
-
-			if s.selected != "" && len(proxies) == 1 && proxies[0].Name() == s.selected {
-				break
-			}
 		}
 
 		return nil, finalErr
