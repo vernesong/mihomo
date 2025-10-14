@@ -454,22 +454,25 @@ func (s *Smart) WrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata
 
 	start := time.Now()
 
-	var firstWriteErr error
-	var firstReadErr error
-	var firstReadLatency int64
+	firstWriteErr := new(error)
+	firstReadErr := new(error)
+	firstReadLatency := new(int64)
 
 	if N.NeedHandshake(c) {
 		c = callback.NewFirstWriteCallBackConn(c, func(err error) {
-			firstWriteErr = err
+			*firstWriteErr = err
 		})
 	}
 
 	c = callback.NewFirstReadCallBackConn(c, func(err error) {
-		firstReadLatency = time.Since(start).Milliseconds()
-		firstReadErr = err
+		*firstReadLatency = time.Since(start).Milliseconds()
+		*firstReadErr = err
 	})
 
-	return s.registerClosureMetricsCallback(c, proxy, metadata, connectTime, firstReadLatency, firstReadErr, firstWriteErr)
+	return s.registerClosureMetricsCallback(
+		c, proxy, metadata, connectTime,
+		firstReadLatency, firstReadErr, firstWriteErr,
+	)
 }
 
 func (s *Smart) Set(name string) error {
@@ -1620,7 +1623,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 }
 
 
-func (s *Smart) registerClosureMetricsCallback(c C.Conn, proxy C.Proxy, metadata *C.Metadata, connectTime int64, firstReadLatency int64, readErr error, firstWriteErr error) C.Conn {
+func (s *Smart) registerClosureMetricsCallback(c C.Conn, proxy C.Proxy, metadata *C.Metadata, connectTime int64, firstReadLatency *int64, firstReadErr *error, firstWriteErr *error) C.Conn {
 	return callback.NewCloseCallbackConn(c, func() {
 		tracker := statistic.DefaultManager.Get(metadata.UUID)
 		if tracker != nil {
@@ -1631,16 +1634,16 @@ func (s *Smart) registerClosureMetricsCallback(c C.Conn, proxy C.Proxy, metadata
 			maxUploadRate := info.MaxUploadRate.Load()
 			maxDownloadRate := info.MaxDownloadRate.Load()
 
-			if readErr == nil {
-				go s.recordConnectionStats("closed", metadata, proxy, connectTime, firstReadLatency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, nil)
-			} else if readErr == io.EOF {
-				if firstWriteErr != nil && firstWriteErr != io.EOF {
-					go s.recordConnectionStats("failed", metadata, proxy, connectTime, firstReadLatency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, readErr)
+			if *firstReadErr == nil {
+				go s.recordConnectionStats("closed", metadata, proxy, connectTime, *firstReadLatency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, nil)
+			} else if *firstReadErr == io.EOF {
+				if *firstWriteErr != nil && *firstWriteErr != io.EOF {
+					go s.recordConnectionStats("failed", metadata, proxy, connectTime, *firstReadLatency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, *firstReadErr)
 				} else {
-					go s.recordConnectionStats("closed", metadata, proxy, connectTime, firstReadLatency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, nil)
+					go s.recordConnectionStats("closed", metadata, proxy, connectTime, *firstReadLatency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, nil)
 				}
 			} else {
-				go s.recordConnectionStats("failed", metadata, proxy, connectTime, firstReadLatency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, readErr)
+				go s.recordConnectionStats("failed", metadata, proxy, connectTime, *firstReadLatency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, *firstReadErr)
 			}
 			return
 		}
