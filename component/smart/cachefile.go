@@ -187,9 +187,9 @@ func (s *Store) BatchSave(operations []StoreOperation) error {
 				case OpSaveNodeState:
 					key = FormatDBKey("smart", KeyTypeNode, op.Config, op.Group, op.Node)
 				case OpSaveStats:
-					key = FormatDBKey("smart", KeyTypeStats, op.Config, op.Group, op.Domain, op.Node)
+					key = FormatDBKey("smart", KeyTypeStats, op.Config, op.Group, op.Target, op.Node)
 				case OpSavePrefetch:
-					key = FormatDBKey("smart", KeyTypePrefetch, op.Config, op.Group, op.Domain)
+					key = FormatDBKey("smart", KeyTypePrefetch, op.Config, op.Group, op.Target)
 				case OpSaveRanking:
 					key = FormatDBKey("smart", KeyTypeRanking, op.Config, op.Group, "")
 				}
@@ -204,9 +204,9 @@ func (s *Store) BatchSave(operations []StoreOperation) error {
 					case OpSaveNodeState:
 						cacheKey = FormatCacheKey(KeyTypeNode, op.Config, op.Group, op.Node)
 					case OpSaveStats:
-						cacheKey = FormatCacheKey(KeyTypeStats, op.Config, op.Group, op.Domain, op.Node)
+						cacheKey = FormatCacheKey(KeyTypeStats, op.Config, op.Group, op.Target, op.Node)
 					case OpSavePrefetch:
-						cacheKey = FormatCacheKey(KeyTypePrefetch, op.Config, op.Group, op.Domain)
+						cacheKey = FormatCacheKey(KeyTypePrefetch, op.Config, op.Group, op.Target)
 					case OpSaveRanking:
 						cacheKey = FormatCacheKey(KeyTypeRanking, op.Config, op.Group, "")
 					}
@@ -282,10 +282,10 @@ func (s *Store) BatchSaveConnStats(operations []StoreOperation) error {
 		var lookupKey string
 
 		if op.Type == OpSaveStats {
-			lookupKey = fmt.Sprintf("%s:%s:%s:%s", op.Group, op.Config, op.Domain, op.Node)
+			lookupKey = fmt.Sprintf("%s:%s:%s:%s", op.Group, op.Config, op.Target, op.Node)
 			opKey = fmt.Sprintf("%s:%d", lookupKey, i)
 		} else {
-			lookupKey = fmt.Sprintf("%d:%s:%s:%s:%s", op.Type, op.Group, op.Config, op.Domain, op.Node)
+			lookupKey = fmt.Sprintf("%d:%s:%s:%s:%s", op.Type, op.Group, op.Config, op.Target, op.Node)
 			opKey = fmt.Sprintf("%s:%d", lookupKey, i)
 		}
 
@@ -295,9 +295,9 @@ func (s *Store) BatchSaveConnStats(operations []StoreOperation) error {
 	for opKey, op := range opMap {
 		var lookupKey string
 		if op.Type == OpSaveStats {
-			lookupKey = fmt.Sprintf("%s:%s:%s:%s", op.Group, op.Config, op.Domain, op.Node)
+			lookupKey = fmt.Sprintf("%s:%s:%s:%s", op.Group, op.Config, op.Target, op.Node)
 		} else {
-			lookupKey = fmt.Sprintf("%d:%s:%s:%s:%s", op.Type, op.Group, op.Config, op.Domain, op.Node)
+			lookupKey = fmt.Sprintf("%d:%s:%s:%s:%s", op.Type, op.Group, op.Config, op.Target, op.Node)
 		}
 		lookupToKeys[lookupKey] = append(lookupToKeys[lookupKey], opKey)
 	}
@@ -322,7 +322,7 @@ func (s *Store) BatchSaveConnStats(operations []StoreOperation) error {
 				var lookupKey string
 
 				if op.Type == OpSaveStats {
-					lookupKey = fmt.Sprintf("%s:%s:%s:%s", op.Group, op.Config, op.Domain, op.Node)
+					lookupKey = fmt.Sprintf("%s:%s:%s:%s", op.Group, op.Config, op.Target, op.Node)
 
 					processGroup.Do(lookupKey, func() (struct{}, error) {
 						matchingKeys, found := lookupToKeys[lookupKey]
@@ -332,7 +332,7 @@ func (s *Store) BatchSaveConnStats(operations []StoreOperation) error {
 							lookupToKeys[lookupKey] = append(lookupToKeys[lookupKey], newKey)
 
 							if op.Data != nil {
-								cacheKey := FormatCacheKey(KeyTypeStats, op.Config, op.Group, op.Domain, op.Node)
+								cacheKey := FormatCacheKey(KeyTypeStats, op.Config, op.Group, op.Target, op.Node)
 								dataCopy := make([]byte, len(op.Data))
 								copy(dataCopy, op.Data)
 								cacheBatch.Store(cacheKey, dataCopy)
@@ -379,7 +379,7 @@ func (s *Store) BatchSaveConnStats(operations []StoreOperation) error {
 							if err == nil {
 								existingOp.Data = mergedData
 
-								cacheKey := FormatCacheKey(KeyTypeStats, op.Config, op.Group, op.Domain, op.Node)
+								cacheKey := FormatCacheKey(KeyTypeStats, op.Config, op.Group, op.Target, op.Node)
 								cacheBatch.Store(cacheKey, mergedData)
 							}
 						}
@@ -387,7 +387,7 @@ func (s *Store) BatchSaveConnStats(operations []StoreOperation) error {
 						return struct{}{}, nil
 					})
 				} else {
-					lookupKey = fmt.Sprintf("%d:%s:%s:%s:%s", op.Type, op.Group, op.Config, op.Domain, op.Node)
+					lookupKey = fmt.Sprintf("%d:%s:%s:%s:%s", op.Type, op.Group, op.Config, op.Target, op.Node)
 
 					newKey := fmt.Sprintf("%s:%d", lookupKey, len(opMap))
 					opMap[newKey] = &op
@@ -402,7 +402,7 @@ func (s *Store) BatchSaveConnStats(operations []StoreOperation) error {
 							copy(dataCopy, op.Data)
 							cacheBatch.Store(cacheKey, dataCopy)
 						case OpSavePrefetch:
-							cacheKey = FormatCacheKey(KeyTypePrefetch, op.Config, op.Group, op.Domain)
+							cacheKey = FormatCacheKey(KeyTypePrefetch, op.Config, op.Group, op.Target)
 							dataCopy := make([]byte, len(op.Data))
 							copy(dataCopy, op.Data)
 							cacheBatch.Store(cacheKey, dataCopy)

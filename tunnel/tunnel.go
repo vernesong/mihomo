@@ -672,8 +672,10 @@ func match(metadata *C.Metadata, helper C.RuleMatchHelper) (C.Proxy, C.Rule, err
 					passed = true
 					break
 				}
-				if adapter.Type() == C.Smart {
-					smart = true
+				if smartAdapter, ok := adapter.Adapter().(C.SmartAdapter); ok {
+					if smartAdapter.PreferASN() {
+						smart = true
+					}
 				}
 			}
 			if passed {

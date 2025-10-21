@@ -44,12 +44,12 @@ func InitCache() {
 
 	nodeStatesCache = lru.New[string, map[string][]byte](
 		lru.WithSize[string, map[string][]byte](2000),
-		lru.WithAge[string, map[string][]byte](120),
+		lru.WithAge[string, map[string][]byte](60),
 	)
 
 	unwrapCache = lru.New[string, []C.Proxy](
-		lru.WithSize[string, []C.Proxy](500),
-		lru.WithAge[string, []C.Proxy](2),
+		lru.WithSize[string, []C.Proxy](1000),
+		lru.WithAge[string, []C.Proxy](300),
 	)
 
 	recordCache = lru.New[string, *AtomicStatsRecord](
@@ -84,9 +84,21 @@ func RemoveCacheValuesByPrefix(prefix string) {
 }
 
 // 存储预取结果
-func (s *Store) StorePrefetchResult(group, config string, target string, weightType string, proxyNames []string, weights []float64) {
+func (s *Store) StorePrefetchResult(group, config string, target string, asnNumber string, isUDP bool, proxyNames []string, weights []float64) {
 	if target == "" || len(proxyNames) == 0 {
 		return
+	}
+
+	weightType := WeightTypeTCP
+	if isUDP {
+		weightType = WeightTypeUDP
+	}
+	if asnNumber != "" {
+		if isUDP {
+			weightType = WeightTypeUDPASN + ":" + asnNumber
+		} else {
+			weightType = WeightTypeTCPASN + ":" + asnNumber
+		}
 	}
 
 	cacheKey := FormatCacheKey(KeyTypePrefetch, config, group, target)
@@ -131,7 +143,7 @@ func (s *Store) StorePrefetchResult(group, config string, target string, weightT
 		Type:   OpSavePrefetch,
 		Group:  group,
 		Config: config,
-		Domain: target,
+		Target: target,
 		Data:   data,
 	})
 
@@ -145,20 +157,54 @@ func (s *Store) StorePrefetchResult(group, config string, target string, weightT
 }
 
 // 获取预取结果
-func (s *Store) GetPrefetchResult(group, config string, target string, weightType string) ([]string, []float64) {
+func (s *Store) GetPrefetchResult(group, config string, target string, asnNumber string, isUDP bool) ([]string, []float64) {
 	if target == "" {
+		return nil, nil
+	}
+
+	findResult := func(prefetchMap PrefetchMap) ([]string, []float64) {
+		if asnNumber != "" {
+			weightType := WeightTypeTCPASN + ":" + asnNumber
+			if isUDP {
+				weightType = WeightTypeUDPASN + ":" + asnNumber
+			}
+			if res, exists := prefetchMap[weightType]; exists {
+				if len(res.Nodes) > 0 && len(res.Weights) == len(res.Nodes) {
+					return res.Nodes, res.Weights
+				}
+			}
+		} else {
+			weightType := WeightTypeTCP
+			if isUDP {
+				weightType = WeightTypeUDP
+			}
+			if res, exists := prefetchMap[weightType]; exists {
+				if len(res.Nodes) > 0 && len(res.Weights) == len(res.Nodes) {
+					return res.Nodes, res.Weights
+				}
+			}
+			asnPrefix := WeightTypeTCPASN + ":"
+			if isUDP {
+				asnPrefix = WeightTypeUDPASN + ":"
+			}
+			for wt, res := range prefetchMap {
+				if strings.HasPrefix(wt, asnPrefix) {
+					if len(res.Nodes) > 0 && len(res.Weights) == len(res.Nodes) {
+						return res.Nodes, res.Weights
+					}
+				}
+			}
+		}
 		return nil, nil
 	}
 
 	ops := getGlobalQueueSnapshot()
 	for _, op := range ops {
-		if op.Type == OpSavePrefetch && op.Group == group && op.Config == config && op.Domain == target {
+		if op.Type == OpSavePrefetch && op.Group == group && op.Config == config && op.Target == target {
 			var prefetchMap PrefetchMap
 			if err := json.Unmarshal(op.Data, &prefetchMap); err == nil {
-				if res, exists := prefetchMap[weightType]; exists {
-					if len(res.Nodes) > 0 && len(res.Weights) == len(res.Nodes) {
-						return res.Nodes, res.Weights
-					}
+				if nodes, weights := findResult(prefetchMap); nodes != nil {
+					return nodes, weights
 				}
 			}
 		}
@@ -173,10 +219,8 @@ func (s *Store) GetPrefetchResult(group, config string, target string, weightTyp
 	for _, data := range rawResult {
 		var prefetchMap PrefetchMap
 		if err := json.Unmarshal(data, &prefetchMap); err == nil {
-			if res, exists := prefetchMap[weightType]; exists {
-				if len(res.Nodes) > 0 && len(res.Weights) == len(res.Nodes) {
-					return res.Nodes, res.Weights
-				}
+			if nodes, weights := findResult(prefetchMap); nodes != nil {
+				return nodes, weights
 			}
 		}
 	}
@@ -208,8 +252,8 @@ func (s *Store) LoadAllPrefetchResults(group, config string, limit int) int {
 			continue
 		}
 
-		domain := parts[4]
-		if domain == "" {
+		target := parts[4]
+		if target == "" {
 			continue
 		}
 
@@ -219,7 +263,7 @@ func (s *Store) LoadAllPrefetchResults(group, config string, limit int) int {
 			continue
 		}
 
-		cacheKey := FormatCacheKey(KeyTypePrefetch, config, group, domain)
+		cacheKey := FormatCacheKey(KeyTypePrefetch, config, group, target)
 		SetCacheValue(cacheKey, v)
 
 		loadCount++
@@ -236,26 +280,65 @@ func (s *Store) LoadAllPrefetchResults(group, config string, limit int) int {
 	return loadCount
 }
 
-func (s *Store) StoreUnwrapResult(group, config string, target string, proxies []C.Proxy) {
+func (s *Store) StoreUnwrapResult(group, config string, target string, asnNumber string, isUDP bool, proxies []C.Proxy) {
 	if target == "" || len(proxies) == 0 {
 		return
 	}
 
-	key := fmt.Sprintf("%s:%s:%s", config, group, target)
+	resultType := WeightTypeTCP
+	if isUDP {
+		resultType = WeightTypeUDP
+	}
+
+	key := fmt.Sprintf("%s:%s:%s:%s", config, group, resultType, target)
+
+	if asnNumber != "" {
+		key = fmt.Sprintf("%s:%s:%s:%s", config, group, resultType, asnNumber)
+	}
+
 	unwrapCache.Set(key, proxies)
 }
 
-func (s *Store) GetUnwrapResult(group, config string, target string) []C.Proxy {
+func (s *Store) GetUnwrapResult(group, config, target, asnNumber string, isUDP bool) []C.Proxy {
 	if target == "" {
 		return nil
 	}
 
-	key := fmt.Sprintf("%s:%s:%s", config, group, target)
+	resultType := WeightTypeTCP
+	if isUDP {
+		resultType = WeightTypeUDP
+	}
+
+	key := fmt.Sprintf("%s:%s:%s:%s", config, group, resultType, target)
+
+	if asnNumber != "" {
+		key = fmt.Sprintf("%s:%s:%s:%s", config, group, resultType, asnNumber)
+	}
+
 	if value, ok := unwrapCache.Get(key); ok {
 		return value
 	}
 
 	return nil
+}
+
+func (s *Store) DeleteUnwrapResult(group, config string, target string, asnNumber string, isUDP bool) {
+	if target == "" {
+		return
+	}
+
+	resultType := WeightTypeTCP
+	if isUDP {
+		resultType = WeightTypeUDP
+	}
+
+	key := fmt.Sprintf("%s:%s:%s:%s", config, group, resultType, target)
+
+	if asnNumber != "" {
+		key = fmt.Sprintf("%s:%s:%s:%s", config, group, resultType, asnNumber)
+	}
+
+	unwrapCache.Delete(key)
 }
 
 // 删除缓存结果
@@ -371,12 +454,12 @@ func (s *Store) AdjustCacheParameters() {
 
 	nodeStatesCache = lru.New[string, map[string][]byte](
 		lru.WithSize[string, map[string][]byte](2000),
-		lru.WithAge[string, map[string][]byte](120),
+		lru.WithAge[string, map[string][]byte](60),
 	)
 
 	unwrapCache = lru.New[string, []C.Proxy](
-		lru.WithSize[string, []C.Proxy](500),
-		lru.WithAge[string, []C.Proxy](2),
+		lru.WithSize[string, []C.Proxy](1000),
+		lru.WithAge[string, []C.Proxy](300),
 	)
 
 	recordCache = lru.New[string, *AtomicStatsRecord](

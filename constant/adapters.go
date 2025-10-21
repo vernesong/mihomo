@@ -350,3 +350,9 @@ type NatTable interface {
 
 	DeleteLockForLocalConn(lAddr, key string)
 }
+
+// SmartAdapter is an optional interface for adapters that support ASN preference
+type SmartAdapter interface {
+	ProxyAdapter
+	PreferASN() bool
+}

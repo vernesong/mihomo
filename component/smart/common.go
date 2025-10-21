@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	OpSaveNodeState StoreOperationType = iota
+	OpSaveNodeState         = iota
 	OpSaveStats
 	OpSavePrefetch
 	OpSaveRanking
@@ -62,8 +62,6 @@ const (
 	RankRarelyUsed          = "RarelyUsed"
 )
 
-type StoreOperationType int
-
 var bucketSmartStats = []byte("smart_stats")
 
 var (
@@ -99,12 +97,40 @@ var (
 	recordCache *lru.LruCache[string, *AtomicStatsRecord]
 )
 
+var cdnASNs = map[string]bool{
+	"13335":  true, // Cloudflare
+	"12222":  true, // Akamai
+	"16625":  true, // Akamai
+	"20940":  true, // Akamai
+	"31110":  true, // Akamai
+	"35994":  true, // Akamai
+	"54113":  true, // Fastly
+	"22822":  true, // Limelight Networks
+	"15133":  true, // EdgeCast (Verizon)
+	"19551":  true, // Incapsula (Imperva)
+	"20446":  true, // StackPath / Bunny
+	"60068":  true, // CDN77
+	"16509":  true, // Amazon CloudFront
+	"36408":  true, // CDNetworks
+	"4809":   true, // ChinaCache
+	"199524": true, // Gcore
+	"212238": true, // BelugaCDN
+	"55933":  true, // QUANTIL
+	"43260":  true, // Medianova
+	"43317":  true, // CDNvideo
+	"43996":  true, // CDNsun
+	"52320":  true, // GlobeNet
+	"396982": true, // Leaseweb CDN
+	"16276":  true, // OVH CDN
+	"30081":  true, // CacheFly
+}
+
 type (
 	StoreOperation struct {
-		Type   StoreOperationType
+		Type   int
 		Group  string
 		Config string
-		Domain string
+		Target string
 		Node   string
 		Data   []byte
 	}

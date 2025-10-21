@@ -50,39 +50,16 @@ const (
 	maxRetries               = 4
 	maxSelected              = 10
 	allowedWeight            = 0.4
+
+	parallelDials            = 3
+	connectThreshold         = 2.0
 )
 
 var (
 	flushQueueOnce       atomic.Bool
 	smartInitOnce        sync.Once
 	preloadOnce          sync.Once
-	asnAvailable         bool
 )
-
-var cdnASNs = map[string]struct{}{
-	"13335": {}, // Cloudflare
-	"12222": {}, // Akamai
-	"16625": {}, // Akamai
-	"20940": {}, // Akamai
-	"31110": {}, // Akamai
-	"35994": {}, // Akamai
-	"54113": {}, // Fastly
-	"22822": {}, // Limelight Networks
-	"15133": {}, // EdgeCast (Verizon)
-	"19551": {}, // Incapsula (Imperva)
-	"20446": {}, // StackPath / Bunny
-	"60068": {}, // CDN77
-	"16509": {}, // Amazon CloudFront
-	"36408": {}, // CDNetworks
-	"4809":  {}, // ChinaCache
-	"199524":{}, // Gcore
-	"212238":{}, // BelugaCDN
-	"55933": {}, // QUANTIL
-	"43260": {}, // Medianova
-	"43317": {}, // CDNvideo
-	"43996": {}, // CDNsun
-	"52320": {}, // GlobeNet
-}
 
 type smartOption func(*Smart)
 
@@ -111,6 +88,7 @@ type Smart struct {
 	Hidden         bool
 	useLightGBM    bool
 	collectData    bool
+	preferASN	   bool
 }
 
 type dialResult struct {
@@ -292,7 +270,6 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 		if i == 0 {
 			batch = []C.Proxy{proxies[0]}
 		} else {
-			const parallelDials = 3
 			begin := (i-1)*parallelDials + 1
 			if begin >= len(proxies) {
 				return nil, 0
@@ -310,10 +287,9 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 				historyConnectTime = hct
 			}
 		}
-		const thresholdRatio = 2.0
 		var timeout time.Duration
 		if historyConnectTime > 0 {
-			timeout = time.Duration(float64(historyConnectTime)*thresholdRatio) * time.Millisecond
+			timeout = time.Duration(float64(historyConnectTime)*connectThreshold) * time.Millisecond
 			if timeout > C.DefaultTCPTimeout {
 				timeout = C.DefaultTCPTimeout
 			}
@@ -362,12 +338,7 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 		return nil, finalErr
 	}
 
-	if s.store.CheckNetworkFailure(s.Name(), s.configName) {
-		proxies := s.selectFallbacks(metadata, availableProxies)
-		return tryDial(proxies)
-	}
-
-	proxies := s.selectProxies(metadata, availableProxies)
+	proxies := s.selectProxies(metadata, availableProxies, false)
 	return tryDial(proxies)
 }
 
@@ -379,19 +350,14 @@ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 	proxies := s.GetProxies(true)
 	metadata.SmartBlock = "normal"
 
-	if s.store.CheckNetworkFailure(s.Name(), s.configName) {
-		availableProxies = s.selectFallbacks(metadata, proxies)
-	} else {
-		availableProxies = s.selectProxies(metadata, proxies)
-	}
+	availableProxies = s.selectProxies(metadata, proxies, false)
 	
 	for i := 0; i < len(availableProxies); i++ {
 		proxy = availableProxies[i]
 		historyConnectTime := s.getHistoryConnectStats(metadata, proxy)
-		const thresholdRatio = 2.0
 		var timeout time.Duration
 		if historyConnectTime > 0 {
-			timeout = time.Duration(float64(historyConnectTime)*thresholdRatio) * time.Millisecond
+			timeout = time.Duration(float64(historyConnectTime)*connectThreshold) * time.Millisecond
 			if timeout > C.DefaultUDPTimeout {
 				timeout = C.DefaultUDPTimeout
 			}
@@ -434,9 +400,7 @@ func (s *Smart) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 		}
 	}
 
-	proxies = s.selectProxies(metadata, proxies)
-	domain, _ := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
-	s.store.StoreUnwrapResult(s.Name(), s.configName, domain, proxies)
+	proxies = s.selectProxies(metadata, proxies, true)
 
 	return proxies[0]
 }
@@ -447,6 +411,10 @@ func (s *Smart) IsL3Protocol(metadata *C.Metadata) bool {
 
 func (s *Smart) SupportUDP() bool {
 	return !s.disableUDP
+}
+
+func (s *Smart) PreferASN() bool {
+	return s.preferASN
 }
 
 func (s *Smart) WrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata, connectTime int64) C.Conn {
@@ -533,10 +501,8 @@ func (s *Smart) InitSmart() {
 		}, false)
 
 		// try load ASN database
-		if !asnAvailable {
-			if err := geodata.InitASN(); err == nil {
-				asnAvailable = true
-			} else {
+		if s.preferASN {
+			if err := geodata.InitASN(); err != nil {
 				log.Warnln("[Smart] Failed to load ASN database: %v", err)
 			}
 		}
@@ -604,6 +570,9 @@ func (s *Smart) startTimedTask(initialDelay, interval time.Duration, taskName st
 			log.Debugln("[Smart] Task %s for group [%s] set to run once, exiting",
 				taskName, s.Name())
 			return
+		} else {
+			log.Debugln("[Smart] Task %s for group [%s] started, interval: %s",
+				taskName, s.Name(), adjustedInterval.String())
 		}
 
 		ticker := time.NewTicker(adjustedInterval)
@@ -777,10 +746,21 @@ func (s *Smart) checkAndRecoverDegradedNodes() {
 	}
 }
 
-func (s *Smart) fillProxies(selected []C.Proxy, weights map[string]float64, all []C.Proxy, minCount int, isUDP bool, metadata *C.Metadata, blockedNodes map[string]bool) []C.Proxy {
+func (s *Smart) fillProxies(selected []C.Proxy, weights map[string]float64, all []C.Proxy, minCount int, isUDP bool, metadata *C.Metadata) []C.Proxy {
+	blockedNodes := make(map[string]bool)
+	stateData, _ := s.store.GetNodeStates(s.Name(), s.configName)
+	for nodeName, data := range stateData {
+		var state smart.NodeState
+		if json.Unmarshal(data, &state) == nil {
+			if !state.BlockedUntil.IsZero() && state.BlockedUntil.After(time.Now()) {
+				blockedNodes[nodeName] = true
+			}
+		}
+	}
+
 	filtered := make([]C.Proxy, 0, len(selected))
 	for _, p := range selected {
-		if (weights == nil || weights[p.Name()] >= allowedWeight) && (!isUDP || p.SupportUDP()) {
+		if p.AliveForTestUrl(s.testUrl) && !blockedNodes[p.Name()] && (weights == nil || weights[p.Name()] >= allowedWeight) && (!isUDP || p.SupportUDP()) {
 			filtered = append(filtered, p)
 		}
 	}
@@ -799,7 +779,7 @@ func (s *Smart) fillProxies(selected []C.Proxy, weights map[string]float64, all 
 	}
 
 	fallbackProxy := s.fallback.Unwrap(metadata, true)
-	if !blockedNodes[fallbackProxy.Name()] && !selectedNames[fallbackProxy.Name()] {
+	if !blockedNodes[fallbackProxy.Name()] && !selectedNames[fallbackProxy.Name()] && fallbackProxy.AliveForTestUrl(s.testUrl) {
 		if w, exists := weights[fallbackProxy.Name()]; (weights == nil || (exists && w >= allowedWeight) || !exists) && (!isUDP || fallbackProxy.SupportUDP()) {
 			selected = append([]C.Proxy{fallbackProxy}, selected...)
 			selectedNames[fallbackProxy.Name()] = true
@@ -809,7 +789,7 @@ func (s *Smart) fillProxies(selected []C.Proxy, weights map[string]float64, all 
 	indexes := rand.Perm(len(all))
 	for _, idx := range indexes {
 		p := all[idx]
-		if !blockedNodes[p.Name()] && !selectedNames[p.Name()] {
+		if !blockedNodes[p.Name()] && !selectedNames[p.Name()] && p.AliveForTestUrl(s.testUrl)  {
 			if w, exists := weights[p.Name()]; (weights == nil || (exists && w >= allowedWeight) || !exists) && (!isUDP || p.SupportUDP()) {
 				selected = append(selected, p)
 				selectedNames[p.Name()] = true
@@ -833,27 +813,40 @@ func (s *Smart) selectFallbacks(metadata *C.Metadata, proxies []C.Proxy) []C.Pro
 	}
 
 	fallbacks := make([]C.Proxy, 0, len(proxies))
+	selectedNames := make(map[string]bool, len(proxies))
 	first := s.fallback.Unwrap(metadata, true)
-	fallbacks = append(fallbacks, first)
+	if first.AliveForTestUrl(s.testUrl) {
+		fallbacks = append(fallbacks, first)
+		selectedNames[first.Name()] = true
+	}
 
-	piv := 0
-	for i, p := range proxies {
-		if p == first {
-			piv = i
-			break
+	indexes := rand.Perm(len(proxies))
+	for _, idx := range indexes {
+		p := proxies[idx]
+		if p.AliveForTestUrl(s.testUrl) && !selectedNames[p.Name()] {
+			fallbacks = append(fallbacks, p)
+			selectedNames[p.Name()] = true
+			if len(fallbacks) >= maxSelected {
+				break
+			}
 		}
 	}
-	fallbacks = append(fallbacks, proxies[piv:]...)
-	fallbacks = append(fallbacks, proxies[:piv]...)
 
-	if len(fallbacks) > maxSelected {
-		fallbacks = fallbacks[:maxSelected]
+	if len(fallbacks) == 0 {
+		fallbacks = proxies[:maxSelected]
 	}
 
 	return fallbacks
 }
 
-func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy) []C.Proxy {
+// 节点选择
+func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy, store bool) []C.Proxy {
+	// 添加ASN信息
+	asnNumber := s.getASNCode(metadata)
+	domain, _ := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
+	result := make([]C.Proxy, 0, maxSelected)
+	proxyByName := make(map[string]C.Proxy)
+
 	if s.selected != "" {
 		for _, p := range proxies {
 			if p.Name() == s.selected {
@@ -862,68 +855,33 @@ func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy) []C.Proxy
 		}
 	}
 
-	weightType := smart.WeightTypeTCP
-	if metadata.NetWork == C.UDP {
-		weightType = smart.WeightTypeUDP
-	}
-
-	blockedNodes := make(map[string]bool)
-	stateData, _ := s.store.GetNodeStates(s.Name(), s.configName)
-	for nodeName, data := range stateData {
-		var state smart.NodeState
-		if json.Unmarshal(data, &state) == nil {
-			if !state.BlockedUntil.IsZero() && state.BlockedUntil.After(time.Now()) {
-				blockedNodes[nodeName] = true
-			}
-		}
-	}
-
-	proxyByName := make(map[string]C.Proxy)
 	for _, p := range proxies {
 		proxyByName[p.Name()] = p
 	}
 
-	findProxiesByNames := func(names []string) []C.Proxy {
-		proxies := make([]C.Proxy, 0, len(names))
-		for _, name := range names {
-			if !blockedNodes[name] {
-				if p, ok := proxyByName[name]; ok && p.AliveForTestUrl(s.testUrl) {
-					proxies = append(proxies, p)
-				}
+	findProxies := func(names []string, weights []float64) ([]C.Proxy, map[string]float64) {
+		resultProxies := make([]C.Proxy, 0, len(names))
+		resultWeights := make(map[string]float64)
+		for i, name := range names {
+			if p, ok := proxyByName[name]; ok {
+				resultProxies = append(resultProxies, p)
+				resultWeights[name] = weights[i]
 			}
 		}
-		return proxies
+		return resultProxies, resultWeights
 	}
 
-	trySelector := func(target string, weightType string) ([]C.Proxy, map[string]float64) {
-		// 检查解析缓存
-		if cachedProxies := s.store.GetUnwrapResult(s.Name(), s.configName, target); len(cachedProxies) > 0 {
-			return cachedProxies, nil
-		}
-
+	trySelector := func(isUDP bool) ([]C.Proxy, map[string]float64) {
 		// 检查预解析缓存
-		if cachedProxyNames, cachedWeights := s.store.GetPrefetchResult(s.Name(), s.configName, target, weightType); len(cachedProxyNames) != 0 {
-			if proxies := findProxiesByNames(cachedProxyNames); len(proxies) > 0 {
-				weights := make(map[string]float64)
-				for i, name := range cachedProxyNames {
-					if i < len(cachedWeights) {
-						weights[name] = cachedWeights[i]
-					}
-				}
+		if proxiesName, weights := s.store.GetPrefetchResult(s.Name(), s.configName, domain, asnNumber, isUDP); len(proxiesName) > 0 {
+			if proxies, weights := findProxies(proxiesName, weights); len(proxies) > 0 {
 				return proxies, weights
 			}
 		}
 
 		// 实时计算最佳节点
-		bestNodes, bestWeights, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, target, weightType)
-		if err == nil && len(bestNodes) != 0 {
-			if proxies := findProxiesByNames(bestNodes); len(proxies) > 0 {
-				weights := make(map[string]float64)
-				for i, name := range bestNodes {
-					if i < len(bestWeights) {
-						weights[name] = bestWeights[i]
-					}
-				}
+		if proxiesName, weights, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, domain, asnNumber, isUDP); err == nil && len(proxiesName) > 0 {
+			if proxies, weights := findProxies(proxiesName, weights); len(proxies) > 0 {
 				return proxies, weights
 			}
 		}
@@ -931,34 +889,26 @@ func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy) []C.Proxy
 		return nil, nil
 	}
 
-	// 尝试使用ASN信息选择
-	asnNumber := s.getASNCode(metadata)
-	if asnNumber != "" {
-		if _, isCDN := cdnASNs[asnNumber]; !isCDN {
-			asnWeightType := weightType
-			if weightType == smart.WeightTypeTCP {
-				asnWeightType = smart.WeightTypeTCPASN + ":" + asnNumber
-			} else {
-				asnWeightType = smart.WeightTypeUDPASN + ":" + asnNumber
-			}
+	if result = s.store.GetUnwrapResult(s.Name(), s.configName, domain, asnNumber, metadata.NetWork == C.UDP); len(result) > 0 {
+		return result
+	}
 
-			if selected, weights := trySelector(asnNumber, asnWeightType); len(selected) > 0 {
-				if result := s.fillProxies(selected, weights, proxies, maxSelected, metadata.NetWork == C.UDP, metadata, blockedNodes); len(result) > 0 {
-					return result
-				}
-			}
+	if !s.store.CheckNetworkFailure(s.Name(), s.configName) {
+		selected, weights := trySelector(metadata.NetWork == C.UDP)
+		if len(selected) > 0 {
+			result = s.fillProxies(selected, weights, proxies, maxSelected, metadata.NetWork == C.UDP, metadata)
 		}
 	}
 
-	// 尝试使用域名信息选择
-	domain, _ := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
-	if selected, weights := trySelector(domain, weightType); len(selected) > 0 {
-		if result := s.fillProxies(selected, weights, proxies, maxSelected, metadata.NetWork == C.UDP, metadata, blockedNodes); len(result) > 0 {
-			return result
-		}
+	if len(result) == 0 {
+		result = s.selectFallbacks(metadata, proxies)
 	}
 
-	return s.selectFallbacks(metadata, proxies)
+	if store {
+		s.store.StoreUnwrapResult(s.Name(), s.configName, domain, asnNumber, metadata.NetWork == C.UDP, result)
+	}
+
+	return result
 }
 
 func (s *Smart) MarshalJSON() ([]byte, error) {
@@ -990,6 +940,7 @@ func (s *Smart) MarshalJSON() ([]byte, error) {
 		"useLightGBM":     s.useLightGBM,
 		"collectData":     s.collectData,
 		"sampleRate":      s.sampleRate,
+		"preferASN":       s.preferASN,
 	})
 }
 
@@ -1220,7 +1171,7 @@ func (s *Smart) saveStatsRecord(cacheKey, domain string, proxy C.Proxy, record *
 				Type:   smart.OpSaveStats,
 				Group:  s.Name(),
 				Config: s.configName,
-				Domain: domain,
+				Target: domain,
 				Node:   proxy.Name(),
 				Data:   data,
 			}
@@ -1591,7 +1542,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 
 	if isDegraded {
 		calculatedWeight = degradedWeight
-		go s.cleanupDegradedNodePreferenceCache(metadata, domain, addressDisplay, proxy.Name(), calculatedWeight, weightType, asnInfo)
+		go s.cleanupDegradedNodePreferenceCache(metadata, domain, addressDisplay, proxy.Name(), calculatedWeight, asnInfo)
 	}
 
 	baseWeight := calculatedWeight / priorityFactor
@@ -1663,27 +1614,29 @@ func (s *Smart) registerPacketClosureMetricsCallback(pc C.PacketConn, proxy C.Pr
 	})
 }
 
-func (s *Smart) cleanupDegradedNodePreferenceCache(metadata *C.Metadata, domain, addressDisplay, nodeName string, currentWeight float64, weightType, asnInfo string) {
+func (s *Smart) cleanupDegradedNodePreferenceCache(metadata *C.Metadata, domain, addressDisplay, nodeName string, currentWeight float64, asnInfo string) {
 	lock := smart.GetDomainNodeLock(domain, s.Name(), nodeName)
 	lock.Lock()
 	defer lock.Unlock()
 
-	updatePrefetch := func(target, typeKey string, logPrefix string) {
-		nodes, weights := s.store.GetPrefetchResult(s.Name(), s.configName, target, typeKey)
+	updatePrefetch := func(domain string, isUDP bool, asnInfo string) {
+		nodes, weights := s.store.GetPrefetchResult(s.Name(), s.configName, domain, asnInfo, isUDP)
+		networkType := "tcp"
+		if isUDP {
+			networkType = "udp"
+		}
 		if len(nodes) == 0 {
-			bestNodes, bestWeights, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, target, typeKey)
+			bestNodes, bestWeights, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, domain, asnInfo, isUDP)
 			if err == nil && len(bestNodes) > 0 {
-				s.store.StorePrefetchResult(s.Name(), s.configName, target, typeKey, bestNodes, bestWeights)
+				s.store.StorePrefetchResult(s.Name(), s.configName, domain, asnInfo, isUDP, bestNodes, bestWeights)
 				nodeWeightPairs := make([]string, len(bestNodes))
 				for i := range bestNodes {
 					nodeWeightPairs[i] = fmt.Sprintf("%s: %.2f", bestNodes[i], bestWeights[i])
 				}
-				if logPrefix == "domain" {
-					log.Debugln("[Smart] Updated prefetch result for Group [%s]: %s [%s] => type [%s] => [%s]",
-						s.Name(), logPrefix, addressDisplay, typeKey, strings.Join(nodeWeightPairs, ", "))
+				if asnInfo != "" {
+					log.Debugln("[Smart] Restored prefetch result for Group [%s]: network [%s] => domain [%s (ASN: %s)] => [%s]", s.Name(), networkType, addressDisplay, asnInfo, strings.Join(nodeWeightPairs, ", "))
 				} else {
-					log.Debugln("[Smart] Updated prefetch result for Group [%s]: %s [%s] => type [%s] => [%s]",
-						s.Name(), logPrefix, target, typeKey, strings.Join(nodeWeightPairs, ", "))
+					log.Debugln("[Smart] Restored prefetch result for Group [%s]: network [%s] => domain [%s] => [%s]", s.Name(), networkType, addressDisplay, strings.Join(nodeWeightPairs, ", "))
 				}
 				return
 			}
@@ -1713,37 +1666,27 @@ func (s *Smart) cleanupDegradedNodePreferenceCache(metadata *C.Metadata, domain,
 			sortedNodes = append(sortedNodes, nw.name)
 			sortedWeights = append(sortedWeights, nw.weight)
 		}
-		s.store.StorePrefetchResult(s.Name(), s.configName, target, typeKey, sortedNodes, sortedWeights)
+		s.store.StorePrefetchResult(s.Name(), s.configName, domain, asnInfo, isUDP, sortedNodes, sortedWeights)
 		nodeWeightPairs := make([]string, len(sortedNodes))
 		for i := range sortedNodes {
 			nodeWeightPairs[i] = fmt.Sprintf("%s: %.2f", sortedNodes[i], sortedWeights[i])
 		}
-		if logPrefix == "domain" {
-			log.Debugln("[Smart] Updated prefetch result for Group [%s]: %s [%s] => type [%s] => [%s]",
-				s.Name(), logPrefix, addressDisplay, typeKey, strings.Join(nodeWeightPairs, ", "))
+		if asnInfo != "" {
+			log.Debugln("[Smart] Updated prefetch result for Group [%s]: network [%s] => domain [%s (ASN: %s)] => [%s]", s.Name(), networkType, addressDisplay, asnInfo, strings.Join(nodeWeightPairs, ", "))
 		} else {
-			log.Debugln("[Smart] Updated prefetch result for Group [%s]: %s [%s] => type [%s] => [%s]",
-				s.Name(), logPrefix, target, typeKey, strings.Join(nodeWeightPairs, ", "))
+			log.Debugln("[Smart] Updated prefetch result for Group [%s]: network [%s] => domain [%s] => [%s]", s.Name(), networkType, addressDisplay, strings.Join(nodeWeightPairs, ", "))
 		}
 	}
 
-	// 域名缓存
-	updatePrefetch(domain, weightType, "domain")
-
-	// ASN缓存
-	if asnInfo != "" {
-		asnWeightType := smart.WeightTypeTCPASN
-		if weightType == smart.WeightTypeUDP {
-			asnWeightType = smart.WeightTypeUDPASN
-		}
-		fullAsnWeightType := asnWeightType + ":" + asnInfo
-		updatePrefetch(asnInfo, fullAsnWeightType, "ASN")
-	}
+	updatePrefetch(domain, metadata.NetWork == C.UDP, asnInfo)
 
 	// sticky-sessions缓存
 	if s.fallback != nil && s.strategy == "sticky-sessions" {
 		s.fallback.ClearStickySession(metadata)
 	}
+
+	// unwarp缓存
+	s.store.DeleteUnwrapResult(s.Name(), s.configName, domain, asnInfo, metadata.NetWork == C.UDP)
 }
 
 func (s *Smart) getPriorityFactor(proxyName string) float64 {
@@ -1822,6 +1765,12 @@ func smartWithSampleRate(sampleRate float64) smartOption {
 	}
 }
 
+func smartWithPreferASN(preferASN bool) smartOption {
+	return func(s *Smart) {
+		s.preferASN = preferASN
+	}
+}
+
 func parseSmartOption(config map[string]any) ([]smartOption, string) {
 	opts := []smartOption{}
 
@@ -1856,6 +1805,12 @@ func parseSmartOption(config map[string]any) ([]smartOption, string) {
 		}
 	}
 
+	if elm, ok := config["prefer-asn"]; ok {
+		if preferASN, ok := elm.(bool); ok {
+			opts = append(opts, smartWithPreferASN(preferASN))
+		}
+	}
+
 	return opts, strategy
 }
 
@@ -1865,7 +1820,7 @@ func (s *Smart) getASNCode(metadata *C.Metadata) string {
 	}
 
 	if metadata.DstIPASN == "" {
-		if !asnAvailable {
+		if !s.preferASN {
 			return ""
 		}
 		asn, aso := mmdb.ASNInstance().LookupASN(metadata.DstIP.AsSlice())
