@@ -9,46 +9,26 @@ import (
 )
 
 var (
-	smartInitMutex sync.Mutex
-	smartInitDone  bool
+	smartInitOnce  sync.Once
 	smartStore     *smart.Store
 )
 
-type SmartStore struct {
-	store *smart.Store
-}
-
-func NewSmartStore(cache *CacheFile) *SmartStore {
+func GetSmartStore() *smart.Store {
+	cache := Cache()
 	if cache == nil || cache.DB == nil {
-		return nil
+		log.Fatalln("[Smart] DB Cache file load failed")
 	}
 
-	smartInitMutex.Lock()
-	defer smartInitMutex.Unlock()
-
-	if !smartInitDone {
+	smartInitOnce.Do(func() {
 		err := cache.DB.Update(func(tx *bbolt.Tx) error {
 			_, err := tx.CreateBucketIfNotExists(bucketSmartStats)
 			return err
 		})
 		if err != nil {
-			log.Warnln("[SmartStore] Failed to create bucket: %v", err)
-			return nil
+			log.Fatalln("[SmartStore] Failed to create bucket: %v", err)
 		}
-		smart.InitGlobalParams()
 		smartStore = smart.NewStore(cache.DB)
-		smartInitDone = true
-	}
+	})
 
-	if smartStore == nil {
-		return nil
-	}
-
-	return &SmartStore{
-		store: smartStore,
-	}
-}
-
-func (s *SmartStore) GetStore() *smart.Store {
-	return s.store
+	return smartStore
 }

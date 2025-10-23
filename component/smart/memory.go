@@ -147,9 +147,7 @@ func (s *Store) StorePrefetchResult(group, config string, target string, asnNumb
 		Data:   data,
 	})
 
-	globalCacheParams.mutex.RLock()
-	needFlush := len(getGlobalQueueSnapshot()) >= globalCacheParams.BatchSaveThreshold
-	globalCacheParams.mutex.RUnlock()
+	needFlush := len(getGlobalQueueSnapshot()) >= GetBatchSaveThreshold()
 
 	if needFlush {
 		go s.FlushQueue(true)
@@ -569,12 +567,14 @@ func ClearCacheByLevel(level string, config string, group string) {
 	if level == "all" {
 		RemoveCacheValuesByPrefix("")
 	} else if level == "config" {
+		RemoveCacheValuesByPrefix(FormatCacheKey(keyTypeNetwork, config, ""))
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeFailed, config, ""))
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeNode, config, ""))
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeStats, config, ""))
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeRanking, config, ""))
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypePrefetch, config, ""))
 	} else if level == "group" {
+		RemoveCacheValuesByPrefix(FormatCacheKey(keyTypeNetwork, config, group))
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeFailed, config, group, ""))
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeNode, config, group, ""))
 		RemoveCacheValuesByPrefix(FormatCacheKey(KeyTypeStats, config, group, ""))

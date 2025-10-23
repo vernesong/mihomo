@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/metacubex/bbolt"
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/cmd"
 	"github.com/metacubex/mihomo/common/lru"
@@ -33,6 +34,7 @@ const (
 	KeyTypeNode             = "node"
 	KeyTypeStats            = "stats"
 	KeyTypeRanking          = "ranking"
+	keyTypeNetwork          = "network"
 
 	WeightTypeTCP           = "tcp"
 	WeightTypeUDP           = "udp"
@@ -62,9 +64,10 @@ const (
 	RankRarelyUsed          = "RarelyUsed"
 )
 
-var bucketSmartStats = []byte("smart_stats")
-
 var (
+	db *bbolt.DB
+	bucketSmartStats = []byte("smart_stats")
+
 	globalInitInstances = make(map[string]bool)
 	globalInitLock      sync.Mutex
 
@@ -126,6 +129,8 @@ var cdnASNs = map[string]bool{
 }
 
 type (
+	Store struct {}
+
 	StoreOperation struct {
 		Type   int
 		Group  string
@@ -159,11 +164,6 @@ type (
 		DomainFailureCount map[string]int `json:"domain_failure_count"`
 	}
 
-	RankingData struct {
-		Ranking     map[string]string `json:"ranking"`
-		LastUpdated time.Time         `json:"last_updated"`
-	}
-
 	NodeWithWeight struct {
 		Nodes   []string  `json:"nodes"`
 		Weights []float64 `json:"weights"`
@@ -172,8 +172,11 @@ type (
 	PrefetchMap map[string]NodeWithWeight
 )
 
-func InitGlobalParams() {
+func NewStore(newdb *bbolt.DB) *Store {
+	db = newdb
 	InitCache()
+	InitQueue()
+	return &Store{}
 }
 
 // 格式化缓存键
@@ -450,6 +453,86 @@ func getSystemMemoryLimit() float64 {
 	return cachedMemoryLimit
 }
 
+func InitQueue()  {
+	threshold := GetBatchSaveThreshold()
+	emptyQueue := make([]StoreOperation, 0, threshold)
+	replaceGlobalQueue(emptyQueue)
+}
+
+func appendToGlobalQueue(operations ...StoreOperation) {
+	globalOperationQueue.Update(func(old []StoreOperation) []StoreOperation {
+		newQueue := make([]StoreOperation, len(old)+len(operations))
+		copy(newQueue, old)
+		copy(newQueue[len(old):], operations)
+		return newQueue
+	})
+}
+
+func replaceGlobalQueue(newQueue []StoreOperation) {
+	globalOperationQueue.Store(newQueue)
+}
+
+func getGlobalQueueSnapshot() []StoreOperation {
+	return globalOperationQueue.Load()
+}
+
+func swapGlobalQueue(newQueue []StoreOperation) []StoreOperation {
+	return globalOperationQueue.Swap(newQueue)
+}
+
+func updateGlobalQueue(updateFunc func([]StoreOperation) []StoreOperation) {
+	globalOperationQueue.Update(updateFunc)
+}
+
+func removeFromGlobalQueue(shouldRemove func(StoreOperation) bool) {
+	updateGlobalQueue(func(currentQueue []StoreOperation) []StoreOperation {
+		newQueue := make([]StoreOperation, 0, len(currentQueue))
+		for _, op := range currentQueue {
+			if !shouldRemove(op) {
+				newQueue = append(newQueue, op)
+			}
+		}
+		return newQueue
+	})
+}
+
+func filterQueueByConfig(config string) {
+	updateGlobalQueue(func(currentQueue []StoreOperation) []StoreOperation {
+		newQueue := make([]StoreOperation, 0, len(currentQueue))
+		for _, op := range currentQueue {
+			if op.Config != config {
+				newQueue = append(newQueue, op)
+			}
+		}
+		return newQueue
+	})
+}
+
+func filterQueueByGroup(group, config string) {
+	updateGlobalQueue(func(currentQueue []StoreOperation) []StoreOperation {
+		newQueue := make([]StoreOperation, 0, len(currentQueue))
+		for _, op := range currentQueue {
+			if !(op.Group == group && op.Config == config) {
+				newQueue = append(newQueue, op)
+			}
+		}
+		return newQueue
+	})
+}
+
+func removeNodesFromQueue(group, config string, nodes []string) {
+	removeFromGlobalQueue(func(op StoreOperation) bool {
+		if op.Group == group && op.Config == config {
+			for _, node := range nodes {
+				if op.Node == node {
+					return true
+				}
+			}
+		}
+		return false
+	})
+}
+
 // 按级别刷新缓存
 func (s *Store) FlushByLevel(level string, config string, group string) error {
 	if level == "" {
@@ -466,14 +549,6 @@ func (s *Store) FlushByLevel(level string, config string, group string) error {
 	}
 
 	ClearCacheByLevel(level, config, group)
-
-	if level == "all" {
-		s.ClearFailureCache(level, "", "")
-	} else if level == "config" {
-		s.ClearFailureCache(level, config, "")
-	} else if level == "group" {
-		s.ClearFailureCache(level, config, group)
-	}
 
 	if level == "all" {
 		s.DeleteByPath("smart")

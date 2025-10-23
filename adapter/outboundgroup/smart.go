@@ -479,17 +479,7 @@ func (s *Smart) Now() string {
 }
 
 func (s *Smart) InitSmart() {
-	cacheFile := cachefile.Cache()
-	if cacheFile == nil || cacheFile.DB == nil {
-		log.Fatalln("[Smart] DB Cache file is nil for group %s", s.Name())
-	}
-
-	smartStore := cachefile.NewSmartStore(cacheFile)
-	if smartStore == nil {
-		log.Fatalln("[Smart] Failed to create SmartStore for group %s", s.Name())
-	}
-
-	s.store = smartStore.GetStore()
+	s.store = cachefile.GetSmartStore()
 
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 
@@ -606,11 +596,7 @@ func (s *Smart) updateNodeRanking() {
 	log.Debugln("[Smart] Starting node ranking update for policy group [%s]", s.Name())
 
 	proxies := s.GetProxies(true)
-	proxyNames := make([]string, 0, len(proxies))
-	for _, p := range proxies {
-		proxyNames = append(proxyNames, p.Name())
-	}
-	ranking, err := s.store.GetNodeWeightRanking(s.Name(), s.configName, proxyNames)
+	ranking, err := s.store.GetNodeWeightRanking(s.Name(), s.configName, s.testUrl, proxies)
 	if err != nil {
 		log.Warnln("[Smart] Failed to update node ranking: %v", err)
 		return
@@ -623,7 +609,7 @@ func (s *Smart) updateNodeRanking() {
 
 	categoryCounts := make(map[string]int)
 	for _, rank := range ranking {
-		categoryCounts[rank]++
+		categoryCounts[rank.Rank]++
 	}
 
 	log.Debugln("[Smart] Policy group [%s] node ranking update completed: %d nodes total (%s: %d, %s: %d, %s: %d)",
@@ -1435,7 +1421,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 	switch status {
 	case "failed":
 		atomicRecord.Add("failure", int64(1))
-		go s.store.MarkConnectionFailed(metadata, s.Name(), s.configName, proxy.Name(), domain, len(s.GetProxies(false)))
+		go s.store.MarkConnectionFailed(s.Name(), s.configName, proxy.Name(), domain, len(s.GetProxies(false)))
 	case "closed":
 		atomicRecord.Add("success", int64(1))
 		go s.store.MarkConnectionSuccess(s.Name(), s.configName)

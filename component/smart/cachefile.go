@@ -9,7 +9,6 @@ import (
 	"math/rand"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/metacubex/bbolt"
 	"github.com/metacubex/mihomo/common/batch"
@@ -30,117 +29,6 @@ var (
 		},
 	}
 )
-
-type Store struct {
-	db *bbolt.DB
-
-	networkFailureManager struct {
-		status        map[string]bool
-		successCount  map[string]int
-		lastFailure   map[string]time.Time
-		lock          sync.RWMutex
-		cacheThrottle struct {
-			mutex     sync.Mutex
-			lastSet   map[string]time.Time
-			lastClear map[string]time.Time
-		}
-		writeInterval time.Duration
-		clearInterval time.Duration
-	}
-}
-
-func appendToGlobalQueue(operations ...StoreOperation) {
-	globalOperationQueue.Update(func(old []StoreOperation) []StoreOperation {
-		newQueue := make([]StoreOperation, len(old)+len(operations))
-		copy(newQueue, old)
-		copy(newQueue[len(old):], operations)
-		return newQueue
-	})
-}
-
-func replaceGlobalQueue(newQueue []StoreOperation) {
-	globalOperationQueue.Store(newQueue)
-}
-
-func getGlobalQueueSnapshot() []StoreOperation {
-	return globalOperationQueue.Load()
-}
-
-func swapGlobalQueue(newQueue []StoreOperation) []StoreOperation {
-	return globalOperationQueue.Swap(newQueue)
-}
-
-func updateGlobalQueue(updateFunc func([]StoreOperation) []StoreOperation) {
-	globalOperationQueue.Update(updateFunc)
-}
-
-func removeFromGlobalQueue(shouldRemove func(StoreOperation) bool) {
-	updateGlobalQueue(func(currentQueue []StoreOperation) []StoreOperation {
-		newQueue := make([]StoreOperation, 0, len(currentQueue))
-		for _, op := range currentQueue {
-			if !shouldRemove(op) {
-				newQueue = append(newQueue, op)
-			}
-		}
-		return newQueue
-	})
-}
-
-func filterQueueByConfig(config string) {
-	updateGlobalQueue(func(currentQueue []StoreOperation) []StoreOperation {
-		newQueue := make([]StoreOperation, 0, len(currentQueue))
-		for _, op := range currentQueue {
-			if op.Config != config {
-				newQueue = append(newQueue, op)
-			}
-		}
-		return newQueue
-	})
-}
-
-func filterQueueByGroup(group, config string) {
-	updateGlobalQueue(func(currentQueue []StoreOperation) []StoreOperation {
-		newQueue := make([]StoreOperation, 0, len(currentQueue))
-		for _, op := range currentQueue {
-			if !(op.Group == group && op.Config == config) {
-				newQueue = append(newQueue, op)
-			}
-		}
-		return newQueue
-	})
-}
-
-func removeNodesFromQueue(group, config string, nodes []string) {
-	removeFromGlobalQueue(func(op StoreOperation) bool {
-		if op.Group == group && op.Config == config {
-			for _, node := range nodes {
-				if op.Node == node {
-					return true
-				}
-			}
-		}
-		return false
-	})
-}
-
-func NewStore(db *bbolt.DB) *Store {
-	s := &Store{
-		db: db,
-	}
-	s.networkFailureManager.status = make(map[string]bool)
-	s.networkFailureManager.successCount = make(map[string]int)
-	s.networkFailureManager.lastFailure = make(map[string]time.Time)
-	s.networkFailureManager.writeInterval = 5 * time.Second
-	s.networkFailureManager.clearInterval = 5 * time.Second
-	s.networkFailureManager.cacheThrottle.lastSet = make(map[string]time.Time)
-	s.networkFailureManager.cacheThrottle.lastClear = make(map[string]time.Time)
-
-	threshold := GetBatchSaveThreshold()
-	emptyQueue := make([]StoreOperation, 0, threshold)
-	replaceGlobalQueue(emptyQueue)
-
-	return s
-}
 
 // BatchSave 批量保存操作
 func (s *Store) BatchSave(operations []StoreOperation) error {
@@ -234,7 +122,7 @@ func (s *Store) BatchSave(operations []StoreOperation) error {
 	})
 
 	var err error
-	err = s.db.Batch(func(tx *bbolt.Tx) error {
+	err = db.Batch(func(tx *bbolt.Tx) error {
 		bucket, err := tx.CreateBucketIfNotExists(bucketSmartStats)
 		if err != nil {
 			return err
@@ -429,9 +317,7 @@ func (s *Store) BatchSaveConnStats(operations []StoreOperation) error {
 
 	replaceGlobalQueue(newQueue)
 
-	globalCacheParams.mutex.RLock()
-	currentThreshold := globalCacheParams.BatchSaveThreshold
-	globalCacheParams.mutex.RUnlock()
+	currentThreshold := GetBatchSaveThreshold()
 
 	needFlush := len(newQueue) >= currentThreshold
 
@@ -457,11 +343,9 @@ func (s *Store) BatchSaveConnStats(operations []StoreOperation) error {
 // 刷新队列中的操作到数据库
 func (s *Store) FlushQueue(isThresholdTriggered bool) {
 	threshold := MinBatchThreshLimit
-	globalCacheParams.mutex.RLock()
 	if globalCacheParams.BatchSaveThreshold > 0 {
-		threshold = globalCacheParams.BatchSaveThreshold
+		threshold = GetBatchSaveThreshold()
 	}
-	globalCacheParams.mutex.RUnlock()
 
 	emptyQueue := make([]StoreOperation, 0, threshold)
 	ops := swapGlobalQueue(emptyQueue)
@@ -686,7 +570,7 @@ func UpdateCacheFromDBResult(fullPath string, data []byte) {
 // 从数据库获取单个条目
 func (s *Store) DBViewGetItem(key string) ([]byte, error) {
 	var data []byte
-	err := s.db.View(func(tx *bbolt.Tx) error {
+	err := db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(bucketSmartStats)
 		if bucket == nil {
 			return errors.New("bucket not found")
@@ -706,7 +590,7 @@ func (s *Store) DBViewGetItem(key string) ([]byte, error) {
 
 // 将单个条目保存到数据库
 func (s *Store) DBBatchPutItem(key string, value []byte) error {
-	return s.db.Batch(func(tx *bbolt.Tx) error {
+	return db.Batch(func(tx *bbolt.Tx) error {
 		bucket, err := tx.CreateBucketIfNotExists(bucketSmartStats)
 		if err != nil {
 			return err
@@ -722,7 +606,7 @@ func (s *Store) DBViewPrefixCount(prefix string) (int, error) {
 	}
 
 	var count int
-	err := s.db.View(func(tx *bbolt.Tx) error {
+	err := db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(bucketSmartStats)
 		if bucket == nil {
 			return nil
@@ -754,7 +638,7 @@ func (s *Store) DBViewPrefixScan(prefix string, maxResults int) (map[string][]by
 	}
 
 	if maxResults < 0 {
-		err := s.db.View(func(tx *bbolt.Tx) error {
+		err := db.View(func(tx *bbolt.Tx) error {
 			bucket := tx.Bucket(bucketSmartStats)
 			if bucket == nil {
 				return nil
@@ -781,7 +665,7 @@ func (s *Store) DBViewPrefixScan(prefix string, maxResults int) (map[string][]by
 	reservoir := make([]kv, 0, maxResults)
 	total := 0
 
-	err := s.db.View(func(tx *bbolt.Tx) error {
+	err := db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(bucketSmartStats)
 		if bucket == nil {
 			return nil
@@ -821,7 +705,7 @@ func (s *Store) DBViewPrefixScan(prefix string, maxResults int) (map[string][]by
 func (s *Store) DBBatchDeletePrefix(prefix string) error {
 	var keysToDelete [][]byte
 
-	err := s.db.View(func(tx *bbolt.Tx) error {
+	err := db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(bucketSmartStats)
 		if bucket == nil {
 			return nil
@@ -850,7 +734,7 @@ func (s *Store) DBBatchDeletePrefix(prefix string) error {
 		}
 
 		batch := keysToDelete[i:end]
-		err := s.db.Batch(func(tx *bbolt.Tx) error {
+		err := db.Batch(func(tx *bbolt.Tx) error {
 			bucket := tx.Bucket(bucketSmartStats)
 			if bucket == nil {
 				return nil

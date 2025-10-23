@@ -105,7 +105,7 @@ func getGroupWeights(w http.ResponseWriter, r *http.Request) {
 		log.Debugln("[Smart] Failed to request weight ranking: Not a Smart group (actual type: %T)", proxy.Adapter())
 		render.Status(r, http.StatusBadRequest)
 		render.JSON(w, r, render.M{
-			"weights": map[string]string{},
+			"weights": []interface{}{},
 			"error":   fmt.Sprintf("Not a Smart group (actual type: %T)", proxy.Adapter()),
 		})
 		return
@@ -114,33 +114,22 @@ func getGroupWeights(w http.ResponseWriter, r *http.Request) {
 	configName := smartGroup.GetConfigFilename()
 	groupName := smartGroup.Name()
 
-	db := cachefile.Cache()
-	if db == nil {
-		render.Status(r, http.StatusServiceUnavailable)
-		render.JSON(w, r, render.M{
-			"weights": map[string]string{},
-			"error":   "Cache not available",
-		})
-		return
-	}
-
-	smartStore := cachefile.NewSmartStore(db)
+	smartStore := cachefile.GetSmartStore()
 	if smartStore == nil {
 		render.Status(r, http.StatusServiceUnavailable)
 		render.JSON(w, r, render.M{
-			"weights": map[string]string{},
+			"weights": []interface{}{},
 			"error":   "Smart cache not available",
 		})
 		return
 	}
 
-	weights, err := smartStore.GetStore().GetNodeWeightRankingCache(groupName, configName)
-
+	weights, err := smartStore.GetNodeWeightRankingCache(groupName, configName)
 	if err != nil {
 		log.Warnln("[Smart] Failed to get weight ranking: %s", err.Error())
 		render.Status(r, http.StatusInternalServerError)
 		render.JSON(w, r, render.M{
-			"weights": map[string]string{},
+			"weights": []interface{}{},
 			"error":   "Failed to get weight ranking: " + err.Error(),
 		})
 		return
@@ -149,7 +138,7 @@ func getGroupWeights(w http.ResponseWriter, r *http.Request) {
 	if len(weights) == 0 {
 		log.Debugln("Policy group %s has no weight data", groupName)
 		render.JSON(w, r, render.M{
-			"weights": map[string]string{},
+			"weights": []interface{}{},
 			"message": "No weight data available for the specified group",
 		})
 		return
@@ -161,36 +150,24 @@ func getGroupWeights(w http.ResponseWriter, r *http.Request) {
 }
 
 func getAllGroupWeights(w http.ResponseWriter, r *http.Request) {
-	db := cachefile.Cache()
-	if db == nil {
-		render.Status(r, http.StatusServiceUnavailable)
-		render.JSON(w, r, render.M{
-			"weights": map[string]map[string]string{},
-			"errors":  map[string]string{},
-			"error":   "Cache not available",
-		})
-		return
-	}
-
-	smartStore := cachefile.NewSmartStore(db)
+	smartStore := cachefile.GetSmartStore()
 	if smartStore == nil {
 		render.Status(r, http.StatusServiceUnavailable)
 		render.JSON(w, r, render.M{
-			"weights": map[string]map[string]string{},
+			"weights": map[string][]interface{}{},
 			"errors":  map[string]string{},
 			"error":   "Smart cache not available",
 		})
 		return
 	}
 
-	result := make(map[string]map[string]string)
+	result := make(map[string][]interface{})
 	errorsMap := make(map[string]string)
 
 	var (
 		mu    sync.Mutex
 		wg    sync.WaitGroup
 		sem   = make(chan struct{}, 5)
-		store = smartStore.GetStore()
 	)
 
 	for _, p := range tunnel.Proxies() {
@@ -208,7 +185,7 @@ func getAllGroupWeights(w http.ResponseWriter, r *http.Request) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			weights, err := store.GetNodeWeightRankingCache(groupName, configName)
+			weights, err := smartStore.GetNodeWeightRankingCache(groupName, configName)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -216,11 +193,11 @@ func getAllGroupWeights(w http.ResponseWriter, r *http.Request) {
 				errorsMap[groupName] = err.Error()
 				return
 			}
-			if len(weights) == 0 {
-				result[groupName] = map[string]string{}
-			} else {
-				result[groupName] = weights
+			weightsAny := make([]interface{}, len(weights))
+			for i, w := range weights {
+				weightsAny[i] = w
 			}
+			result[groupName] = weightsAny
 		}(groupName, configName)
 	}
 
@@ -229,7 +206,7 @@ func getAllGroupWeights(w http.ResponseWriter, r *http.Request) {
 	if len(result) == 0 && len(errorsMap) == 0 {
 		render.Status(r, http.StatusInternalServerError)
 		render.JSON(w, r, render.M{
-			"weights": map[string]map[string]string{},
+			"weights": map[string][]interface{}{},
 			"message": "No Smart groups or no weight data available",
 		})
 		return
