@@ -196,7 +196,7 @@ func strategyStickySessions(url string, cacheRef **lru.LruCache[uint64, int]) st
 		key := utils.MapHash(getKeyWithSrcAndDst(metadata))
 		length := len(proxies)
 		idx, has := lruCache.Get(key)
-		if !has {
+		if !has || idx >= length {
 			idx = int(jumpHash(key+uint64(time.Now().UnixNano()), int32(length)))
 		}
 
