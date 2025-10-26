@@ -85,6 +85,7 @@ func newCubicSender(
 		initialMaxCongestionWindow: initialMaxCongestionWindow,
 		congestionWindow:           initialCongestionWindow,
 		slowStartThreshold:         MaxByteCount,
+		cubic:                      NewCubic(),
 		reno:                       reno,
 		maxDatagramSize:            initialMaxDatagramSize,
 	}
