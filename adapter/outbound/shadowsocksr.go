@@ -252,13 +252,14 @@ func (spc *ssrPacketConn) WaitReadFrom() (data []byte, put func(), addr net.Addr
 		return nil, nil, nil, errors.New("parse addr error")
 	}
 
-	addr = _addr.UDPAddr()
-	if addr == nil {
+	udpAddr := _addr.UDPAddr()
+	if udpAddr == nil {
 		if put != nil {
 			put()
 		}
 		return nil, nil, nil, errors.New("parse addr error")
 	}
+	addr = udpAddr
 
 	data = data[len(_addr):]
 	return
