@@ -53,6 +53,12 @@ func (d *Decoder) Decode(src map[string]any, dst any) error {
 		key, omitKey, found := strings.Cut(tag, ",")
 		omitempty := found && omitKey == "omitempty"
 
+		// As a special case, if the field tag is "-", the field is always omitted.
+		// Note that a field with name "-" can still be generated using the tag "-,".
+		if key == "-" {
+			continue
+		}
+
 		value, ok := src[key]
 		if !ok {
 			if d.option.KeyReplacer != nil {

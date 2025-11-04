@@ -263,7 +263,9 @@ func NewConn(c net.Conn, a C.ProxyAdapter) C.Conn {
 	if _, ok := c.(syscall.Conn); !ok { // exclusion system conn like *net.TCPConn
 		c = N.NewDeadlineConn(c) // most conn from outbound can't handle readDeadline correctly
 	}
-	return &conn{N.NewExtendedConn(c), []string{a.Name()}, a.Addr()}
+	cc := &conn{N.NewExtendedConn(c), nil, a.Addr()}
+	cc.AppendToChains(a)
+	return cc
 }
 
 type packetConn struct {
@@ -320,7 +322,9 @@ func newPacketConn(pc net.PacketConn, a ProxyAdapter) C.PacketConn {
 	if _, ok := pc.(syscall.Conn); !ok { // exclusion system conn like *net.UDPConn
 		epc = N.NewDeadlineEnhancePacketConn(epc) // most conn from outbound can't handle readDeadline correctly
 	}
-	return &packetConn{epc, []string{a.Name()}, a.Name(), utils.NewUUIDV4().String(), a.Addr(), a.ResolveUDP}
+	cpc := &packetConn{epc, nil, a.Name(), utils.NewUUIDV4().String(), a.Addr(), a.ResolveUDP}
+	cpc.AppendToChains(a)
+	return cpc
 }
 
 type AddRef interface {

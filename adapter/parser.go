@@ -49,13 +49,7 @@ func ParseProxy(mapping map[string]any) (C.Proxy, error) {
 		}
 		proxy, err = outbound.NewHttp(*httpOption)
 	case "vmess":
-		vmessOption := &outbound.VmessOption{
-			HTTPOpts: outbound.HTTPOptions{
-				Method: "GET",
-				Path:   []string{"/"},
-			},
-		}
-
+		vmessOption := &outbound.VmessOption{}
 		err = decoder.Decode(mapping, vmessOption)
 		if err != nil {
 			break
