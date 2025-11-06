@@ -29,6 +29,7 @@ type AtomicStatsRecord struct {
 	latency         atomic.Int64
 	lastUsed        atomic.Int64
 	status          atomic.Int64
+	degraded        atomic.Bool
 
 	uploadTotal     *atomic.Float64
 	downloadTotal   *atomic.Float64
@@ -164,6 +165,8 @@ func (r *AtomicStatsRecord) Get(field string) interface{} {
 		return r.duration.Load()
 	case "status":
 		return r.status.Load()
+	case "degraded":
+		return r.degraded.Load()
 	default:
 		return nil
 	}
@@ -218,6 +221,10 @@ func (r *AtomicStatsRecord) Set(field string, value interface{}) {
 	case "weights":
 		if v, ok := value.(map[string]float64); ok {
 			r.weights.Store(atomic.CloneMap(v))
+		}
+	case "degraded":
+		if v, ok := value.(bool); ok {
+			r.degraded.Store(v)
 		}
 	}
 }
@@ -449,7 +456,7 @@ func (s *Store) GetBestProxyForTarget(group, config, target, asnNumber string, i
 
 	nodesWithWeight := make(map[string]float64)
 
-	// 优先使用ASN，取较小权重排序并对cdnASNs进行修正
+	// 优先使用ASN，取最小权重排序并对cdnASNs进行修正
 	if asnNumber != "" {
 		asnWeightType := WeightTypeTCPASN + ":" + asnNumber
 		if isUDP {

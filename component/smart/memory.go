@@ -108,6 +108,14 @@ func (s *Store) StorePrefetchResult(group, config string, target string, asnNumb
 	}
 	SetCacheValue(targetCacheKey, data)
 
+	appendToGlobalQueue(StoreOperation{
+		Type:   OpSavePrefetch,
+		Group:  group,
+		Config: config,
+		Target: target,
+		Data:   data,
+	})
+
 	if asnNumber != "" && !cdnASNs[asnNumber] {
 		asnCacheKey := FormatCacheKey(KeyTypePrefetch, config, group, asnNumber)
 		var asnPm PrefetchMap
@@ -126,15 +134,15 @@ func (s *Store) StorePrefetchResult(group, config string, target string, asnNumb
 			return
 		}
 		SetCacheValue(asnCacheKey, asnData)
-	}
 
-	appendToGlobalQueue(StoreOperation{
-		Type:   OpSavePrefetch,
-		Group:  group,
-		Config: config,
-		Target: target,
-		Data:   data,
-	})
+		appendToGlobalQueue(StoreOperation{
+			Type:   OpSavePrefetch,
+			Group:  group,
+			Config: config,
+			Target: asnNumber,
+			Data:   asnData,
+		})
+	}
 
 	needFlush := len(getGlobalQueueSnapshot()) >= GetBatchSaveThreshold()
 	if needFlush {
@@ -161,42 +169,87 @@ func (s *Store) GetPrefetchResult(group, config string, target string, asnNumber
 		return nil, nil
 	}
 
-	if asnNumber != "" && !cdnASNs[asnNumber] {
-		asnCacheKey := FormatCacheKey(KeyTypePrefetch, config, group, asnNumber)
-		if value, found := GetCacheValue(asnCacheKey); found {
+	getFromCache := func(key string) (PrefetchMap, bool) {
+		if value, found := GetCacheValue(key); found {
 			if bv, ok := value.([]byte); ok {
 				var pm PrefetchMap
 				if json.Unmarshal(bv, &pm) == nil {
-					var refKey string
-					if isUDP {
-						refKey = pm.RefUDP
-					} else {
-						refKey = pm.RefTCP
-					}
-					if refKey != "" {
-						if refValue, refFound := GetCacheValue(refKey); refFound {
-							if refBv, refOk := refValue.([]byte); refOk {
-								var refPm PrefetchMap
-								if json.Unmarshal(refBv, &refPm) == nil {
-									if nodes, weights := findResult(refPm); nodes != nil {
-										return nodes, weights
-									}
-								}
-							}
-						}
+					return pm, true
+				}
+			}
+		}
+		return PrefetchMap{}, false
+	}
+
+	getFromQueue := func(ops []StoreOperation, group, config, target string) (PrefetchMap, bool) {
+		for _, op := range ops {
+			if op.Type == OpSavePrefetch && op.Group == group && op.Config == config && op.Target == target {
+				var pm PrefetchMap
+				if json.Unmarshal(op.Data, &pm) == nil {
+					return pm, true
+				}
+			}
+		}
+		return PrefetchMap{}, false
+	}
+
+	getFromDB := func(pathPrefix string) (PrefetchMap, bool) {
+		rawResult, err := s.GetSubBytesByPath(pathPrefix)
+		if err != nil {
+			return PrefetchMap{}, false
+		}
+		for _, data := range rawResult {
+			var pm PrefetchMap
+			if json.Unmarshal(data, &pm) == nil {
+				return pm, true
+			}
+		}
+		return PrefetchMap{}, false
+	}
+
+	getRefKey := func(pm PrefetchMap, isUDP bool) string {
+		if isUDP {
+			return pm.RefUDP
+		}
+		return pm.RefTCP
+	}
+
+	ops := getGlobalQueueSnapshot()
+
+	// ASN
+	if asnNumber != "" && !cdnASNs[asnNumber] {
+		asnKey := FormatCacheKey(KeyTypePrefetch, config, group, asnNumber)
+		asnPathPrefix := FormatDBKey("smart", KeyTypePrefetch, config, group, asnNumber)
+
+		if pm, ok := getFromCache(asnKey); ok {
+			if refKey := getRefKey(pm, isUDP); refKey != "" {
+				if refPm, ok := getFromCache(refKey); ok {
+					if nodes, weights := findResult(refPm); nodes != nil {
+						return nodes, weights
 					}
 				}
 			}
 		}
-	}
 
-	if asnNumber == "" || cdnASNs[asnNumber] {
-		targetCacheKey := FormatCacheKey(KeyTypePrefetch, config, group, target)
-		if value, found := GetCacheValue(targetCacheKey); found {
-			if bv, ok := value.([]byte); ok {
-				var pm PrefetchMap
-				if json.Unmarshal(bv, &pm) == nil {
-					if nodes, weights := findResult(pm); nodes != nil {
+		if pm, ok := getFromQueue(ops, group, config, asnNumber); ok {
+			if refKey := getRefKey(pm, isUDP); refKey != "" {
+				parts := strings.Split(refKey, ":")
+				parsedTarget := parts[3]
+				if refPm, ok := getFromQueue(ops, group, config, parsedTarget); ok {
+					if nodes, weights := findResult(refPm); nodes != nil {
+						return nodes, weights
+					}
+				}
+			}
+		}
+
+		if pm, ok := getFromDB(asnPathPrefix); ok {
+			if refKey := getRefKey(pm, isUDP); refKey != "" {
+				parts := strings.Split(refKey, ":")
+				parsedTarget := parts[3]
+				targetPathPrefix := FormatDBKey("smart", KeyTypePrefetch, config, group, parsedTarget)
+				if refPm, ok := getFromDB(targetPathPrefix); ok {
+					if nodes, weights := findResult(refPm); nodes != nil {
 						return nodes, weights
 					}
 				}
@@ -204,30 +257,25 @@ func (s *Store) GetPrefetchResult(group, config string, target string, asnNumber
 		}
 	}
 
-	ops := getGlobalQueueSnapshot()
-	for _, op := range ops {
-		if op.Type == OpSavePrefetch && op.Group == group && op.Config == config && op.Target == target {
-			var pm PrefetchMap
-			if err := json.Unmarshal(op.Data, &pm); err == nil {
-				if nodes, weights := findResult(pm); nodes != nil {
-					return nodes, weights
-				}
-			}
+	// target
+	targetKey := FormatCacheKey(KeyTypePrefetch, config, group, target)
+	pathPrefix := FormatDBKey("smart", KeyTypePrefetch, config, group, target)
+
+	if pm, ok := getFromCache(targetKey); ok {
+		if nodes, weights := findResult(pm); nodes != nil {
+			return nodes, weights
 		}
 	}
 
-	pathPrefix := FormatDBKey("smart", KeyTypePrefetch, config, group, target)
-	rawResult, err := s.GetSubBytesByPath(pathPrefix)
-	if err != nil {
-		return nil, nil
+	if pm, ok := getFromQueue(ops, group, config, target); ok {
+		if nodes, weights := findResult(pm); nodes != nil {
+			return nodes, weights
+		}
 	}
 
-	for _, data := range rawResult {
-		var pm PrefetchMap
-		if err := json.Unmarshal(data, &pm); err == nil {
-			if nodes, weights := findResult(pm); nodes != nil {
-				return nodes, weights
-			}
+	if pm, ok := getFromDB(pathPrefix); ok {
+		if nodes, weights := findResult(pm); nodes != nil {
+			return nodes, weights
 		}
 	}
 

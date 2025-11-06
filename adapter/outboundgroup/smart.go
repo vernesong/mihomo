@@ -1329,6 +1329,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 	latencyVal := atomicRecord.Get("latency").(int64)
 	lastUsedVal := atomicRecord.Get("lastUsed").(int64)
 	durationVal := atomicRecord.Get("duration").(float64)
+	oldWeight := atomicRecord.GetWeight(weightType)
 
 	uploadTotalMB := float64(uploadTotal) / (1024.0 * 1024.0)
 	downloadTotalMB := float64(downloadTotal) / (1024.0 * 1024.0)
@@ -1398,10 +1399,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 			historyMaxDownloadRateKB := atomicRecord.Get("maxDownloadRate").(float64)
 			historyUploadTotal := atomicRecord.Get("uploadTotal").(float64)
 			historyDownloadTotal := atomicRecord.Get("downloadTotal").(float64)
-			success := atomicRecord.Get("success").(int64)
 			status := atomicRecord.Get("status").(int64)
-			lastUsedVal := atomicRecord.Get("lastUsed").(int64)
-			oldWeight := atomicRecord.GetWeight(weightType)
 
 			degradedWeight, isDegraded = s.checkNodeQualityDegradation(
 				metadata, proxy, atomicRecord,
@@ -1410,6 +1408,19 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 				maxUploadRateKB, maxDownloadRateKB, historyMaxUploadRateKB, historyMaxDownloadRateKB,
 				historyUploadTotal, historyDownloadTotal, success, weightType,
 				status, lastUsedVal, domain, asnInfo)
+		}
+
+		// prevent recovery degraded nodes too fast
+		if isDegraded {
+			atomicRecord.Set("degraded", isDegraded)
+		} else {
+			if atomicRecord.Get("degraded").(bool) {
+				if lastUsedVal > 0 && time.Since(time.Unix(lastUsedVal, 0)) < 24*time.Hour {
+					calculatedWeight = oldWeight
+				} else {
+					atomicRecord.Set("degraded", false)
+				}
+			}
 		}
 	}
 
