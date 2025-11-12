@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,27 +33,30 @@ import (
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/tunnel"
 	"github.com/metacubex/mihomo/tunnel/statistic"
+	"github.com/samber/lo"
 )
 
 const (
 	prefetchInterval         = 10 * time.Minute
-	cleanupInterval          = 180 * time.Minute
+	cleanupInterval          = 360 * time.Minute
 	cacheParamAdjustInterval = 5 * time.Minute
 	recoveryCheckInterval    = 5 * time.Minute
 	checkInterval            = 10 * time.Minute
 	flushQueueInterval       = 300 * time.Second
-	rankingInterval          = 60 * time.Minute
+	rankingInterval          = 30 * time.Minute
 
 	failureRecovery5min      = 5 * time.Minute
 	failureRecovery10min     = 10 * time.Minute
 	failureRecovery15min     = 15 * time.Minute
 	failureRecovery30min     = 30 * time.Minute
 
+	degradedCooldown         = 72 * 3600
+
 	maxRetries               = 4
 	maxSelected              = 10
 
 	parallelDials            = 3
-	connectThreshold         = 2.0
+	connectThreshold         = 3.0
 )
 
 var (
@@ -76,7 +80,6 @@ type Smart struct {
 	selected       string
 	testUrl        string
 	expectedStatus string
-	strategy       string
 	Icon           string
 
 	policyPriority []priorityRule
@@ -117,11 +120,7 @@ func getConfigFilename() string {
 	return filename
 }
 
-func NewSmart(option *GroupCommonOption, providers []provider.ProxyProvider, strategy string, options ...smartOption) (*Smart, error) {
-	if strategy != "round-robin" && strategy != "sticky-sessions" {
-		return nil, fmt.Errorf("%w: %s", errStrategy, strategy)
-	}
-
+func NewSmart(option *GroupCommonOption, providers []provider.ProxyProvider, options ...smartOption) (*Smart, error) {
 	if option.URL == "" {
 		option.URL = C.DefaultTestURL
 	}
@@ -136,7 +135,7 @@ func NewSmart(option *GroupCommonOption, providers []provider.ProxyProvider, str
 		MaxFailedTimes: option.MaxFailedTimes,
 		DisableUDP:     option.DisableUDP,
 		ExpectedStatus: option.ExpectedStatus,
-	}, providers, strategy)
+	}, providers, "round-robin")
 
 	if err != nil {
 		return nil, err
@@ -163,7 +162,6 @@ func NewSmart(option *GroupCommonOption, providers []provider.ProxyProvider, str
 		Hidden:         option.Hidden,
 		Icon:           option.Icon,
 		policyPriority: make([]priorityRule, 0),
-		strategy:       strategy,
 		sampleRate:     1,
 	}
 
@@ -294,7 +292,7 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 			timeout = time.Duration(float64(historyConnectTime)*connectThreshold) * time.Millisecond
 		}
 
-		if timeout > C.DefaultTCPTimeout || timeout <= 0 || i == 0 {
+		if timeout > C.DefaultTCPTimeout || timeout <= 0 {
 			timeout = C.DefaultTCPTimeout
 		}
 
@@ -361,7 +359,7 @@ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 		if historyConnectTime > 0 {
 			timeout = time.Duration(float64(historyConnectTime)*connectThreshold) * time.Millisecond
 		}
-		if timeout > C.DefaultUDPTimeout || timeout <= 0 || i == 0 {
+		if timeout > C.DefaultUDPTimeout || timeout <= 0 {
 			timeout = C.DefaultUDPTimeout
 		}
 		ctxDial, cancel := context.WithTimeout(ctx, timeout)
@@ -507,8 +505,8 @@ func (s *Smart) InitSmart() {
 	s.startTimedTask(5*time.Minute, cleanupInterval, "Expired cleanup", func() {
 		_ = s.store.CleanupExpiredStats(s.Name(), s.configName)
 	}, false)
-	s.startTimedTask(5*time.Minute, cleanupInterval, "OldDomains cleanup", func() {
-		_ = s.store.CleanupOldDomains(s.Name(), s.configName)
+	s.startTimedTask(5*time.Minute, cleanupInterval, "OldTargets cleanup", func() {
+		_ = s.store.CleanupOldTargets(s.Name(), s.configName)
 	}, false)
 	s.startTimedTask(5*time.Second, checkInterval, "Init LGBM Collector", func() {
 		// load after tunnel.Running because size option ready later than group init
@@ -633,14 +631,14 @@ func (s *Smart) checkAndRecoverDegradedNodes() {
 
 		var shouldUpdate bool = false
 
-		if !state.BlockedUntil.IsZero() && state.BlockedUntil.Before(time.Now()) {
-			state.BlockedUntil = time.Time{}
+		if state.BlockedUntil > 0 && state.BlockedUntil > time.Now().Unix() {
+			state.BlockedUntil = 0
 			shouldUpdate = true
 			log.Debugln("[Smart] Node [%s] block period expired, unblocking", nodeName)
 		}
 
 		if state.Degraded {
-			timeSinceLastFailure := time.Since(state.LastFailure)
+			timeSinceLastFailure := time.Duration(time.Now().Unix()-state.LastFailure) * time.Second
 
 			var recoveryFactor float64
 			var shouldRecover bool
@@ -650,16 +648,16 @@ func (s *Smart) checkAndRecoverDegradedNodes() {
 				recoveryFactor = 1.0
 				shouldRecover = true
 				state.FailureCount = 0
-				for k := range state.DomainFailureCount {
-					state.DomainFailureCount[k] = 0
+				for k := range state.TargetFailureCount {
+					state.TargetFailureCount[k] = 0
 				}
 			case timeSinceLastFailure > failureRecovery15min:
 				if state.DegradedFactor < 0.9 {
 					recoveryFactor = 0.9
 					shouldRecover = true
 					state.FailureCount = int(float64(state.FailureCount) * 0.5)
-					for k, v := range state.DomainFailureCount {
-						state.DomainFailureCount[k] = int(float64(v) * 0.5)
+					for k, v := range state.TargetFailureCount {
+						state.TargetFailureCount[k] = int(float64(v) * 0.5)
 					}
 				}
 			case timeSinceLastFailure > failureRecovery10min:
@@ -667,8 +665,8 @@ func (s *Smart) checkAndRecoverDegradedNodes() {
 					recoveryFactor = 0.75
 					shouldRecover = true
 					state.FailureCount = int(float64(state.FailureCount) * 0.7)
-					for k, v := range state.DomainFailureCount {
-						state.DomainFailureCount[k] = int(float64(v) * 0.7)
+					for k, v := range state.TargetFailureCount {
+						state.TargetFailureCount[k] = int(float64(v) * 0.7)
 					}
 				}
 			case timeSinceLastFailure > failureRecovery5min:
@@ -676,8 +674,8 @@ func (s *Smart) checkAndRecoverDegradedNodes() {
 					recoveryFactor = 0.5
 					shouldRecover = true
 					state.FailureCount = int(float64(state.FailureCount) * 0.9)
-					for k, v := range state.DomainFailureCount {
-						state.DomainFailureCount[k] = int(float64(v) * 0.9)
+					for k, v := range state.TargetFailureCount {
+						state.TargetFailureCount[k] = int(float64(v) * 0.9)
 					}
 				}
 			}
@@ -693,11 +691,11 @@ func (s *Smart) checkAndRecoverDegradedNodes() {
 				}
 			}
 		} else if state.FailureCount > 0 {
-			timeSinceLastFailure := time.Since(state.LastFailure)
+			timeSinceLastFailure := time.Duration(time.Now().Unix()-state.LastFailure) * time.Second
 			if timeSinceLastFailure > failureRecovery10min {
 				state.FailureCount = 0
-				for k := range state.DomainFailureCount {
-					state.DomainFailureCount[k] = 0
+				for k := range state.TargetFailureCount {
+					state.TargetFailureCount[k] = 0
 				}
 				shouldUpdate = true
 				log.Debugln("[Smart] Reset failure count for node [%s]", nodeName)
@@ -736,7 +734,7 @@ func (s *Smart) fillProxies(selected []C.Proxy, weights map[string]float64, all 
 	for nodeName, data := range stateData {
 		var state smart.NodeState
 		if json.Unmarshal(data, &state) == nil {
-			if !state.BlockedUntil.IsZero() && state.BlockedUntil.After(time.Now()) {
+			if state.BlockedUntil > 0 && state.BlockedUntil > time.Now().Unix() {
 				blockedNodes[nodeName] = true
 			}
 		}
@@ -836,7 +834,12 @@ func (s *Smart) selectFallbacks(metadata *C.Metadata, proxies []C.Proxy) []C.Pro
 func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy, store bool) []C.Proxy {
 	// 添加ASN信息
 	asnNumber := s.getASNCode(metadata)
-	domain, _ := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
+	target := metadata.SmartTarget
+	if target == "" {
+		target = smart.GetEffectiveTarget(metadata.Host, metadata.DstIP.String())
+		metadata.SmartTarget = target
+	}
+
 	result := make([]C.Proxy, 0, maxSelected)
 	proxyByName := make(map[string]C.Proxy)
 
@@ -858,22 +861,35 @@ func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy, store boo
 		for i, name := range names {
 			if p, ok := proxyByName[name]; ok {
 				resultProxies = append(resultProxies, p)
-				resultWeights[name] = weights[i]
+				if weights != nil {
+                    resultWeights[name] = weights[i]
+                }
 			}
 		}
 		return resultProxies, resultWeights
 	}
 
 	trySelector := func(isUDP bool) ([]C.Proxy, map[string]float64) {
+		// 检查匹配缓存
+		if proxiesName := s.store.GetUnwrapResult(s.Name(), s.configName, target, asnNumber, isUDP); len(proxiesName) > 0 {
+			names := make([]string, len(proxiesName))
+			for i, p := range proxiesName {
+				names[i] = p.Name()
+			}
+			if proxies, weights := findProxies(names, nil); len(proxies) > 0 {
+				return proxies, weights
+			}
+		}
+
 		// 检查预解析缓存
-		if proxiesName, weights := s.store.GetPrefetchResult(s.Name(), s.configName, domain, asnNumber, isUDP); len(proxiesName) > 0 {
+		if proxiesName, weights := s.store.GetPrefetchResult(s.Name(), s.configName, target, asnNumber, isUDP); len(proxiesName) > 0 {
 			if proxies, weights := findProxies(proxiesName, weights); len(proxies) > 0 {
 				return proxies, weights
 			}
 		}
 
 		// 实时计算最佳节点
-		if proxiesName, weights, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, domain, asnNumber, isUDP); err == nil && len(proxiesName) > 0 {
+		if proxiesName, weights, err := s.store.GetBestProxyForTarget(s.Name(), s.configName, target, asnNumber, isUDP); err == nil && len(proxiesName) > 0 {
 			if proxies, weights := findProxies(proxiesName, weights); len(proxies) > 0 {
 				return proxies, weights
 			}
@@ -882,12 +898,12 @@ func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy, store boo
 		return nil, nil
 	}
 
-	if result = s.store.GetUnwrapResult(s.Name(), s.configName, domain, asnNumber, metadata.NetWork == C.UDP); len(result) > 0 {
-		return result
+	selected, weights := trySelector(metadata.NetWork == C.UDP)
+	if len(selected) > 0 && len(weights) == 0 {
+		result = selected
 	}
 
-	selected, weights := trySelector(metadata.NetWork == C.UDP)
-	if len(selected) > 0 {
+	if len(selected) > 0 && len(weights) > 0 {
 		result = s.fillProxies(selected, weights, proxies, maxSelected, metadata.NetWork == C.UDP, metadata)
 	}
 
@@ -895,8 +911,8 @@ func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy, store boo
 		result = s.selectFallbacks(metadata, proxies)
 	}
 
-	if store {
-		s.store.StoreUnwrapResult(s.Name(), s.configName, domain, asnNumber, metadata.NetWork == C.UDP, result)
+	if store && !reflect.DeepEqual(selected, result) {
+		s.store.StoreUnwrapResult(s.Name(), s.configName, target, asnNumber, metadata.NetWork == C.UDP, result)
 	}
 
 	return result
@@ -927,7 +943,6 @@ func (s *Smart) MarshalJSON() ([]byte, error) {
 		"hidden":          s.Hidden,
 		"icon":            s.Icon,
 		"policy-priority": policyPriorityStr,
-		"strategy":        s.strategy,
 		"useLightGBM":     s.useLightGBM,
 		"collectData":     s.collectData,
 		"sampleRate":      s.sampleRate,
@@ -1001,9 +1016,9 @@ func (s *Smart) cleanupOrphanedNodeCache() {
 
 // 获取历史 connectTime
 func (s *Smart) getHistoryConnectStats(metadata *C.Metadata, proxy C.Proxy) (historyConnectTime int64) {
-	domain, _ := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
-	cacheKey := smart.FormatCacheKey(smart.KeyTypeStats, s.configName, s.Name(), domain, proxy.Name())
-	atomicRecord := s.store.GetOrCreateAtomicRecord(cacheKey, s.Name(), s.configName, domain, proxy.Name())
+	target := metadata.SmartTarget
+	cacheKey := smart.FormatCacheKey(smart.KeyTypeStats, s.configName, s.Name(), target, proxy.Name())
+	atomicRecord := s.store.GetOrCreateAtomicRecord(cacheKey, s.Name(), s.configName, target, proxy.Name())
 	historyConnectTime = atomicRecord.Get("connectTime").(int64)
 	return
 }
@@ -1034,7 +1049,7 @@ func (s *Smart) updateConnectionDuration(record *smart.AtomicStatsRecord, connec
 }
 
 // 记录保存
-func (s *Smart) saveStatsRecord(cacheKey, domain string, proxy C.Proxy, record *smart.StatsRecord, lastUsed time.Time) {
+func (s *Smart) saveStatsRecord(cacheKey, target string, proxy C.Proxy, record *smart.StatsRecord, lastUsed int64) {
 	record.LastUsed = lastUsed
 
 	go func() {
@@ -1043,7 +1058,7 @@ func (s *Smart) saveStatsRecord(cacheKey, domain string, proxy C.Proxy, record *
 				Type:   smart.OpSaveStats,
 				Group:  s.Name(),
 				Config: s.configName,
-				Target: domain,
+				Target: target,
 				Node:   proxy.Name(),
 				Data:   data,
 			}
@@ -1053,87 +1068,87 @@ func (s *Smart) saveStatsRecord(cacheKey, domain string, proxy C.Proxy, record *
 }
 
 // 失败连接处理
-func (s *Smart) handleFailedConnection(proxyName, cacheKey, domain string, calculatedWeight float64, weightType string) (float64, bool) {
+func (s *Smart) handleFailedConnection(proxyName, cacheKey, target string, calculatedWeight float64, weightType string) (float64, bool) {
 	nodeStateData, _ := s.store.GetNodeStates(s.Name(), s.configName)
 	var nodeState smart.NodeState
 	var isDegraded bool
 
 	avgFailure := 0
-	totalDomains := 0
+	totalTargets := 0
 	for _, data := range nodeStateData {
 		var ns smart.NodeState
 		if json.Unmarshal(data, &ns) == nil {
-			for _, cnt := range ns.DomainFailureCount {
+			for _, cnt := range ns.TargetFailureCount {
 				avgFailure += cnt
-				totalDomains++
+				totalTargets++
 			}
 		}
 	}
-	if totalDomains > 0 {
-		avgFailure /= totalDomains
+	if totalTargets > 0 {
+		avgFailure /= totalTargets
 	}
-	domainCountThreshold := avgFailure + 15
+	targetCountThreshold := avgFailure + 15
 	mildFailureCountThreshold := avgFailure + 20
-	maxDomainCount := domainCountThreshold * 4
+	maxTargetCount := targetCountThreshold * 4
 
 	if data, exists := nodeStateData[proxyName]; exists {
 		if json.Unmarshal(data, &nodeState) != nil {
 			nodeState = smart.NodeState{
 				Name:               proxyName,
 				FailureCount:       1,
-				LastFailure:        time.Now(),
+				LastFailure:        time.Now().Unix(),
 				Degraded:           false,
 				DegradedFactor:     1.0,
-				DomainFailureCount: map[string]int{domain: 1},
+				TargetFailureCount: map[string]int{target: 1},
 			}
 		} else {
 			nodeState.FailureCount++
-			nodeState.LastFailure = time.Now()
-			if nodeState.DomainFailureCount == nil {
-				nodeState.DomainFailureCount = make(map[string]int)
+			nodeState.LastFailure = time.Now().Unix()
+			if nodeState.TargetFailureCount == nil {
+				nodeState.TargetFailureCount = make(map[string]int)
 			}
-			nodeState.DomainFailureCount[domain]++
+			nodeState.TargetFailureCount[target]++
 		}
 	} else {
 		nodeState = smart.NodeState{
 			Name:               proxyName,
 			FailureCount:       1,
-			LastFailure:        time.Now(),
+			LastFailure:        time.Now().Unix(),
 			Degraded:           false,
 			DegradedFactor:     1.0,
-			DomainFailureCount: map[string]int{domain: 1},
+			TargetFailureCount: map[string]int{target: 1},
 		}
 	}
 
-	failedDomainCount := 0
-	maxSingleDomainFailure := mildFailureCountThreshold * 2
-	for _, cnt := range nodeState.DomainFailureCount {
+	failedTargetCount := 0
+	maxSingleTargetFailure := mildFailureCountThreshold * 2
+	for _, cnt := range nodeState.TargetFailureCount {
 		cappedCnt := cnt
-		if cappedCnt > maxSingleDomainFailure {
-			cappedCnt = maxSingleDomainFailure
+		if cappedCnt > maxSingleTargetFailure {
+			cappedCnt = maxSingleTargetFailure
 		}
 		if cappedCnt >= mildFailureCountThreshold {
-			failedDomainCount++
+			failedTargetCount++
 		}
 	}
 
 	// 线性降级
-	if failedDomainCount >= domainCountThreshold {
+	if failedTargetCount >= targetCountThreshold {
 		k := 0.7
-		linearFactor := 1.0 - k*float64(failedDomainCount-domainCountThreshold)/float64(maxDomainCount-domainCountThreshold)
+		linearFactor := 1.0 - k*float64(failedTargetCount-targetCountThreshold)/float64(maxTargetCount-targetCountThreshold)
 		if linearFactor < 0.2 {
 			linearFactor = 0.2
 		}
 		nodeState.Degraded = true
 		nodeState.DegradedFactor = linearFactor
-		nodeState.BlockedUntil = time.Now().Add(time.Duration(30+failedDomainCount*2) * time.Minute)
+		nodeState.BlockedUntil = time.Now().Add(time.Duration(30+failedTargetCount*2) * time.Minute).Unix()
 		isDegraded = true
 
 		additionalBlock := int(float64(nodeState.FailureCount) / 10)
-		if nodeState.BlockedUntil.After(time.Now()) {
-			nodeState.BlockedUntil = nodeState.BlockedUntil.Add(time.Duration(additionalBlock) * time.Minute)
+		if nodeState.BlockedUntil > time.Now().Unix() {
+			nodeState.BlockedUntil = time.Unix(nodeState.BlockedUntil, 0).Add(time.Duration(additionalBlock) * time.Minute).Unix()
 		} else {
-			nodeState.BlockedUntil = time.Now().Add(time.Duration(additionalBlock) * time.Minute)
+			nodeState.BlockedUntil = time.Now().Add(time.Duration(additionalBlock) * time.Minute).Unix()
 		}
 	}
 
@@ -1284,29 +1299,37 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 	var calculatedWeight float64
 	var isModelPredicted bool
 
-	domain, rawDomain := smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
-	cacheKey := smart.FormatCacheKey(smart.KeyTypeStats, s.configName, s.Name(), domain, proxy.Name())
+	target := metadata.SmartTarget
+	rawDomain := metadata.Host
+	cacheKey := smart.FormatCacheKey(smart.KeyTypeStats, s.configName, s.Name(), target, proxy.Name())
 	asnInfo := s.getASNCode(metadata)
 	priorityFactor := s.getPriorityFactor(proxy.Name())
+	now := time.Now().Unix()
 
 	weightType := smart.WeightTypeTCP
 	if metadata.NetWork == C.UDP {
 		weightType = smart.WeightTypeUDP
 	}
 
-	lock := smart.GetDomainNodeLock(domain, s.Name(), proxy.Name())
+	lock := smart.GetTargetNodeLock(target, s.Name(), proxy.Name())
 	lock.Lock()
 	defer lock.Unlock()
 
-	atomicRecord := s.store.GetOrCreateAtomicRecord(cacheKey, s.Name(), s.configName, domain, proxy.Name())
+	atomicRecord := s.store.GetOrCreateAtomicRecord(cacheKey, s.Name(), s.configName, target, proxy.Name())
 
 	switch status {
 	case "failed":
+		if proxy.Type() == C.Reject || proxy.Type() == C.Pass || proxy.Type() == C.RejectDrop {
+			return
+		}
 		atomicRecord.Add("failure", int64(1))
-		go s.store.MarkConnectionFailed(s.Name(), s.configName, proxy.Name(), domain, len(s.GetProxies(false)))
+		s.onDialFailed(proxy.Type(), err, s.healthCheck)
+		if s.failedTimes > s.maxFailedTimes {
+			s.store.ClearUnwrapResult(s.Name(), s.configName)
+		}
 	case "closed":
 		atomicRecord.Add("success", int64(1))
-		go s.store.MarkConnectionSuccess(s.Name(), s.configName)
+		s.onDialSuccess()
 	}
 
 	success := atomicRecord.Get("success").(int64)
@@ -1378,13 +1401,16 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 	var degradedWeight float64
 	var isDegraded bool
 
-	addressDisplay := rawDomain
-	if rawDomain != "" && domain != "" && rawDomain != domain {
-		addressDisplay = fmt.Sprintf("%s (Wildcard: %s)", rawDomain, domain)
+	addressDisplay := target
+	if rawDomain == "" {
+		rawDomain = metadata.DstIP.String()
+	}
+	if rawDomain != "" && rawDomain != target {
+		addressDisplay = fmt.Sprintf("%s (Target: %s)", rawDomain, target)
 	}
 
 	if status == "failed" {
-		degradedWeight, isDegraded = s.handleFailedConnection(proxy.Name(), cacheKey, domain, calculatedWeight, weightType)
+		degradedWeight, isDegraded = s.handleFailedConnection(proxy.Name(), cacheKey, target, calculatedWeight, weightType)
 	}
 
 	if status == "closed" {
@@ -1393,7 +1419,6 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 			isDegraded = true
 			log.Debugln("[Smart] Connection [%s] - [%s] - [%s] - [%s] detected manual block, degrade weight from %.4f to %.4f",
 				s.Name(), proxy.Name(), weightType, addressDisplay, calculatedWeight, degradedWeight)
-			go s.cleanupDegradedNodePreferenceCache(metadata, domain, addressDisplay, []string{proxy.Name()}, []float64{degradedWeight}, asnInfo)
 		} else {
 			historyMaxUploadRateKB := atomicRecord.Get("maxUploadRate").(float64)
 			historyMaxDownloadRateKB := atomicRecord.Get("maxDownloadRate").(float64)
@@ -1407,15 +1432,18 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 				connectionDuration, uploadTotalMB, downloadTotalMB,
 				maxUploadRateKB, maxDownloadRateKB, historyMaxUploadRateKB, historyMaxDownloadRateKB,
 				historyUploadTotal, historyDownloadTotal, success, weightType,
-				status, lastUsedVal, domain, asnInfo)
+				status, lastUsedVal, target, asnInfo, metadata.NetWork == C.UDP)
 		}
 
 		// prevent recovery degraded nodes too fast
 		if isDegraded {
 			atomicRecord.Set("degraded", isDegraded)
+			go s.findSameConnection(metadata, target, asnInfo, metadata.NetWork == C.UDP, true)
+			go s.cleanupNodePrefetchCache(metadata, target, addressDisplay, []string{proxy.Name()}, []float64{degradedWeight}, asnInfo, metadata.NetWork == C.UDP)
 		} else {
+			go s.findSameConnection(metadata, target, asnInfo, metadata.NetWork == C.UDP, false)
 			if atomicRecord.Get("degraded").(bool) {
-				if lastUsedVal > 0 && time.Since(time.Unix(lastUsedVal, 0)) < 24*time.Hour {
+				if lastUsedVal > 0 && now - lastUsedVal < degradedCooldown {
 					calculatedWeight = oldWeight
 				} else {
 					atomicRecord.Set("degraded", false)
@@ -1424,9 +1452,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 		}
 	}
 
-	if isDegraded {
-		calculatedWeight = degradedWeight
-	}
+	calculatedWeight = degradedWeight
 
 	baseWeight := calculatedWeight / priorityFactor
 
@@ -1444,7 +1470,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 	}
 
 	// 保存统计记录
-	s.saveStatsRecord(cacheKey, domain, proxy, statsSnapshot, time.Now())
+	s.saveStatsRecord(cacheKey, target, proxy, statsSnapshot, time.Now().Unix())
 
 	// 日志输出
 	s.logConnectionStats(status, statsSnapshot, metadata, baseWeight, priorityFactor, addressDisplay, proxy.Name(),
@@ -1506,7 +1532,7 @@ func (s *Smart) checkNodeQualityDegradation(
 	maxUploadRateKB, maxDownloadRateKB, historyMaxUploadRateKB, historyMaxDownloadRateKB float64,
 	historyUploadTotal, historyDownloadTotal float64,
 	success int64, weightType string, lastStatus int64, lastUsedVal int64,
-	domain, asnInfo string) (float64, bool) {
+	target, asnInfo string, isUDP bool) (float64, bool) {
 
 	if asnInfo != "" {
 		addressDisplay += fmt.Sprintf(" (ASN: %s)", asnInfo)
@@ -1517,21 +1543,19 @@ func (s *Smart) checkNodeQualityDegradation(
 		degradedWeight := math.Max(0.1, newWeight*0.1)
 		log.Debugln("[Smart] Connection [%s] - [%s] - [%s] - [%s] detected zero-traffic, degrade weight from %.4f to %.4f",
 			s.Name(), proxyName, weightType, addressDisplay, newWeight, degradedWeight)
-		go s.cleanupDegradedNodePreferenceCache(metadata, domain, addressDisplay, []string{proxyName}, []float64{degradedWeight}, asnInfo)
 		return degradedWeight, true
 	}
 
 	// 异常状态码检测
-	if (downloadTotal < 0.03 && metadata.Host != "" && metadata.DstPort == 443 && metadata.NetWork == C.TCP) ||
-		(rand.Float64() < 0.05 && metadata.Host != "" && metadata.DstPort == 443 && metadata.NetWork == C.TCP) {
+	if (downloadTotal < 0.03 && metadata.Host != "" && metadata.DstPort == 443 && !isUDP) {
 		needTest := false
 		cooldownSeconds := int64(300)
 		now := time.Now().Unix()
-		if lastStatus == 0 || lastStatus == 403 || lastStatus == 429 || lastStatus == 407 || lastStatus == 599 {
-			if now-lastUsedVal > cooldownSeconds {
+		if lastStatus == 403 || lastStatus == 429 || lastStatus == 407 || lastStatus == 599 {
+			if now - lastUsedVal > degradedCooldown {
 				needTest = true
 			}
-		} else if rand.Float64() < 0.05 {
+		} else if now - lastUsedVal > cooldownSeconds || lastStatus == 0 {
 			needTest = true
 		}
 		if needTest {
@@ -1556,8 +1580,8 @@ func (s *Smart) checkNodeQualityDegradation(
 						if proxies[i].Name() == proxyName || !proxies[i].AliveForTestUrl(s.testUrl) {
 							continue
 						}
-						cacheKey := smart.FormatCacheKey(smart.KeyTypeStats, s.configName, s.Name(), domain, proxies[i].Name())
-						record := s.store.GetOrCreateAtomicRecord(cacheKey, s.Name(), s.configName, domain, proxies[i].Name())
+						cacheKey := smart.FormatCacheKey(smart.KeyTypeStats, s.configName, s.Name(), target, proxies[i].Name())
+						record := s.store.GetOrCreateAtomicRecord(cacheKey, s.Name(), s.configName, target, proxies[i].Name())
 						recordStatus := record.Get("status").(int64)
 						if recordStatus != 403 && recordStatus != 429 && recordStatus != 407 && recordStatus != 599 {
 							selectedProxy = &proxies[i]
@@ -1569,15 +1593,15 @@ func (s *Smart) checkNodeQualityDegradation(
 					}
 
 					if selectedProxy != nil {
-						cacheKey := smart.FormatCacheKey(smart.KeyTypeStats, s.configName, s.Name(), domain, (*selectedProxy).Name())
-						record := s.store.GetOrCreateAtomicRecord(cacheKey, s.Name(), s.configName, domain, (*selectedProxy).Name())
+						cacheKey := smart.FormatCacheKey(smart.KeyTypeStats, s.configName, s.Name(), target, (*selectedProxy).Name())
+						record := s.store.GetOrCreateAtomicRecord(cacheKey, s.Name(), s.configName, target, (*selectedProxy).Name())
 						boostedWeight := oldWeight*1.5
 						record.SetWeight(weightType, boostedWeight)
 						if asnInfo != "" {
-							s.updateAsnWeights(record, asnInfo, boostedWeight, metadata.NetWork == C.UDP)
+							s.updateAsnWeights(record, asnInfo, boostedWeight, isUDP)
 						}
 						statsSnapshot := record.CreateStatsSnapshot()
-						s.saveStatsRecord(cacheKey, domain, *selectedProxy, statsSnapshot, time.Now())
+						s.saveStatsRecord(cacheKey, target, *selectedProxy, statsSnapshot, time.Now().Unix())
 						updateNodes = append(updateNodes, (*selectedProxy).Name())
 						updateWeights = append(updateWeights, boostedWeight)
 					}
@@ -1585,8 +1609,7 @@ func (s *Smart) checkNodeQualityDegradation(
 					log.Debugln("[Smart] Connection [%s] - [%s] - [%s] - [%s] detected abnormal response [%d], degrade weight from %.4f to %.4f",
 						s.Name(), proxyName, weightType, addressDisplay, status, newWeight, degradedWeight)
 
-					go s.cleanupDegradedNodePreferenceCache(metadata, domain, addressDisplay, updateNodes, updateWeights, asnInfo)
-
+					go s.cleanupNodePrefetchCache(metadata, target, addressDisplay, updateNodes, updateWeights, asnInfo, isUDP)
 					return degradedWeight, true
 				}
 			}
@@ -1655,8 +1678,11 @@ func (s *Smart) checkNodeQualityDegradation(
 					s.Name(), proxyName, weightType, addressDisplay,
 					oldWeight, newWeight, weightChangeRatio*100, limitedWeight)
 
-				go s.cleanupDegradedNodePreferenceCache(metadata, domain, addressDisplay, []string{proxyName}, []float64{limitedWeight}, asnInfo)
-				return limitedWeight, true
+				if limitedWeight < smart.AllowedWeight {
+					return limitedWeight, true
+				} else {
+					return limitedWeight, false
+				}
 			}
 		}
 	}
@@ -1664,13 +1690,61 @@ func (s *Smart) checkNodeQualityDegradation(
 	return newWeight, false
 }
 
-func (s *Smart) cleanupDegradedNodePreferenceCache(metadata *C.Metadata, domain, addressDisplay string, nodeNames []string, currentWeights []float64, asnInfo string) {
+func (s *Smart) findSameConnection(metadata *C.Metadata, target, asnInfo string, isUDP, close bool) {
+	targetIDs := statistic.DefaultManager.GetTargetIDs(target)
+	asnIDs := statistic.DefaultManager.GetASNIDs(metadata.DstIPASN)
+
+	if close {
+		idSet := make(map[string]bool)
+		for _, id := range targetIDs {
+			idSet[id] = true
+		}
+		for _, id := range asnIDs {
+			idSet[id] = true
+		}
+
+		for id := range idSet {
+			if tracker := statistic.DefaultManager.Get(id); tracker != nil {
+				trackerMetadata := tracker.Info().Metadata
+				if trackerMetadata.UUID != metadata.UUID && lo.Contains(tracker.Chains(), s.Name()) {
+					_ = tracker.Close()
+				}
+			}
+		}
+	} else {
+		hasOtherTarget := false
+		for _, id := range targetIDs {
+			if id != metadata.UUID {
+				hasOtherTarget = true
+				break
+			}
+		}
+		
+		hasOtherASN := false
+		for _, id := range asnIDs {
+			if id != metadata.UUID {
+				hasOtherASN = true
+				break
+			}
+		}
+		
+		if !hasOtherTarget && (asnInfo == "" || (!smart.CdnASNs[asnInfo] && !hasOtherASN)) {
+			s.store.DeleteUnwrapResult(s.Name(), s.configName, target, asnInfo, isUDP)
+		}
+	}
+}
+
+func (s *Smart) cleanupNodePrefetchCache(metadata *C.Metadata, target, addressDisplay string, nodeNames []string, currentWeights []float64, asnInfo string, isUDP bool) {
 	networkType := "tcp"
-	if metadata.NetWork == C.UDP {
+	if isUDP {
 		networkType = "udp"
 	}
 
-	nodes, weights := s.store.GetPrefetchResult(s.Name(), s.configName, domain, asnInfo, metadata.NetWork == C.UDP)
+	// unwarp 缓存
+	s.store.DeleteUnwrapResult(s.Name(), s.configName, target, asnInfo, isUDP)
+
+	// Prefetch 缓存
+	nodes, weights := s.store.GetPrefetchResult(s.Name(), s.configName, target, asnInfo, isUDP)
 	if len(nodes) == 0 {
 		return
 	}
@@ -1682,7 +1756,7 @@ func (s *Smart) cleanupDegradedNodePreferenceCache(metadata *C.Metadata, domain,
 
 	updatedNodes := make([]string, 0, len(nodeNames))
 	for i, nodeName := range nodeNames {
-		lock := smart.GetDomainNodeLock(domain, s.Name(), nodeName)
+		lock := smart.GetTargetNodeLock(target, s.Name(), nodeName)
 		lock.Lock()
 		defer lock.Unlock()
 
@@ -1714,21 +1788,13 @@ func (s *Smart) cleanupDegradedNodePreferenceCache(metadata *C.Metadata, domain,
 		sortedNodes = append(sortedNodes, nw.node)
 		sortedWeights = append(sortedWeights, nw.weight)
 	}
-	s.store.StorePrefetchResult(s.Name(), s.configName, domain, asnInfo, metadata.NetWork == C.UDP, sortedNodes, sortedWeights)
+	s.store.StorePrefetchResult(s.Name(), s.configName, target, asnInfo, isUDP, sortedNodes, sortedWeights, len(nodes))
 	nodeWeightPairs := make([]string, len(sortedNodes))
 	for i := range sortedNodes {
 		nodeWeightPairs[i] = fmt.Sprintf("%s: %.2f", sortedNodes[i], sortedWeights[i])
 	}
 
-	log.Debugln("[Smart] Updated prefetch result for Group [%s]: network [%s] => domain [%s] => [%s]", s.Name(), networkType, addressDisplay, strings.Join(nodeWeightPairs, ", "))
-
-	// sticky-sessions缓存
-	if s.fallback != nil && s.strategy == "sticky-sessions" {
-		s.fallback.ClearStickySession(metadata)
-	}
-
-	// unwarp缓存
-	s.store.DeleteUnwrapResult(s.Name(), s.configName, domain, asnInfo, metadata.NetWork == C.UDP)
+	log.Debugln("[Smart] Updated prefetch result for Group [%s]: network [%s] => target [%s] => [%s]", s.Name(), networkType, addressDisplay, strings.Join(nodeWeightPairs, ", "))
 }
 
 func (s *Smart) getPriorityFactor(proxyName string) float64 {
@@ -1790,13 +1856,6 @@ func smartWithCollectData(collectData bool) smartOption {
 	}
 }
 
-func smartWithStrategy(config map[string]any) string {
-	if strategy, ok := config["strategy"].(string); ok {
-		return strategy
-	}
-	return "sticky-sessions"
-}
-
 func smartWithSampleRate(sampleRate float64) smartOption {
 	return func(s *Smart) {
 		if sampleRate <= 0 || sampleRate > 1 {
@@ -1813,10 +1872,8 @@ func smartWithPreferASN(preferASN bool) smartOption {
 	}
 }
 
-func parseSmartOption(config map[string]any) ([]smartOption, string) {
+func parseSmartOption(config map[string]any) ([]smartOption) {
 	opts := []smartOption{}
-
-	strategy := smartWithStrategy(config)
 
 	if elm, ok := config["policy-priority"]; ok {
 		if policyPriority, ok := elm.(string); ok {
@@ -1853,7 +1910,7 @@ func parseSmartOption(config map[string]any) ([]smartOption, string) {
 		}
 	}
 
-	return opts, strategy
+	return opts
 }
 
 func (s *Smart) getASNCode(metadata *C.Metadata) string {

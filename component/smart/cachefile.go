@@ -411,7 +411,7 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 	result := make(map[string][]byte)
 
 	globalCacheParams.mutex.RLock()
-	configMaxDomains := globalCacheParams.MaxDomains
+	configMaxTargets := globalCacheParams.MaxTargets
 	globalCacheParams.mutex.RUnlock()
 
 	pathParts := strings.Split(prefix, "/")
@@ -429,15 +429,15 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 	switch keyType {
 	case KeyTypeNode, KeyTypePrefetch:
 		if len(pathParts) == 5 && pathParts[4] != "" {
-			configMaxDomains = 1
+			configMaxTargets = 1
 		}
 	case KeyTypeRanking:
 		if len(pathParts) == 5 && pathParts[3] != "" {
-			configMaxDomains = 1
+			configMaxTargets = 1
 		}
 	case KeyTypeStats:
 		if len(pathParts) == 6 && pathParts[5] != "" {
-			configMaxDomains = 1
+			configMaxTargets = 1
 		}
 	}
 
@@ -472,17 +472,18 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 				return "", nil, false
 			}
 			node := parts[len(parts)-1]
-			domain := strings.Join(parts[3:len(parts)-1], ":")
-			dbKey = FormatDBKey("smart", keyType, config, cacheGroup, domain, node)
+			target := strings.Join(parts[3:len(parts)-1], ":")
+			dbKey = FormatDBKey("smart", keyType, config, cacheGroup, target, node)
 		} else if len(parts) >= 4 {
-			dbKey = FormatDBKey("smart", keyType, config, cacheGroup, parts[3])
+			target := strings.Join(parts[3:], ":")
+			dbKey = FormatDBKey("smart", keyType, config, cacheGroup, target)
 		} else {
 			return "", nil, false
 		}
 		return dbKey, dataBytes, true
 	}
 
-	if configMaxDomains == 1 {
+	if configMaxTargets == 1 {
 		cacheKey := strings.Join(pathParts[1:], ":")
 		dbKey, dataBytes, ok := cacheLookup(cacheKey)
 		if ok {
@@ -500,7 +501,7 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 			rand.Shuffle(len(keys), func(i, j int) { keys[i], keys[j] = keys[j], keys[i] })
 
 			for _, key := range keys {
-				if len(result) >= configMaxDomains {
+				if len(result) >= configMaxTargets {
 					break
 				}
 				dbKey, dataBytes, ok := cacheLookup(key)
@@ -510,7 +511,7 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 				result[dbKey] = dataBytes
 			}
 
-			if len(result) >= configMaxDomains {
+			if len(result) >= configMaxTargets {
 				return result, nil
 			}
 		}
@@ -524,12 +525,12 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 		return result, nil
 	}
 
-	warmThreshold := (dbCount*95 + 99) / 100
+	warmThreshold := (dbCount*80 + 99) / 100
 	if len(result) >= warmThreshold || dbCount <= len(result) {
 		return result, nil
 	}
 
-	remaining := configMaxDomains - len(result)
+	remaining := configMaxTargets - len(result)
 	if remaining <= 0 {
 		return result, nil
 	}
@@ -545,7 +546,7 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 		}
 		UpdateCacheFromDBResult(fullPath, data)
 		result[fullPath] = data
-		if len(result) >= configMaxDomains {
+		if len(result) >= configMaxTargets {
 			break
 		}
 	}

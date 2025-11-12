@@ -313,7 +313,7 @@ func urlToMetadata(rawURL string) (addr C.Metadata, err error) {
 func (p *Proxy) StatusTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (status uint16, ok bool, err error) {
 	addr, err := urlToMetadata(url)
 	if err != nil {
-		return 0, false, err
+		return 1, false, err
 	}
 
 	tlsConfig, err := ca.GetTLSConfig(ca.Option{})
@@ -344,7 +344,7 @@ func (p *Proxy) StatusTest(ctx context.Context, url string, expectedStatus utils
 
 	req, err := http.NewRequest(http.MethodHead, url, nil)
 	if err != nil {
-		return 0, false, err
+		return 1, false, err
 	}
 	req = req.WithContext(ctx)
 	req.Header.Set("User-Agent", convert.RandUserAgent())
@@ -358,7 +358,7 @@ func (p *Proxy) StatusTest(ctx context.Context, url string, expectedStatus utils
 		if netErr, okTimeout := err.(net.Error); okTimeout && netErr.Timeout() {
 			headStatusCode = 599
 		} else {
-			return 0, false, err
+			return 1, false, err
 		}
 	} else {
 		headStatusCode = resp.StatusCode
@@ -369,7 +369,7 @@ func (p *Proxy) StatusTest(ctx context.Context, url string, expectedStatus utils
 		520:                         true, // Cloudflare 520
 		http.StatusMethodNotAllowed: true, // 405
 		http.StatusNotImplemented:   true, // 501
-		599:                         true, // 超时
+		599:                         true, // timeout
 	}
 
 	if banHeadStatus[headStatusCode] {
@@ -415,5 +415,5 @@ func (p *Proxy) StatusTest(ctx context.Context, url string, expectedStatus utils
 		return status, ok, nil
 	}
 
-	return 0, false, fmt.Errorf("unknown error in StatusTest")
+	return 1, false, fmt.Errorf("unknown error in StatusTest")
 }

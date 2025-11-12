@@ -712,7 +712,7 @@ func prepareFeatures(input *ModelInput) []float64 {
 
 	// 3. GeoIP特征提取
 	countryFeature := extractGeoIPFeature(input.DestGeoIP)
-	features = append(features, float64(countryFeature)) // 国家/地区特征              // 大洲特征
+	features = append(features, float64(countryFeature)) // 国家/地区特征/大洲特征
 
 	// 4. 目标地址特征处理
 	var addressFeature int
@@ -1077,7 +1077,7 @@ func CreateModelInputFromStatsRecord(record *smart.StatsRecord, metadata *C.Meta
         MaxdownloadRate:        maxDownloadRate,
         HistoryMaxDownloadRate: record.MaxDownloadRate,
         ConnectionDuration:     record.ConnectionDuration,
-        LastUsed:               record.LastUsed.Unix(),
+        LastUsed:               record.LastUsed,
         IsUDP:                  metadata.NetWork == C.UDP,
         IsTCP:                  metadata.NetWork == C.TCP,
     }
@@ -1088,7 +1088,7 @@ func CreateModelInputFromStatsRecord(record *smart.StatsRecord, metadata *C.Meta
         input.DestIPASN = metadata.DstIPASN
     }
 
-    input.Host, _ = smart.GetEffectiveDomain(metadata.Host, metadata.DstIP.String())
+    input.Host = smart.GetEffectiveTarget(metadata.Host, metadata.DstIP.String())
     if metadata.DstIP.IsValid() {
         input.DestIP = metadata.DstIP.String()
     }

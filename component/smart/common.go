@@ -33,8 +33,6 @@ const (
 	KeyTypeNode             = "node"
 	KeyTypeStats            = "stats"
 	KeyTypeRanking          = "ranking"
-	KeyTypeFailed           = "failed"
-	keyTypeNetwork          = "network"
 
 	WeightTypeTCP           = "tcp"
 	WeightTypeUDP           = "udp"
@@ -46,15 +44,16 @@ const (
 	DefaultMinSampleCount   = 2
 	RetentionPeriod         = 7 * 24 * time.Hour
 	CacheMaxAge             = 21600
+	PrefetchCacheMaxAge     = 72 * 3600
 
-	MaxDomainsLimit         = 4000
-	MinDomainsLimit         = 300
+	MaxTargetsLimit         = 2000
+	MinTargetsLimit         = 300
 	MaxBatchThreshLimit     = 500
 	MinBatchThreshLimit     = 100
-	MaxPrefetchDomainsLimit = 1000
-	MinPrefetchDomainsLimit = 100
+	MaxPrefetchTargetsLimit = 1000
+	MinPrefetchTargetsLimit = 100
 
-	MemoryDomainsFactor     = 0.8
+	MemoryTargetsFactor     = 0.8
 	MemoryCacheSizeFactor   = 0.7
 	MemoryBatchFactor       = 0.7
 	MemoryPrefetchFactor    = 0.7
@@ -77,7 +76,7 @@ var (
 
 	globalCacheParams struct {
 		BatchSaveThreshold int
-		MaxDomains         int
+		MaxTargets         int
 		PrefetchLimit      int
 		CacheMaxSize       int
 		MemoryLimit        float64
@@ -91,7 +90,7 @@ var (
 	cachedMemoryLimit float64
 	memoryLimitOnce   sync.Once
 
-	domainCache *lru.LruCache[string, string]
+	targetCache *lru.LruCache[string, string]
 
 	prefixCountCache *lru.LruCache[string, int]
 
@@ -102,7 +101,7 @@ var (
 	recordCache *lru.LruCache[string, *AtomicStatsRecord]
 )
 
-var cdnASNs = map[string]bool{
+var CdnASNs = map[string]bool{
 	"13335":  true, // Cloudflare
 	"12222":  true, // Akamai
 	"16625":  true, // Akamai
@@ -147,23 +146,25 @@ type (
 		Failure            int64              `json:"failure"`
 		ConnectTime        int64              `json:"connect_time"`
 		Latency            int64              `json:"latency"`
-		LastUsed           time.Time          `json:"last_used"`
+		LastUsed           int64              `json:"last_used"`
 		Weights            map[string]float64 `json:"weights"`
 		UploadTotal        float64            `json:"upload_total"`
 		DownloadTotal      float64            `json:"download_total"`
 		MaxUploadRate      float64            `json:"max_upload_rate"`
 		MaxDownloadRate    float64            `json:"max_download_rate"`
 		ConnectionDuration float64            `json:"connection_duration"`
+		Degraded           bool               `json:"degraded"`
+		Status             int64              `json:"status"`
 	}
 
 	NodeState struct {
 		Name               string         `json:"name"`
 		FailureCount       int            `json:"failure_count"`
-		LastFailure        time.Time      `json:"last_failure"`
-		BlockedUntil       time.Time      `json:"blocked_until"`
+		LastFailure        int64          `json:"last_failure"`
+		BlockedUntil       int64          `json:"blocked_until"`
 		Degraded           bool           `json:"degraded"`
 		DegradedFactor     float64        `json:"degraded_factor"`
-		DomainFailureCount map[string]int `json:"domain_failure_count"`
+		TargetFailureCount map[string]int `json:"target_failure_count"`
 	}
 
 	NodesWithWeights struct {
@@ -177,10 +178,11 @@ type (
 	}
 
 	PrefetchMap struct {
-		TCP    NodesWithWeights `json:"tcp,omitempty"`
-		UDP    NodesWithWeights `json:"udp,omitempty"`
-		RefTCP string           `json:"ref_tcp,omitempty"`
-		RefUDP string           `json:"ref_udp,omitempty"`
+		TCP         NodesWithWeights `json:"tcp,omitempty"`
+		UDP         NodesWithWeights `json:"udp,omitempty"`
+		RefTCP      string           `json:"ref_tcp,omitempty"`
+		RefUDP      string           `json:"ref_udp,omitempty"`
+		UpdatedTime int64            `json:"updated_time,omitempty"`
 	}
 
 	UnwrapMap struct {
@@ -220,11 +222,9 @@ func FormatDBKey(first string, parts ...string) string {
 }
 
 // 获取有效顶级域名加一二级域名并使用通配符处理
-func GetEffectiveDomain(host string, dstIP string) (string, string) {
-	rawHost := host
-
+func GetEffectiveTarget(host string, dstIP string) (string) {
 	if host == "" {
-		return dstIP, dstIP
+		return dstIP
 	}
 
 	h := strings.ToLower(host)
@@ -296,36 +296,36 @@ func GetEffectiveDomain(host string, dstIP string) (string, string) {
 		return normalizedSub + "." + reg
 	}
 
-	if domainCache != nil {
-		if result, _ := domainCache.GetOrStore(h, func() string {
+	if targetCache != nil {
+		if result, _ := targetCache.GetOrStore(h, func() string {
 			return compute()
 		}); result != "" {
 			if strings.HasPrefix(result, "*.") {
-				domainCache.Set(result, result)
-				domainCache.Set(h, result)
-				return result, rawHost
+				targetCache.Set(result, result)
+				targetCache.Set(h, result)
+				return result
 			}
 
 			if result == h {
 				parts := strings.Split(h, ".")
 				if len(parts) == 2 {
 					wildcard := "*." + h
-					domainCache.Set(h, wildcard)
-					domainCache.Set(wildcard, wildcard)
-					return wildcard, rawHost
+					targetCache.Set(h, wildcard)
+					targetCache.Set(wildcard, wildcard)
+					return wildcard
 				}
 				if len(parts) > 2 {
 					wildcard := "*." + parts[len(parts)-2] + "." + parts[len(parts)-1]
-					if cachedVal, ok := domainCache.Get(wildcard); ok && cachedVal != "" {
-						domainCache.Set(h, cachedVal)
-						return cachedVal, rawHost
+					if cachedVal, ok := targetCache.Get(wildcard); ok && cachedVal != "" {
+						targetCache.Set(h, cachedVal)
+						return cachedVal
 					}
 				}
 			}
 		}
 	}
 
-	return compute(), rawHost
+	return compute()
 }
 
 // 限制值在指定范围内

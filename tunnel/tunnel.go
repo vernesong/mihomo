@@ -654,6 +654,11 @@ func match(metadata *C.Metadata, helper C.RuleMatchHelper) (C.Proxy, C.Rule, err
 				continue
 			}
 
+			// set target for Smart gorup nodes selected
+			if smartRuleType(rule.RuleType()) {
+				metadata.SmartTarget = fmt.Sprintf("%s [%s]", rule.RuleType().String(), rule.Payload())
+			}
+
 			// parse multi-layer nesting
 			passed := false
 			for adapter := adapter; adapter != nil; adapter = adapter.Unwrap(metadata, false) {
@@ -727,4 +732,13 @@ func retry[T any](ctx context.Context, ft func(context.Context) (T, error), fe f
 		}
 	}
 	return
+}
+
+func smartRuleType(rt C.RuleType) bool {
+	for _, t := range C.SmartRuleTypes {
+		if rt == t {
+			return true
+		}
+	}
+	return false
 }

@@ -39,6 +39,25 @@ const (
 
 type RuleType int
 
+var SmartRuleTypes = []RuleType{
+	Domain,
+	DomainSuffix,
+	DomainKeyword,
+	DomainRegex,
+	DomainWildcard,
+	GEOSITE,
+	GEOIP,
+	IPASN,
+	IPCIDR,
+	IPSuffix,
+	DstPort,
+	RuleSet,
+	SubRules,
+	AND,
+	OR,
+	NOT,
+}
+
 func (rt RuleType) String() string {
 	switch rt {
 	case Domain:

@@ -27,6 +27,8 @@ func init() {
 
 type Manager struct {
 	connections   xsync.Map[string, Tracker]
+	target        xsync.Map[string, []string]
+	asn           xsync.Map[string, []string]
 	uploadTemp    atomic.Int64
 	downloadTemp  atomic.Int64
 	uploadBlip    atomic.Int64
@@ -39,10 +41,14 @@ type Manager struct {
 
 func (m *Manager) Join(c Tracker) {
 	m.connections.Store(c.ID(), c)
+	m.joinTargetID(c)
+	m.joinASNID(c)
 }
 
 func (m *Manager) Leave(c Tracker) {
 	m.connections.Delete(c.ID())
+	m.leaveTargetID(c)
+	m.leaveASNID(c)
 }
 
 func (m *Manager) Get(id string) (c Tracker) {
@@ -122,4 +128,74 @@ type Snapshot struct {
 	UploadTotal   int64          `json:"uploadTotal"`
 	Connections   []*TrackerInfo `json:"connections"`
 	Memory        uint64         `json:"memory"`
+}
+
+func (m *Manager) joinTargetID(c Tracker) {
+	target := c.Info().Metadata.SmartTarget
+	if ids, ok := m.target.Load(target); ok {
+		ids = append(ids, c.ID())
+		m.target.Store(target, ids)
+	} else {
+		m.target.Store(target, []string{c.ID()})
+	}
+}
+
+func (m *Manager) leaveTargetID(c Tracker) {
+	target := c.Info().Metadata.SmartTarget
+	if ids, ok := m.target.Load(target); ok {
+		newIDs := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if id != c.ID() {
+				newIDs = append(newIDs, id)
+			}
+		}
+		if len(newIDs) > 0 {
+			m.target.Store(target, newIDs)
+		} else {
+			m.target.Delete(target)
+		}
+	}
+}
+
+func (m *Manager) joinASNID(c Tracker) {
+	if asn := c.Info().Metadata.DstIPASN; asn != "" && asn != "unknown" {
+        if ids, ok := m.asn.Load(asn); ok {
+            ids = append(ids, c.ID())
+            m.asn.Store(asn, ids)
+        } else {
+            m.asn.Store(asn, []string{c.ID()})
+        }
+    }
+}
+
+func (m *Manager) leaveASNID(c Tracker) {
+	if asn := c.Info().Metadata.DstIPASN; asn != "" && asn != "unknown" {
+		if ids, ok := m.asn.Load(asn); ok {
+			newIDs := make([]string, 0, len(ids))
+			for _, id := range ids {
+				if id != c.ID() {
+					newIDs = append(newIDs, id)
+				}
+			}
+			if len(newIDs) > 0 {
+				m.asn.Store(asn, newIDs)
+			} else {
+				m.asn.Delete(asn)
+			}
+		}
+	}
+}
+
+func (m *Manager) GetTargetIDs(target string) []string {
+	if ids, ok := m.target.Load(target); ok {
+		return ids
+	}
+	return nil
+}
+
+func (m *Manager) GetASNIDs(asn string) []string {
+	if ids, ok := m.asn.Load(asn); ok {
+		return ids
+	}
+	return nil
 }
