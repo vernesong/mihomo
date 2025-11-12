@@ -2,7 +2,6 @@ package atomic
 
 import (
 	"encoding/json"
-	"math"
 	"reflect"
 	"sync/atomic"
 )
@@ -122,52 +121,4 @@ func CloneMap[K comparable, V any](m map[K]V) map[K]V {
 		newMap[k] = v
 	}
 	return newMap
-}
-
-// atomic.Float64
-type Float64 struct {
-	value uint64
-}
-
-func (f *Float64) Store(val float64) {
-	atomic.StoreUint64(&f.value, math.Float64bits(val))
-}
-
-func (f *Float64) Load() float64 {
-	return math.Float64frombits(atomic.LoadUint64(&f.value))
-}
-
-func (f *Float64) Add(delta float64) float64 {
-	for {
-		oldBits := atomic.LoadUint64(&f.value)
-		old := math.Float64frombits(oldBits)
-		new := old + delta
-		newBits := math.Float64bits(new)
-		if atomic.CompareAndSwapUint64(&f.value, oldBits, newBits) {
-			return new
-		}
-	}
-}
-
-func (f *Float64) Swap(new float64) float64 {
-	for {
-		oldBits := atomic.LoadUint64(&f.value)
-		newBits := math.Float64bits(new)
-		if atomic.CompareAndSwapUint64(&f.value, oldBits, newBits) {
-			return math.Float64frombits(oldBits)
-		}
-	}
-}
-
-func (f *Float64) MarshalJSON() ([]byte, error) {
-	return json.Marshal(f.Load())
-}
-
-func (f *Float64) UnmarshalJSON(b []byte) error {
-	var v float64
-	if err := json.Unmarshal(b, &v); err != nil {
-		return err
-	}
-	f.Store(v)
-	return nil
 }

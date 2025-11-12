@@ -3,6 +3,7 @@ package atomic
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"sync/atomic"
 )
@@ -286,4 +287,70 @@ func (i *Uintptr) UnmarshalYAML(unmarshal func(any) error) error {
 func (i *Uintptr) String() string {
 	v := i.Load()
 	return strconv.FormatUint(uint64(v), 10)
+}
+
+// atomic.Float64
+type Float64 struct {
+	atomic.Uint64
+}
+
+func NewFloat64(val float64) (f Float64) {
+	f.Store(val)
+	return
+}
+
+func (f *Float64) Store(val float64) {
+	f.Uint64.Store(math.Float64bits(val))
+}
+
+func (f *Float64) Load() float64 {
+	return math.Float64frombits(f.Uint64.Load())
+}
+
+func (f *Float64) Add(delta float64) float64 {
+	for {
+		oldBits := f.Uint64.Load()
+		old := math.Float64frombits(oldBits)
+		new := old + delta
+		newBits := math.Float64bits(new)
+		if f.Uint64.CompareAndSwap(oldBits, newBits) {
+			return new
+		}
+	}
+}
+
+func (f *Float64) Swap(new float64) float64 {
+	oldBits := f.Uint64.Swap(math.Float64bits(new))
+	return math.Float64frombits(oldBits)
+}
+
+func (f *Float64) MarshalJSON() ([]byte, error) {
+	return json.Marshal(f.Load())
+}
+
+func (f *Float64) UnmarshalJSON(b []byte) error {
+	var v float64
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	f.Store(v)
+	return nil
+}
+
+func (f *Float64) MarshalYAML() (any, error) {
+	return f.Load(), nil
+}
+
+func (f *Float64) UnmarshalYAML(unmarshal func(any) error) error {
+	var v float64
+	if err := unmarshal(&v); err != nil {
+		return err
+	}
+	f.Store(v)
+	return nil
+}
+
+func (f *Float64) String() string {
+	v := f.Load()
+	return fmt.Sprintf("%g", v)
 }

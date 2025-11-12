@@ -31,11 +31,11 @@ type AtomicStatsRecord struct {
 	status          atomic.Int64
 	degraded        atomic.Bool
 
-	uploadTotal     *atomic.Float64
-	downloadTotal   *atomic.Float64
-	duration        *atomic.Float64
-	maxUploadRate   *atomic.Float64
-	maxDownloadRate *atomic.Float64
+	uploadTotal     atomic.Float64
+	downloadTotal   atomic.Float64
+	duration        atomic.Float64
+	maxUploadRate   atomic.Float64
+	maxDownloadRate atomic.Float64
 
 	weights         atomic.TypedValue[map[string]float64]
 }
@@ -83,11 +83,11 @@ func (s *Store) GetOrCreateAtomicRecord(cacheKey string, group, config, target, 
 	}
 
 	record := &AtomicStatsRecord{
-		uploadTotal:     new(atomic.Float64),
-		downloadTotal:   new(atomic.Float64),
-		duration:        new(atomic.Float64),
-		maxUploadRate:   new(atomic.Float64),
-		maxDownloadRate: new(atomic.Float64),
+		uploadTotal:     atomic.NewFloat64(0),
+		downloadTotal:   atomic.NewFloat64(0),
+		duration:        atomic.NewFloat64(0),
+		maxUploadRate:   atomic.NewFloat64(0),
+		maxDownloadRate: atomic.NewFloat64(0),
 	}
 	record.weights.Store(make(map[string]float64))
 	record.lastUsed.Store(time.Now().Unix())
