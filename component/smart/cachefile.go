@@ -13,6 +13,7 @@ import (
 	"github.com/metacubex/bbolt"
 	"github.com/metacubex/mihomo/common/batch"
 	"github.com/metacubex/mihomo/common/singleflight"
+	"github.com/metacubex/mihomo/common/xsync"
 	"github.com/metacubex/mihomo/log"
 )
 
@@ -54,8 +55,8 @@ func (s *Store) BatchSave(operations []StoreOperation) error {
 	}()
 
 	b, _ := batch.New[struct{}](context.Background(), batch.WithConcurrencyNum[struct{}](concurrency))
-	var writeMapSync sync.Map
-	var cacheUpdatesSync sync.Map
+	var writeMapSync xsync.Map[string, []byte]
+	var cacheUpdatesSync xsync.Map[string, []byte]
 
 	numBatches := (len(operations) + batchSize - 1) / batchSize
 
@@ -111,13 +112,13 @@ func (s *Store) BatchSave(operations []StoreOperation) error {
 
 	b.Wait()
 
-	writeMapSync.Range(func(key, value interface{}) bool {
-		writeMap[key.(string)] = value.([]byte)
+	writeMapSync.Range(func(key string, value []byte) bool {
+		writeMap[key] = value
 		return true
 	})
 
-	cacheUpdatesSync.Range(func(key, value interface{}) bool {
-		cacheUpdates[key.(string)] = value
+	cacheUpdatesSync.Range(func(key string, value []byte) bool {
+		cacheUpdates[key] = value
 		return true
 	})
 
@@ -163,7 +164,7 @@ func (s *Store) BatchSaveConnStats(operations []StoreOperation) error {
 	initialMapSize := len(existingOpsCopy) + len(operations)
 	opMap := make(map[string]*StoreOperation, initialMapSize)
 	lookupToKeys := make(map[string][]string, initialMapSize/2)
-	cacheBatch := sync.Map{}
+	var cacheBatch xsync.Map[string, []byte]
 
 	for i, op := range existingOpsCopy {
 		var opKey string
@@ -322,8 +323,8 @@ func (s *Store) BatchSaveConnStats(operations []StoreOperation) error {
 	needFlush := len(newQueue) >= currentThreshold
 
 	cacheUpdates := make(map[string]interface{}, len(opMap)/2)
-	cacheBatch.Range(func(key, value interface{}) bool {
-		cacheUpdates[key.(string)] = value
+	cacheBatch.Range(func(key string, value []byte) bool {
+		cacheUpdates[key] = value
 		return true
 	})
 
