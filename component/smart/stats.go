@@ -886,7 +886,7 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
 					newW := item.bestWeights[i]
 					if oldW, exists := finalNodeMap[newNode]; exists {
 						// prevent degrade recovery too fast
-						if (math.Abs(newW - oldW) / oldW > 0.2 && oldW > AllowedWeight) || newW < AllowedWeight && newW != oldW {
+						if math.Abs(newW - oldW) / oldW > 0.1 && (oldW > AllowedWeight || newW < AllowedWeight) {
 							finalNodeMap[newNode] = newW
 							needUpdate = true
 						}
