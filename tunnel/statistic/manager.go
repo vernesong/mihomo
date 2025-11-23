@@ -27,8 +27,7 @@ func init() {
 
 type Manager struct {
 	connections   xsync.Map[string, Tracker]
-	target        xsync.Map[string, []string]
-	asn           xsync.Map[string, []string]
+	smartTarget   xsync.Map[string, *xsync.Map[string, bool]]
 	uploadTemp    atomic.Int64
 	downloadTemp  atomic.Int64
 	uploadBlip    atomic.Int64
@@ -41,14 +40,12 @@ type Manager struct {
 
 func (m *Manager) Join(c Tracker) {
 	m.connections.Store(c.ID(), c)
-	m.joinTargetID(c)
-	m.joinASNID(c)
+	m.joinSmartTarget(c)
 }
 
 func (m *Manager) Leave(c Tracker) {
 	m.connections.Delete(c.ID())
-	m.leaveTargetID(c)
-	m.leaveASNID(c)
+	m.leaveSmartTarget(c)
 }
 
 func (m *Manager) Get(id string) (c Tracker) {
@@ -130,72 +127,66 @@ type Snapshot struct {
 	Memory        uint64         `json:"memory"`
 }
 
-func (m *Manager) joinTargetID(c Tracker) {
+func (m *Manager) joinSmartTarget(c Tracker) {
 	target := c.Info().Metadata.SmartTarget
-	if ids, ok := m.target.Load(target); ok {
-		ids = append(ids, c.ID())
-		m.target.Store(target, ids)
-	} else {
-		m.target.Store(target, []string{c.ID()})
+	result, _ := m.smartTarget.LoadOrStore(target, xsync.NewMap[string, bool]())
+	result.Store(c.ID(), true)
+
+	asn := c.Info().Metadata.DstIPASN
+	if asn != "" && asn != "unknown" {
+		result, _ := m.smartTarget.LoadOrStore(asn, xsync.NewMap[string, bool]())
+		result.Store(c.ID(), true)
 	}
 }
 
-func (m *Manager) leaveTargetID(c Tracker) {
+func (m *Manager) leaveSmartTarget(c Tracker) {
 	target := c.Info().Metadata.SmartTarget
-	if ids, ok := m.target.Load(target); ok {
-		newIDs := make([]string, 0, len(ids))
-		for _, id := range ids {
-			if id != c.ID() {
-				newIDs = append(newIDs, id)
+	m.smartTarget.Compute(target, func(result *xsync.Map[string, bool], loaded bool) (*xsync.Map[string, bool], xsync.ComputeOp) {
+		if loaded {
+			result.Delete(c.ID())
+			if result.Size() == 0 {
+				return result, xsync.DeleteOp
 			}
 		}
-		if len(newIDs) > 0 {
-			m.target.Store(target, newIDs)
-		} else {
-			m.target.Delete(target)
-		}
-	}
-}
+		return result, xsync.CancelOp
+	})
 
-func (m *Manager) joinASNID(c Tracker) {
-	if asn := c.Info().Metadata.DstIPASN; asn != "" && asn != "unknown" {
-        if ids, ok := m.asn.Load(asn); ok {
-            ids = append(ids, c.ID())
-            m.asn.Store(asn, ids)
-        } else {
-            m.asn.Store(asn, []string{c.ID()})
-        }
-    }
-}
-
-func (m *Manager) leaveASNID(c Tracker) {
-	if asn := c.Info().Metadata.DstIPASN; asn != "" && asn != "unknown" {
-		if ids, ok := m.asn.Load(asn); ok {
-			newIDs := make([]string, 0, len(ids))
-			for _, id := range ids {
-				if id != c.ID() {
-					newIDs = append(newIDs, id)
+	asn := c.Info().Metadata.DstIPASN
+	if asn != "" && asn != "unknown" {
+		m.smartTarget.Compute(asn, func(result *xsync.Map[string, bool], loaded bool) (*xsync.Map[string, bool], xsync.ComputeOp) {
+			if loaded {
+				result.Delete(c.ID())
+				if result.Size() == 0 {
+					return result, xsync.DeleteOp
 				}
 			}
-			if len(newIDs) > 0 {
-				m.asn.Store(asn, newIDs)
-			} else {
-				m.asn.Delete(asn)
-			}
+			return result, xsync.CancelOp
+		})
+	}
+}
+
+func (m *Manager) GetSmartTargetIDs(target, asn string) []string {
+	idSet := make(map[string]bool)
+
+	if result, ok := m.smartTarget.Load(target); ok {
+		result.Range(func(id string, _ bool) bool {
+			idSet[id] = true
+			return true
+		})
+	}
+
+	if asn != "" && asn != "unknown" {
+		if result, ok := m.smartTarget.Load(asn); ok {
+			result.Range(func(id string, _ bool) bool {
+				idSet[id] = true
+				return true
+			})
 		}
 	}
-}
 
-func (m *Manager) GetTargetIDs(target string) []string {
-	if ids, ok := m.target.Load(target); ok {
-		return ids
+	ids := make([]string, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
 	}
-	return nil
-}
-
-func (m *Manager) GetASNIDs(asn string) []string {
-	if ids, ok := m.asn.Load(asn); ok {
-		return ids
-	}
-	return nil
+	return ids
 }

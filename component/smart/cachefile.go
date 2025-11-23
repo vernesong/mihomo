@@ -24,6 +24,12 @@ var (
 		},
 	}
 
+	opMapPoolStats = sync.Pool{
+		New: func() interface{} {
+			return make(map[string]*StoreOperation, 64)
+		},
+	}
+
 	cacheUpdatePool = sync.Pool{
 		New: func() interface{} {
 			return make(map[string]interface{}, 64)
@@ -41,22 +47,16 @@ func (s *Store) BatchSave(operations []StoreOperation) error {
 	batchSize := 100
 
 	writeMap := opMapPool.Get().(map[string][]byte)
-	cacheUpdates := cacheUpdatePool.Get().(map[string]interface{})
 
 	defer func() {
 		for k := range writeMap {
 			delete(writeMap, k)
 		}
 		opMapPool.Put(writeMap)
-		for k := range cacheUpdates {
-			delete(cacheUpdates, k)
-		}
-		cacheUpdatePool.Put(cacheUpdates)
 	}()
 
 	b, _ := batch.New[struct{}](context.Background(), batch.WithConcurrencyNum[struct{}](concurrency))
 	var writeMapSync xsync.Map[string, []byte]
-	var cacheUpdatesSync xsync.Map[string, []byte]
 
 	numBatches := (len(operations) + batchSize - 1) / batchSize
 
@@ -87,23 +87,6 @@ func (s *Store) BatchSave(operations []StoreOperation) error {
 					dataCopy := make([]byte, len(op.Data))
 					copy(dataCopy, op.Data)
 					writeMapSync.Store(key, dataCopy)
-
-					var cacheKey string
-					switch op.Type {
-					case OpSaveNodeState:
-						cacheKey = FormatCacheKey(KeyTypeNode, op.Config, op.Group, op.Node)
-					case OpSaveStats:
-						cacheKey = FormatCacheKey(KeyTypeStats, op.Config, op.Group, op.Target, op.Node)
-					case OpSavePrefetch:
-						cacheKey = FormatCacheKey(KeyTypePrefetch, op.Config, op.Group, op.Target)
-					case OpSaveRanking:
-						cacheKey = FormatCacheKey(KeyTypeRanking, op.Config, op.Group, "")
-					}
-					if cacheKey != "" {
-						cacheData := make([]byte, len(dataCopy))
-						copy(cacheData, dataCopy)
-						cacheUpdatesSync.Store(cacheKey, cacheData)
-					}
 				}
 			}
 			return struct{}{}, nil
@@ -114,11 +97,6 @@ func (s *Store) BatchSave(operations []StoreOperation) error {
 
 	writeMapSync.Range(func(key string, value []byte) bool {
 		writeMap[key] = value
-		return true
-	})
-
-	cacheUpdatesSync.Range(func(key string, value []byte) bool {
-		cacheUpdates[key] = value
 		return true
 	})
 
@@ -138,12 +116,6 @@ func (s *Store) BatchSave(operations []StoreOperation) error {
 		return nil
 	})
 
-	if len(cacheUpdates) > 0 {
-		for key, value := range cacheUpdates {
-			SetCacheValue(key, value)
-		}
-	}
-
 	if err != nil {
 		log.Debugln("[SmartStore] Batch save operation failed: %v", err)
 	}
@@ -152,19 +124,25 @@ func (s *Store) BatchSave(operations []StoreOperation) error {
 }
 
 // 批量保存连接统计数据
-func (s *Store) BatchSaveConnStats(operations []StoreOperation) error {
+func (s *Store) BatchSaveStats(operations []StoreOperation) error {
 	if len(operations) == 0 {
 		return nil
 	}
 
+	var cacheBatch xsync.Map[string, []byte]
 	existingOps := getGlobalQueueSnapshot()
 	existingOpsCopy := make([]StoreOperation, len(existingOps))
 	copy(existingOpsCopy, existingOps)
 
 	initialMapSize := len(existingOpsCopy) + len(operations)
-	opMap := make(map[string]*StoreOperation, initialMapSize)
 	lookupToKeys := make(map[string][]string, initialMapSize/2)
-	var cacheBatch xsync.Map[string, []byte]
+	opMap := opMapPoolStats.Get().(map[string]*StoreOperation)
+	defer func() {
+		for k := range opMap {
+			delete(opMap, k)
+		}
+		opMapPoolStats.Put(opMap)
+	}()
 
 	for i, op := range existingOpsCopy {
 		var opKey string
@@ -322,7 +300,14 @@ func (s *Store) BatchSaveConnStats(operations []StoreOperation) error {
 
 	needFlush := len(newQueue) >= currentThreshold
 
-	cacheUpdates := make(map[string]interface{}, len(opMap)/2)
+	cacheUpdates := cacheUpdatePool.Get().(map[string]interface{})
+	defer func() {
+		for k := range cacheUpdates {
+			delete(cacheUpdates, k)
+		}
+		cacheUpdatePool.Put(cacheUpdates)
+	}()
+
 	cacheBatch.Range(func(key string, value []byte) bool {
 		cacheUpdates[key] = value
 		return true
@@ -608,10 +593,6 @@ func (s *Store) DBBatchPutItem(key string, value []byte) error {
 
 // 计算前缀匹配的记录数量
 func (s *Store) DBViewPrefixCount(prefix string) (int, error) {
-	if v, ok := prefixCountCache.Get(prefix); ok {
-		return v, nil
-	}
-
 	var count int
 	err := db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(bucketSmartStats)
@@ -630,8 +611,6 @@ func (s *Store) DBViewPrefixCount(prefix string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-
-	prefixCountCache.Set(prefix, count)
 
 	return count, nil
 }
@@ -759,8 +738,6 @@ func (s *Store) DBBatchDeletePrefix(prefix string) error {
 			return err
 		}
 	}
-
-	prefixCountCache.Delete(prefix)
 
 	return nil
 }

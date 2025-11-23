@@ -96,29 +96,18 @@ func (t *TypedValue[T]) Update(f func(old T) (new T)) {
 	}
 
 	switch any(zero).(type) {
-	case map[string]float64:
-		old := t.Load()
-		new := f(old)
-		t.Store(new)
-		return
-	default:
-		for {
+		case map[string]float64:
 			old := t.Load()
 			new := f(old)
-			if t.CompareAndSwap(old, new) {
-				return
+			t.Store(new)
+			return
+		default:
+			for {
+				old := t.Load()
+				new := f(old)
+				if t.CompareAndSwap(old, new) {
+					return
+				}
 			}
-		}
-}
-}
-
-func CloneMap[K comparable, V any](m map[K]V) map[K]V {
-	if m == nil {
-		return nil
 	}
-	newMap := make(map[K]V, len(m))
-	for k, v := range m {
-		newMap[k] = v
-	}
-	return newMap
 }

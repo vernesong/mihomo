@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/common/atomic"
+	"github.com/metacubex/mihomo/common/lru"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 )
@@ -29,7 +30,6 @@ type AtomicStatsRecord struct {
 	latency         atomic.Int64
 	lastUsed        atomic.Int64
 	status          atomic.Int64
-	degraded        atomic.Bool
 
 	uploadTotal     atomic.Float64
 	downloadTotal   atomic.Float64
@@ -37,7 +37,7 @@ type AtomicStatsRecord struct {
 	maxUploadRate   atomic.Float64
 	maxDownloadRate atomic.Float64
 
-	weights         atomic.TypedValue[map[string]float64]
+	weights *lru.LruCache[string, float64]
 }
 
 type ActiveTarget struct {
@@ -88,8 +88,8 @@ func (s *Store) GetOrCreateAtomicRecord(cacheKey string, group, config, target, 
 		duration:        atomic.NewFloat64(0),
 		maxUploadRate:   atomic.NewFloat64(0),
 		maxDownloadRate: atomic.NewFloat64(0),
+		weights:         lru.New[string, float64](lru.WithSize[string, float64](100)),
 	}
-	record.weights.Store(make(map[string]float64))
 	record.lastUsed.Store(time.Now().Unix())
 
 	if existingData, err := s.GetStatsForTarget(group, config, target); err == nil {
@@ -101,14 +101,17 @@ func (s *Store) GetOrCreateAtomicRecord(cacheKey string, group, config, target, 
 				record.connectTime.Store(existingRecord.ConnectTime)
 				record.latency.Store(existingRecord.Latency)
 				record.lastUsed.Store(existingRecord.LastUsed)
-				record.weights.Store(atomic.CloneMap(existingRecord.Weights))
+				if existingRecord.Weights != nil {
+					for k, v := range existingRecord.Weights {
+						record.weights.Set(k, v)
+					}
+				}
 				record.uploadTotal.Store(existingRecord.UploadTotal)
 				record.downloadTotal.Store(existingRecord.DownloadTotal)
 				record.duration.Store(existingRecord.ConnectionDuration)
 				record.maxUploadRate.Store(existingRecord.MaxUploadRate)
 				record.maxDownloadRate.Store(existingRecord.MaxDownloadRate)
 				record.status.Store(existingRecord.Status)
-				record.degraded.Store(existingRecord.Degraded)
 			}
 		}
 	}
@@ -120,10 +123,10 @@ func (s *Store) GetOrCreateAtomicRecord(cacheKey string, group, config, target, 
 // 创建统计快照
 func (record *AtomicStatsRecord) CreateStatsSnapshot() *StatsRecord {
 	if record == nil {
-		return &StatsRecord{
-			Weights: make(map[string]float64),
-		}
+		return &StatsRecord{Weights: make(map[string]float64)}
 	}
+
+	weights := record.weights.FilterByKeyPrefix("")
 
 	return &StatsRecord{
 		Success:            record.success.Load(),
@@ -131,13 +134,12 @@ func (record *AtomicStatsRecord) CreateStatsSnapshot() *StatsRecord {
 		ConnectTime:        record.connectTime.Load(),
 		Latency:            record.latency.Load(),
 		LastUsed:           record.lastUsed.Load(),
-		Weights:            atomic.CloneMap(record.weights.Load()),
+		Weights:            weights,
 		UploadTotal:        record.uploadTotal.Load(),
 		DownloadTotal:      record.downloadTotal.Load(),
 		MaxUploadRate:      record.maxUploadRate.Load(),
 		MaxDownloadRate:    record.maxDownloadRate.Load(),
 		ConnectionDuration: record.duration.Load(),
-		Degraded:           record.degraded.Load(),
 		Status:             record.status.Load(),
 	}
 }
@@ -155,7 +157,7 @@ func (r *AtomicStatsRecord) Get(field string) interface{} {
 	case "lastUsed":
 		return r.lastUsed.Load()
 	case "weights":
-		return atomic.CloneMap(r.weights.Load())
+    	return r.weights.FilterByKeyPrefix("")
 	case "uploadTotal":
 		return r.uploadTotal.Load()
 	case "downloadTotal":
@@ -168,8 +170,6 @@ func (r *AtomicStatsRecord) Get(field string) interface{} {
 		return r.duration.Load()
 	case "status":
 		return r.status.Load()
-	case "degraded":
-		return r.degraded.Load()
 	default:
 		return nil
 	}
@@ -223,11 +223,9 @@ func (r *AtomicStatsRecord) Set(field string, value interface{}) {
 		}
 	case "weights":
 		if v, ok := value.(map[string]float64); ok {
-			r.weights.Store(atomic.CloneMap(v))
-		}
-	case "degraded":
-		if v, ok := value.(bool); ok {
-			r.degraded.Store(v)
+			for k, val := range v {
+				r.weights.Set(k, val)
+			}
 		}
 	}
 }
@@ -254,19 +252,14 @@ func (r *AtomicStatsRecord) Add(field string, value interface{}) {
 }
 
 func (r *AtomicStatsRecord) GetWeight(weightType string) float64 {
-	weights := r.weights.Load()
-	if weights == nil {
-		return 0
+	if value, ok := r.weights.Get(weightType); ok {
+		return value
 	}
-	return weights[weightType]
+	return 0
 }
 
 func (r *AtomicStatsRecord) SetWeight(weightType string, value float64) {
-	r.weights.Update(func(old map[string]float64) map[string]float64 {
-		newMap := atomic.CloneMap(old)
-		newMap[weightType] = value
-		return newMap
-	})
+	r.weights.Set(weightType, value)
 }
 
 // 获取节点权重排名缓存
@@ -445,15 +438,13 @@ func (s *Store) GetBestProxyForTarget(group, config, target, asnNumber string, i
 		weightType = WeightTypeUDP
 	}
 
-	nodeStatesMap := make(map[string]NodeState)
 	stateData, _ := s.GetNodeStates(group, config)
-	for nodeName, data := range stateData {
+	for _, data := range stateData {
 		var state NodeState
 		if err := json.Unmarshal(data, &state); err == nil {
 			if state.BlockedUntil > 0 && state.BlockedUntil > now {
 				continue
 			}
-			nodeStatesMap[nodeName] = state
 		}
 	}
 
@@ -533,12 +524,6 @@ func (s *Store) GetBestProxyForTarget(group, config, target, asnNumber string, i
 				nodesWithWeight[nodeName] = finalWeight
 			}
 		}
-
-		for nodeName, weight := range nodesWithWeight {
-			if state, ok := nodeStatesMap[nodeName]; ok && state.Degraded {
-				nodesWithWeight[nodeName] = weight * state.DegradedFactor
-			}
-		}
 	}
 
 	var mapStats map[string][]byte
@@ -562,9 +547,6 @@ func (s *Store) GetBestProxyForTarget(group, config, target, asnNumber string, i
 		if weight > 0 {
 			timeDecay := getTimeDecay(record.LastUsed)
 			decayedWeight := weight * timeDecay
-			if state, exists := nodeStatesMap[nodeName]; exists && state.Degraded {
-				decayedWeight *= state.DegradedFactor
-			}
 			if _, exists := nodesWithWeight[nodeName]; !exists {
 				if asnNumber == "" || CdnASNs[asnNumber] {
 					nodesWithWeight[nodeName] = decayedWeight
@@ -963,11 +945,6 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
 
 // GetNodeStates 获取节点状态
 func (s *Store) GetNodeStates(group, config string) (map[string][]byte, error) {
-	cacheKey := fmt.Sprintf("%s:%s", group, config)
-	if cached, ok := nodeStatesCache.Get(cacheKey); ok {
-		return cached, nil
-	}
-
 	pathPrefix := FormatDBKey("smart", KeyTypeNode, config, group, "")
 	result := make(map[string][]byte)
 
@@ -990,8 +967,6 @@ func (s *Store) GetNodeStates(group, config string) (map[string][]byte, error) {
 			result[op.Node] = op.Data
 		}
 	}
-
-	nodeStatesCache.Set(cacheKey, result)
 
 	return result, nil
 }

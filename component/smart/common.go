@@ -46,17 +46,12 @@ const (
 	CacheMaxAge             = 21600
 	PrefetchCacheMaxAge     = 72 * 3600
 
-	MaxTargetsLimit         = 2000
-	MinTargetsLimit         = 300
-	MaxBatchThreshLimit     = 500
-	MinBatchThreshLimit     = 100
-	MaxPrefetchTargetsLimit = 1000
-	MinPrefetchTargetsLimit = 100
-
-	MemoryTargetsFactor     = 0.8
-	MemoryCacheSizeFactor   = 0.7
-	MemoryBatchFactor       = 0.7
-	MemoryPrefetchFactor    = 0.7
+	MaxTargetsLimit         = 500
+	MinTargetsLimit         = 50
+	MaxBatchThreshLimit     = 300
+	MinBatchThreshLimit     = 50
+	MaxPrefetchTargetsLimit = 500
+	MinPrefetchTargetsLimit = 50
 
 	AllowedWeight           = 0.4
 
@@ -78,7 +73,6 @@ var (
 		BatchSaveThreshold int
 		MaxTargets         int
 		PrefetchLimit      int
-		CacheMaxSize       int
 		MemoryLimit        float64
 		LastMemoryUsage    float64
 		mutex              sync.RWMutex
@@ -91,10 +85,6 @@ var (
 	memoryLimitOnce   sync.Once
 
 	targetCache *lru.LruCache[string, string]
-
-	prefixCountCache *lru.LruCache[string, int]
-
-	nodeStatesCache *lru.LruCache[string, map[string][]byte]
 
 	unwrapCache *lru.LruCache[string, UnwrapMap]
 
@@ -164,7 +154,6 @@ type (
 		BlockedUntil       int64          `json:"blocked_until"`
 		Degraded           bool           `json:"degraded"`
 		DegradedFactor     float64        `json:"degraded_factor"`
-		TargetFailureCount map[string]int `json:"target_failure_count"`
 	}
 
 	NodesWithWeights struct {
@@ -328,11 +317,6 @@ func GetEffectiveTarget(host string, dstIP string) (string) {
 	return compute()
 }
 
-// 限制值在指定范围内
-func ClampValue(value, min, max int) int {
-	return int(math.Min(math.Max(float64(value), float64(min)), float64(max)))
-}
-
 // 时间衰减
 func GetTimeDecayWithCache(lastUsedTime int64, now int64, minDecay float64, decayCache map[int64]float64) float64 {
 	fuzzyLastUsedTime := (lastUsedTime / 3600) * 3600
@@ -366,21 +350,6 @@ func GetTimeDecayWithCache(lastUsedTime int64, now int64, minDecay float64, deca
 	return decay
 }
 
-// 根据系统内存计算限制
-func CalculateMemoryBasedLimit(memUsage float64, min, max int, factor float64) int {
-	if memUsage < 0 {
-		memUsage = 0
-	} else if memUsage > 100 {
-		memUsage = 100
-	}
-
-	availFactor := 1.0 - (memUsage / 100.0)
-
-	value := min + int(float64(max-min)*availFactor*factor)
-
-	return ClampValue(value, min, max)
-}
-
 // 获取批量保存阈值
 func GetBatchSaveThreshold() int {
 	globalCacheParams.mutex.RLock()
@@ -407,8 +376,7 @@ func GetSystemMemoryUsage() float64 {
 		memLimit = 100
 	}
 
-	usagePercent := math.Min(inuse/memLimit*100.0, 100.0)
-	return usagePercent
+	return math.Min(inuse/memLimit, 1.0)
 }
 
 // 检查当前实例是否是特定配置的第一个实例

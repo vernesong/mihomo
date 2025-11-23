@@ -10,7 +10,6 @@ import (
 	"github.com/metacubex/mihomo/common/lru"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
-	"github.com/metacubex/mihomo/tunnel"
 )
 
 func InitCache() {
@@ -24,27 +23,16 @@ func InitCache() {
 	globalCacheParams.BatchSaveThreshold = MinBatchThreshLimit
 	globalCacheParams.MaxTargets = MinTargetsLimit
 	globalCacheParams.PrefetchLimit = MinPrefetchTargetsLimit
-	globalCacheParams.CacheMaxSize = MinTargetsLimit + MinPrefetchTargetsLimit
 	globalCacheParams.MemoryLimit = getSystemMemoryLimit()
 
 	dataCache = lru.New[string, interface{}](
-		lru.WithSize[string, interface{}](globalCacheParams.CacheMaxSize),
+		lru.WithSize[string, interface{}](globalCacheParams.MaxTargets),
 		lru.WithAge[string, interface{}](CacheMaxAge),
 	)
 
 	targetCache = lru.New[string, string](
 		lru.WithSize[string, string](globalCacheParams.MaxTargets / 2),
 		lru.WithAge[string, string](CacheMaxAge),
-	)
-
-	prefixCountCache = lru.New[string, int](
-		lru.WithSize[string, int](globalCacheParams.MaxTargets / 2),
-		lru.WithAge[string, int](300),
-	)
-
-	nodeStatesCache = lru.New[string, map[string][]byte](
-		lru.WithSize[string, map[string][]byte](2000),
-		lru.WithAge[string, map[string][]byte](120),
 	)
 
 	unwrapCache = lru.New[string, UnwrapMap](
@@ -545,15 +533,7 @@ func (s *Store) DeleteCacheResult(keyType, config, group, key1, key2 string) {
 
 // 调整缓存参数
 func (s *Store) AdjustCacheParameters() {
-	memoryUsagePercent := GetSystemMemoryUsage()
-	memoryUsage := memoryUsagePercent / 100.0
-
-	smartGroupCount := 0
-	for _, proxy := range tunnel.Proxies() {
-		if proxy.Type() == C.Smart {
-			smartGroupCount++
-		}
-	}
+	memoryUsage := GetSystemMemoryUsage()
 
 	globalCacheParams.mutex.Lock()
 	defer globalCacheParams.mutex.Unlock()
@@ -572,62 +552,29 @@ func (s *Store) AdjustCacheParameters() {
 		return
 	}
 
-	var newCacheSize int
-	var cacheMaxAge int64 = CacheMaxAge
-
 	if memoryUsage > 0.9 {
 		globalCacheParams.MaxTargets = MinTargetsLimit
 		globalCacheParams.BatchSaveThreshold = MinBatchThreshLimit
 		globalCacheParams.PrefetchLimit = MinPrefetchTargetsLimit
-		globalCacheParams.CacheMaxSize = (globalCacheParams.MaxTargets + globalCacheParams.PrefetchLimit) * smartGroupCount
-		newCacheSize = globalCacheParams.CacheMaxSize / 2
-		cacheMaxAge = CacheMaxAge / 2
 	} else {
-		adjustFactor := 4 * memoryUsage * (1 - memoryUsage)
-
-		if memoryUsage > 0.85 {
-			globalCacheParams.MaxTargets = MinTargetsLimit
-			globalCacheParams.BatchSaveThreshold = MinBatchThreshLimit
-			globalCacheParams.PrefetchLimit = MinPrefetchTargetsLimit
-			globalCacheParams.CacheMaxSize = (globalCacheParams.MaxTargets + globalCacheParams.PrefetchLimit) * smartGroupCount
-		} else {
-			value := MinTargetsLimit + int(float64(MaxTargetsLimit-MinTargetsLimit)*adjustFactor*MemoryTargetsFactor)
-			globalCacheParams.MaxTargets = ClampValue(value, MinTargetsLimit, MaxTargetsLimit)
-
-			value = MinBatchThreshLimit + int(float64(MaxBatchThreshLimit-MinBatchThreshLimit)*adjustFactor*MemoryBatchFactor)
-			globalCacheParams.BatchSaveThreshold = ClampValue(value, MinBatchThreshLimit, MaxBatchThreshLimit)
-
-			value = MinPrefetchTargetsLimit + int(float64(MaxPrefetchTargetsLimit-MinPrefetchTargetsLimit)*adjustFactor*MemoryPrefetchFactor)
-			globalCacheParams.PrefetchLimit = ClampValue(value, MinPrefetchTargetsLimit, MaxPrefetchTargetsLimit)
-
-			globalCacheParams.CacheMaxSize = (globalCacheParams.MaxTargets + globalCacheParams.PrefetchLimit) * smartGroupCount
-		}
-
-		newCacheSize = globalCacheParams.CacheMaxSize
+		adjustFactor := 1 - memoryUsage
+		globalCacheParams.MaxTargets = MinTargetsLimit + int(float64(MaxTargetsLimit-MinTargetsLimit)*adjustFactor)
+		globalCacheParams.BatchSaveThreshold = MinBatchThreshLimit + int(float64(MaxBatchThreshLimit-MinBatchThreshLimit)*adjustFactor)
+		globalCacheParams.PrefetchLimit = MinPrefetchTargetsLimit + int(float64(MaxPrefetchTargetsLimit-MinPrefetchTargetsLimit)*adjustFactor)
 	}
 
-	log.Infoln("[SmartStore] Parameters adjusted: MaxTargets=%d, CacheSize=%d, BatchThreshold=%d, PrefetchLimit=%d",
-		globalCacheParams.MaxTargets, globalCacheParams.CacheMaxSize,
+	log.Infoln("[SmartStore] Parameters adjusted: MaxTargets=%d, BatchThreshold=%d, PrefetchLimit=%d",
+		globalCacheParams.MaxTargets,
 		globalCacheParams.BatchSaveThreshold, globalCacheParams.PrefetchLimit)
 
 	newDataCache := lru.New[string, interface{}](
-		lru.WithSize[string, interface{}](newCacheSize),
-		lru.WithAge[string, interface{}](cacheMaxAge),
+		lru.WithSize[string, interface{}](globalCacheParams.MaxTargets),
+		lru.WithAge[string, interface{}](CacheMaxAge),
 	)
 
 	targetCache = lru.New[string, string](
-		lru.WithSize[string, string](globalCacheParams.MaxTargets),
-		lru.WithAge[string, string](cacheMaxAge),
-	)
-
-	prefixCountCache = lru.New[string, int](
-		lru.WithSize[string, int](globalCacheParams.MaxTargets / 2),
-		lru.WithAge[string, int](300),
-	)
-
-	nodeStatesCache = lru.New[string, map[string][]byte](
-		lru.WithSize[string, map[string][]byte](2000),
-		lru.WithAge[string, map[string][]byte](120),
+		lru.WithSize[string, string](globalCacheParams.MaxTargets / 2),
+		lru.WithAge[string, string](CacheMaxAge),
 	)
 
 	unwrapCache = lru.New[string, UnwrapMap](
@@ -694,7 +641,7 @@ func (s *Store) AdjustCacheParameters() {
 		}
 
 		log.Infoln("[SmartStore] Cache adjusted: preserved %d/%d items (%.1f%%) under memory pressure %.1f%%",
-			dataCount, len(entries), float64(dataCount)/float64(len(entries))*100, memoryUsagePercent)
+			dataCount, len(entries), float64(dataCount)/float64(len(entries))*100, memoryUsage*100)
 	}
 
 	globalCacheLock.Lock()
@@ -753,10 +700,6 @@ func ClearCacheByLevel(level string, config string, group string) {
 	}
 
 	targetCache.Clear()
-
-	prefixCountCache.Clear()
-
-	nodeStatesCache.Clear()
 
 	unwrapCache.Clear()
 
