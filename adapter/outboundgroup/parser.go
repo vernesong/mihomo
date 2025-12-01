@@ -186,7 +186,7 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 		strategy := parseStrategy(config)
 		return NewLoadBalance(groupOption, providers, strategy)
 	case "relay":
-		group = NewRelay(groupOption, providers)
+		return nil, fmt.Errorf("%w: The group [%s] with relay type was removed, please using dialer-proxy instead", errType, groupName)
 	case "smart":
 		opts := parseSmartOption(config)
 		return NewSmart(groupOption, providers, opts...)

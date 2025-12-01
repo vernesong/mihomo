@@ -45,6 +45,7 @@ const (
 	Ssh
 	Mieru
 	AnyTLS
+	Sudoku
 )
 
 const (
@@ -232,6 +233,8 @@ func (at AdapterType) String() string {
 		return "Mieru"
 	case AnyTLS:
 		return "AnyTLS"
+	case Sudoku:
+		return "Sudoku"
 	case Relay:
 		return "Relay"
 	case Selector:

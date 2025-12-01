@@ -6,7 +6,7 @@ require (
 	github.com/bahlo/generic-list-go v0.2.0
 	github.com/coreos/go-iptables v0.8.0
 	github.com/dlclark/regexp2 v1.11.5
-	github.com/enfein/mieru/v3 v3.23.0
+	github.com/enfein/mieru/v3 v3.26.0
 	github.com/go-chi/chi/v5 v5.2.3
 	github.com/go-chi/render v1.0.3
 	github.com/gobwas/ws v1.4.0
@@ -32,17 +32,18 @@ require (
 	github.com/metacubex/sing-shadowsocks v0.2.12
 	github.com/metacubex/sing-shadowsocks2 v0.2.7
 	github.com/metacubex/sing-shadowtls v0.0.0-20250503063515-5d9f966d17a2
-	github.com/metacubex/sing-tun v0.4.9
+	github.com/metacubex/sing-tun v0.4.10
 	github.com/metacubex/sing-vmess v0.2.4
 	github.com/metacubex/sing-wireguard v0.0.0-20250503063753-2dc62acc626f
 	github.com/metacubex/smux v0.0.0-20251111013112-03f8d12dafc1
-	github.com/metacubex/tfo-go v0.0.0-20251024101424-368b42b59148
+	github.com/metacubex/tfo-go v0.0.0-20251130171125-413e892ac443
 	github.com/metacubex/utls v1.8.3
 	github.com/metacubex/wireguard-go v0.0.0-20250820062549-a6cecdd7f57f
 	github.com/miekg/dns v1.1.63 // lastest version compatible with golang1.20
 	github.com/mroth/weightedrand/v2 v2.1.0
 	github.com/openacid/low v0.1.21
 	github.com/oschwald/maxminddb-golang v1.12.0 // lastest version compatible with golang1.20
+	github.com/saba-futai/sudoku v0.0.1-g
 	github.com/sagernet/cors v1.2.1
 	github.com/sagernet/netlink v0.0.0-20240612041022-b9a21c07ac6a
 	github.com/samber/lo v1.52.0
@@ -63,6 +64,7 @@ require (
 )
 
 require (
+	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/RyuaNerin/go-krypto v1.3.0 // indirect
 	github.com/Yawning/aez v0.0.0-20211027044916-e49e68abd344 // indirect
 	github.com/ajg/form v1.5.1 // indirect
