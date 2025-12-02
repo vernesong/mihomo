@@ -15,7 +15,7 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 
-	"github.com/dmitryikh/leaves"
+	"github.com/vernesong/leaves"
 )
 
 var (
@@ -66,6 +66,7 @@ func UpdateLgbmModel() (err error) {
 		return fmt.Errorf("can't download LightGBM model file: %w", err)
 	}
 	if oldHash.Equal(hash) {
+		log.Infoln("[Smart] LightGBM model is up to date")
 		return nil
 	}
 	if len(data) == 0 {
@@ -110,11 +111,11 @@ func updateLgbmModel() error {
 var ErrGetLgbmModelUpdateSkip = errors.New("LightGBM model is updating, skip")
 
 func UpdateLgbmModelDatabase() error {
-	log.Infoln("[Smart] Start updating LightGBM model")
-
 	if updatingLgbm.Load() {
 		return ErrGetLgbmModelUpdateSkip
 	}
+
+	log.Infoln("[Smart] Start updating LightGBM model")
 
 	updatingLgbm.Store(true)
 	defer updatingLgbm.Store(false)

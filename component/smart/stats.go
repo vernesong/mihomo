@@ -88,7 +88,7 @@ func (s *Store) GetOrCreateAtomicRecord(cacheKey string, group, config, target, 
 		duration:        atomic.NewFloat64(0),
 		maxUploadRate:   atomic.NewFloat64(0),
 		maxDownloadRate: atomic.NewFloat64(0),
-		weights:         lru.New[string, float64](lru.WithSize[string, float64](100)),
+		weights:         lru.New[string, float64](lru.WithSize[string, float64](50)),
 	}
 	record.lastUsed.Store(time.Now().Unix())
 
@@ -258,8 +258,35 @@ func (r *AtomicStatsRecord) GetWeight(weightType string) float64 {
 	return 0
 }
 
-func (r *AtomicStatsRecord) SetWeight(weightType string, value float64) {
+func (r *AtomicStatsRecord) SetWeight(weightType string, value float64, isUDP bool) {
 	r.weights.Set(weightType, value)
+	if weightType != WeightTypeTCP && weightType != WeightTypeUDP {
+		if isUDP {
+			minUDP := r.minASNWeight(WeightTypeUDP)
+			if minUDP > 0 {
+				r.weights.Set(WeightTypeUDP, minUDP)
+			}
+		} else {
+			minTCP := r.minASNWeight(WeightTypeTCP)
+			if minTCP > 0 {
+				r.weights.Set(WeightTypeTCP, minTCP)
+			}
+		}
+	}
+}
+
+func (r *AtomicStatsRecord) minASNWeight(prefix string) float64 {
+	min := 0.0
+	weights := r.weights.FilterByKeyPrefix(prefix)
+	for k, v := range weights {
+		if k == prefix {
+			continue
+		}
+		if min == 0.0 || v < min {
+			min = v
+		}
+	}
+	return min
 }
 
 // 获取节点权重排名缓存
@@ -436,16 +463,6 @@ func (s *Store) GetBestProxyForTarget(group, config, target, asnNumber string, i
 	weightType := WeightTypeTCP
 	if isUDP {
 		weightType = WeightTypeUDP
-	}
-
-	stateData, _ := s.GetNodeStates(group, config)
-	for _, data := range stateData {
-		var state NodeState
-		if err := json.Unmarshal(data, &state); err == nil {
-			if state.BlockedUntil > 0 && state.BlockedUntil > now {
-				continue
-			}
-		}
 	}
 
 	nodesWithWeight := make(map[string]float64)

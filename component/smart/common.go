@@ -46,12 +46,12 @@ const (
 	CacheMaxAge             = 21600
 	PrefetchCacheMaxAge     = 72 * 3600
 
-	MaxTargetsLimit         = 500
-	MinTargetsLimit         = 50
-	MaxBatchThreshLimit     = 300
+	MaxTargetsLimit         = 1000
+	MinTargetsLimit         = 100
+	MaxBatchThreshLimit     = 200
 	MinBatchThreshLimit     = 50
 	MaxPrefetchTargetsLimit = 500
-	MinPrefetchTargetsLimit = 50
+	MinPrefetchTargetsLimit = 100
 
 	AllowedWeight           = 0.4
 

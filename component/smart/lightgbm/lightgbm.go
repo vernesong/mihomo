@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dmitryikh/leaves"
+	"github.com/vernesong/leaves"
 	"github.com/metacubex/mihomo/common/singleflight"
 	mihomoHttp "github.com/metacubex/mihomo/component/http"
 	"github.com/metacubex/mihomo/component/smart"
@@ -525,17 +525,11 @@ func (m *WeightModel) loadModel(path string) error {
 func ReloadModel() {
 	if smartModel != nil {
 		success, err, _ := reloadModel.Do("reload", func() (bool, error) {
-			smartModel.mutex.Lock()
-			defer smartModel.mutex.Unlock()
-
 			modelPath := C.Path.SmartModel()
-
 			if _, err := os.Stat(modelPath); err == nil {
 				if err := smartModel.loadModel(modelPath); err != nil {
-					log.Errorln("[Smart] Failed to reload Model.bin: %v", err)
 					return false, err
 				} else {
-					log.Infoln("[Smart] Model.bin reloaded successfully")
 					return true, nil
 				}
 			}
