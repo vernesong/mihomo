@@ -12,8 +12,6 @@ import (
 	"sync"
 
 	N "github.com/metacubex/mihomo/common/net"
-	"github.com/metacubex/mihomo/component/dialer"
-	"github.com/metacubex/mihomo/component/proxydialer"
 	C "github.com/metacubex/mihomo/constant"
 
 	"github.com/metacubex/randv2"
@@ -44,14 +42,7 @@ type SshOption struct {
 }
 
 func (s *Ssh) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, err error) {
-	var cDialer C.Dialer = dialer.NewDialer(s.DialOptions()...)
-	if len(s.option.DialerProxy) > 0 {
-		cDialer, err = proxydialer.NewByName(s.option.DialerProxy, cDialer)
-		if err != nil {
-			return nil, err
-		}
-	}
-	client, err := s.connect(ctx, cDialer, s.addr)
+	client, err := s.connect(ctx, s.addr)
 	if err != nil {
 		return nil, err
 	}
@@ -63,13 +54,13 @@ func (s *Ssh) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, 
 	return NewConn(c, s), nil
 }
 
-func (s *Ssh) connect(ctx context.Context, cDialer C.Dialer, addr string) (client *ssh.Client, err error) {
+func (s *Ssh) connect(ctx context.Context, addr string) (client *ssh.Client, err error) {
 	s.cMutex.Lock()
 	defer s.cMutex.Unlock()
 	if s.client != nil {
 		return s.client, nil
 	}
-	c, err := cDialer.DialContext(ctx, "tcp", addr)
+	c, err := s.dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -203,6 +194,6 @@ func NewSsh(option SshOption) (*Ssh, error) {
 		option: &option,
 		config: &config,
 	}
-
+	outbound.dialer = option.NewDialer(outbound.DialOptions())
 	return outbound, nil
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/proxydialer"
+	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 	mihomoNtp "github.com/metacubex/mihomo/ntp"
 
@@ -36,9 +37,13 @@ func ReCreateNTPService(server string, interval time.Duration, dialerProxy strin
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	var cDialer C.Dialer = dialer.NewDialer()
+	if dialerProxy != "" {
+		cDialer = proxydialer.NewByName(dialerProxy)
+	}
 	globalSrv = &Service{
 		server:         M.ParseSocksaddr(server),
-		dialer:         proxydialer.NewByNameSingDialer(dialerProxy, dialer.NewDialer()),
+		dialer:         proxydialer.NewSingDialer(cDialer),
 		ticker:         time.NewTicker(interval * time.Minute),
 		ctx:            ctx,
 		cancel:         cancel,

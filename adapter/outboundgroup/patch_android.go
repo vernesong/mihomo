@@ -35,18 +35,6 @@ func (lb *LoadBalance) Now() string {
 	return ""
 }
 
-func (r *Relay) Providers() []P.ProxyProvider {
-	return r.providers
-}
-
-func (r *Relay) Proxies() []C.Proxy {
-	return r.GetProxies(false)
-}
-
-func (r *Relay) Now() string {
-	return ""
-}
-
 func (s *Selector) Providers() []P.ProxyProvider {
 	return s.providers
 }

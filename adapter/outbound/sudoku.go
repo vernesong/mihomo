@@ -11,17 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/metacubex/mihomo/log"
-
 	"github.com/saba-futai/sudoku/apis"
 	"github.com/saba-futai/sudoku/pkg/crypto"
 	"github.com/saba-futai/sudoku/pkg/obfs/httpmask"
 	"github.com/saba-futai/sudoku/pkg/obfs/sudoku"
 
 	N "github.com/metacubex/mihomo/common/net"
-	"github.com/metacubex/mihomo/component/dialer"
-	"github.com/metacubex/mihomo/component/proxydialer"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/log"
 )
 
 type Sudoku struct {
@@ -45,25 +42,13 @@ type SudokuOption struct {
 }
 
 // DialContext implements C.ProxyAdapter
-func (s *Sudoku) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {
-	return s.DialContextWithDialer(ctx, dialer.NewDialer(s.DialOptions()...), metadata)
-}
-
-// DialContextWithDialer implements C.ProxyAdapter
-func (s *Sudoku) DialContextWithDialer(ctx context.Context, d C.Dialer, metadata *C.Metadata) (_ C.Conn, err error) {
-	if len(s.option.DialerProxy) > 0 {
-		d, err = proxydialer.NewByName(s.option.DialerProxy, d)
-		if err != nil {
-			return nil, err
-		}
-	}
-
+func (s *Sudoku) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, err error) {
 	cfg, err := s.buildConfig(metadata)
 	if err != nil {
 		return nil, err
 	}
 
-	c, err := d.DialContext(ctx, "tcp", s.addr)
+	c, err := s.dialer.DialContext(ctx, "tcp", s.addr)
 	if err != nil {
 		return nil, fmt.Errorf("%s connect error: %w", s.addr, err)
 	}
@@ -93,11 +78,6 @@ func (s *Sudoku) ListenPacketContext(ctx context.Context, metadata *C.Metadata) 
 // SupportUOT implements C.ProxyAdapter
 func (s *Sudoku) SupportUOT() bool {
 	return false // Sudoku protocol only supports TCP
-}
-
-// SupportWithDialer implements C.ProxyAdapter
-func (s *Sudoku) SupportWithDialer() C.NetWork {
-	return C.TCP
 }
 
 // ProxyInfo implements C.ProxyAdapter
@@ -206,7 +186,7 @@ func NewSudoku(option SudokuOption) (*Sudoku, error) {
 		baseConf.AEADMethod = option.AEADMethod
 	}
 
-	return &Sudoku{
+	outbound := &Sudoku{
 		Base: &Base{
 			name:   option.Name,
 			addr:   baseConf.ServerAddress,
@@ -221,7 +201,9 @@ func NewSudoku(option SudokuOption) (*Sudoku, error) {
 		option:   &option,
 		table:    table,
 		baseConf: baseConf,
-	}, nil
+	}
+	outbound.dialer = option.NewDialer(outbound.DialOptions())
+	return outbound, nil
 }
 
 func buildSudokuHandshakePayload(key string) [16]byte {

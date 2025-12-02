@@ -9,8 +9,6 @@ import (
 	"sync"
 
 	CN "github.com/metacubex/mihomo/common/net"
-	"github.com/metacubex/mihomo/component/dialer"
-	"github.com/metacubex/mihomo/component/proxydialer"
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
 
@@ -130,20 +128,12 @@ func (m *Mieru) ensureClientIsRunning() error {
 	}
 
 	// Create a dialer and add it to the client config, before starting the client.
-	var dialer C.Dialer = dialer.NewDialer(m.DialOptions()...)
-	var err error
-	if len(m.option.DialerProxy) > 0 {
-		dialer, err = proxydialer.NewByName(m.option.DialerProxy, dialer)
-		if err != nil {
-			return err
-		}
-	}
 	config, err := m.client.Load()
 	if err != nil {
 		return err
 	}
-	config.Dialer = dialer
-	config.PacketDialer = mieruPacketDialer{Dialer: dialer}
+	config.Dialer = m.dialer
+	config.PacketDialer = mieruPacketDialer{Dialer: m.dialer}
 	config.Resolver = mieruDNSResolver{prefer: m.prefer}
 	if err := m.client.Store(config); err != nil {
 		return err
@@ -187,6 +177,7 @@ func NewMieru(option MieruOption) (*Mieru, error) {
 		option: &option,
 		client: c,
 	}
+	outbound.dialer = option.NewDialer(outbound.DialOptions())
 	return outbound, nil
 }
 
