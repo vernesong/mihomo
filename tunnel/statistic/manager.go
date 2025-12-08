@@ -133,6 +133,11 @@ type Snapshot struct {
 
 func (m *Manager) joinSmartTarget(c Tracker) {
 	target := c.Info().Metadata.SmartTarget
+
+	if target == "" {
+		return
+	}
+
 	result, _ := m.smartTarget.LoadOrStore(target, xsync.NewMap[string, bool]())
 	result.Store(c.ID(), true)
 
@@ -145,11 +150,18 @@ func (m *Manager) joinSmartTarget(c Tracker) {
 
 func (m *Manager) leaveSmartTarget(c Tracker) {
 	target := c.Info().Metadata.SmartTarget
+
+	if target == "" {
+		return
+	}
+
 	m.smartTarget.Compute(target, func(result *xsync.Map[string, bool], loaded bool) (*xsync.Map[string, bool], xsync.ComputeOp) {
 		if loaded {
 			result.Delete(c.ID())
 			if result.Size() == 0 {
 				return result, xsync.DeleteOp
+			} else {
+				return result, xsync.UpdateOp
 			}
 		}
 		return result, xsync.CancelOp
@@ -162,6 +174,8 @@ func (m *Manager) leaveSmartTarget(c Tracker) {
 				result.Delete(c.ID())
 				if result.Size() == 0 {
 					return result, xsync.DeleteOp
+				} else {
+					return result, xsync.UpdateOp
 				}
 			}
 			return result, xsync.CancelOp

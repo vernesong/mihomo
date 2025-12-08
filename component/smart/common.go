@@ -48,10 +48,8 @@ const (
 
 	MaxTargetsLimit         = 1000
 	MinTargetsLimit         = 100
-	MaxBatchThreshLimit     = 200
+	MaxBatchThreshLimit     = 300
 	MinBatchThreshLimit     = 50
-	MaxPrefetchTargetsLimit = 500
-	MinPrefetchTargetsLimit = 100
 
 	AllowedWeight           = 0.4
 
@@ -72,14 +70,10 @@ var (
 	globalCacheParams struct {
 		BatchSaveThreshold int
 		MaxTargets         int
-		PrefetchLimit      int
 		MemoryLimit        float64
 		LastMemoryUsage    float64
 		mutex              sync.RWMutex
 	}
-
-	dataCache       *lru.LruCache[string, interface{}]
-	globalCacheLock sync.RWMutex
 
 	cachedMemoryLimit float64
 	memoryLimitOnce   sync.Once
@@ -89,6 +83,8 @@ var (
 	unwrapCache *lru.LruCache[string, UnwrapMap]
 
 	recordCache *lru.LruCache[string, *AtomicStatsRecord]
+
+	dbResultCache *lru.LruCache[string, map[string][]byte]
 )
 
 var CdnASNs = map[string]bool{
@@ -189,17 +185,10 @@ func NewStore(newdb *bbolt.DB) *Store {
 	return &Store{}
 }
 
-// 格式化缓存键
-func FormatCacheKey(keyType, config, group string, parts ...string) string {
-	elements := []string{keyType, config, group}
-	elements = append(elements, parts...)
-	return strings.Join(elements, ":")
-}
-
 // 格式化数据库键
-func FormatDBKey(first string, parts ...string) string {
+func FormatDBKey(parts ...string) string {
 	elements := make([]string, 0, len(parts)+1)
-	elements = append(elements, first)
+	elements = append(elements, "smart")
 
 	for _, part := range parts {
 		if part != "" {
@@ -535,20 +524,20 @@ func (s *Store) FlushByLevel(level string, config string, group string) error {
 		filterQueueByGroup(group, config)
 	}
 
-	ClearCacheByLevel(level, config, group)
+	s.clearCache(level, config, group)
 
 	if level == "all" {
-		s.DeleteByPath("smart")
+		s.DeleteByPath("smart", false)
 	} else if level == "config" {
-		s.DeleteByPath(FormatDBKey("smart", KeyTypeStats, config))
-		s.DeleteByPath(FormatDBKey("smart", KeyTypeNode, config))
-		s.DeleteByPath(FormatDBKey("smart", KeyTypeRanking, config))
-		s.DeleteByPath(FormatDBKey("smart", KeyTypePrefetch, config))
+		s.DeleteByPath(FormatDBKey(KeyTypeStats, config), false)
+		s.DeleteByPath(FormatDBKey(KeyTypeNode, config), false)
+		s.DeleteByPath(FormatDBKey(KeyTypeRanking, config), false)
+		s.DeleteByPath(FormatDBKey(KeyTypePrefetch, config), false)
 	} else if level == "group" {
-		s.DeleteByPath(FormatDBKey("smart", KeyTypeStats, config, group, ""))
-		s.DeleteByPath(FormatDBKey("smart", KeyTypeNode, config, group, ""))
-		s.DeleteByPath(FormatDBKey("smart", KeyTypeRanking, config, group, ""))
-		s.DeleteByPath(FormatDBKey("smart", KeyTypePrefetch, config, group, ""))
+		s.DeleteByPath(FormatDBKey(KeyTypeStats, config, group), false)
+		s.DeleteByPath(FormatDBKey(KeyTypeNode, config, group), false)
+		s.DeleteByPath(FormatDBKey(KeyTypeRanking, config, group), false)
+		s.DeleteByPath(FormatDBKey(KeyTypePrefetch, config, group), false)
 	}
 
 	return nil
