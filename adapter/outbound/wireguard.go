@@ -609,6 +609,13 @@ func (w *WireGuard) ResolveUDP(ctx context.Context, metadata *C.Metadata) error 
 	return nil
 }
 
+// ProxyInfo implements C.ProxyAdapter
+func (w *WireGuard) ProxyInfo() C.ProxyInfo {
+	info := w.Base.ProxyInfo()
+	info.DialerProxy = w.option.DialerProxy
+	return info
+}
+
 // IsL3Protocol implements C.ProxyAdapter
 func (w *WireGuard) IsL3Protocol(metadata *C.Metadata) bool {
 	return true
