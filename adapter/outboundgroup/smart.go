@@ -514,6 +514,15 @@ func (s *Smart) fillProxies(selected []C.Proxy, weights map[string]float64, all 
 		}
 	}
 
+	if len(selected) == 0 {
+		for _, idx := range indexes {
+			selected = append(selected, all[idx])
+			if len(selected) >= minCount {
+				break
+			}
+		}
+	}
+
 	return selected
 }
 
