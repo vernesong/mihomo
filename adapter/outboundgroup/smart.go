@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"math/rand"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1657,25 +1658,28 @@ func (s *Smart) getASNCode(metadata *C.Metadata) string {
 		if !s.preferASN {
 			return ""
 		}
+		var ip netip.Addr
 		if metadata.Host != "" && !metadata.Resolved() {
-            ctx, cancel := context.WithTimeout(context.Background(), resolver.DefaultDNSTimeout)
-            defer cancel()
-            ip, err := resolver.ResolveIP(ctx, metadata.Host)
-            if err != nil {
-                log.Debugln("[DNS] resolve %s error: %s", metadata.Host, err.Error())
-                metadata.DstIPASN = "unknown"
+			ctx, cancel := context.WithTimeout(context.Background(), resolver.DefaultDNSTimeout)
+			defer cancel()
+			var err error
+			ip, err = resolver.ResolveIP(ctx, metadata.Host)
+			if err != nil {
+				log.Debugln("[DNS] resolve %s error: %s", metadata.Host, err.Error())
+				metadata.DstIPASN = "unknown"
 				return ""
-            } else {
-                log.Debugln("[DNS] %s --> %s", metadata.Host, ip.String())
+			} else {
+				log.Debugln("[DNS] %s --> %s", metadata.Host, ip.String())
 				if !ip.IsValid() {
 					metadata.DstIPASN = "unknown"
 					return ""
 				}
-                metadata.DstIP = ip
-            }
-        }
+			}
+		} else {
+			ip = metadata.DstIP
+		}
 
-		asn, aso := mmdb.ASNInstance().LookupASN(metadata.DstIP.AsSlice())
+		asn, aso := mmdb.ASNInstance().LookupASN(ip.AsSlice())
 		if asn == "" {
 			metadata.DstIPASN = "unknown"
 		} else {
