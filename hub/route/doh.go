@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"io"
-	"net/http"
 
 	"github.com/metacubex/mihomo/component/resolver"
 
-	"github.com/go-chi/render"
+	"github.com/metacubex/chi/render"
+	"github.com/metacubex/http"
 )
 
 func dohRouter() http.Handler {

@@ -3,12 +3,12 @@ package route
 import (
 	"context"
 	"math"
-	"net/http"
 
 	"github.com/metacubex/mihomo/component/resolver"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/render"
+	"github.com/metacubex/chi"
+	"github.com/metacubex/chi/render"
+	"github.com/metacubex/http"
 	"github.com/miekg/dns"
 	"github.com/samber/lo"
 )

@@ -3,17 +3,18 @@ package outbound
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"strconv"
 
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/component/ca"
 	C "github.com/metacubex/mihomo/constant"
+
+	"github.com/metacubex/http"
+	"github.com/metacubex/tls"
 )
 
 type Http struct {

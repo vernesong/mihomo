@@ -4,12 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"net/netip"
 	"strconv"
 	"sync"
@@ -23,13 +21,13 @@ import (
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/ech"
 	"github.com/metacubex/mihomo/component/generator"
-	tlsC "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/render"
+	"github.com/metacubex/chi"
+	"github.com/metacubex/chi/render"
+	"github.com/metacubex/http"
+	"github.com/metacubex/tls"
 	"github.com/stretchr/testify/assert"
-	"golang.org/x/net/http2"
 )
 
 var httpPath = "/inbound_test"
@@ -157,9 +155,9 @@ func NewHttpTestTunnel() *TestTunnel {
 		io.Copy(io.Discard, r.Body)
 		render.Data(w, r, httpData[:size])
 	})
-	h2Server := &http2.Server{}
+	//h2Server := &http.Http2Server{}
 	server := http.Server{Handler: r}
-	_ = http2.ConfigureServer(&server, h2Server)
+	//_ = http.Http2ConfigureServer(&server, h2Server)
 	go server.Serve(ln)
 	testFn := func(t *testing.T, proxy C.ProxyAdapter, proto string, size int) {
 		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s://%s%s?size=%d", proto, remoteAddr, httpPath, size), bytes.NewReader(httpData[:size]))
@@ -216,6 +214,9 @@ func NewHttpTestTunnel() *TestTunnel {
 		defer resp.Body.Close()
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		if proto == "https" { // ensure server using http2
+			assert.Equal(t, 2, resp.ProtoMajor)
+		}
 
 		data, err := io.ReadAll(resp.Body)
 		if !assert.NoError(t, err) {
@@ -268,7 +269,7 @@ func NewHttpTestTunnel() *TestTunnel {
 				ch:   make(chan struct{}),
 			}
 			if metadata.DstPort == 443 {
-				tlsConn := tlsC.Server(c, tlsC.UConfig(tlsConfig))
+				tlsConn := tls.Server(c, tlsConfig)
 				if metadata.Host == realityDest { // ignore the tls handshake error for realityDest
 					if realityRealDial {
 						rconn, err := dialer.DialContext(ctx, "tcp", metadata.RemoteAddress())
@@ -284,11 +285,12 @@ func NewHttpTestTunnel() *TestTunnel {
 				if err := tlsConn.HandshakeContext(ctx); err != nil {
 					return
 				}
-				if tlsConn.ConnectionState().NegotiatedProtocol == http2.NextProtoTLS {
-					h2Server.ServeConn(tlsConn, &http2.ServeConnOpts{BaseConfig: &server})
-				} else {
-					ln.ch <- tlsConn
-				}
+				//if tlsConn.ConnectionState().NegotiatedProtocol == http.Http2NextProtoTLS {
+				//	h2Server.ServeConn(tlsConn, &http.Http2ServeConnOpts{BaseConfig: &server})
+				//} else {
+				//	ln.ch <- tlsConn
+				//}
+				ln.ch <- tlsConn
 			} else {
 				ln.ch <- c
 			}

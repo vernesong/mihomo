@@ -2,7 +2,6 @@ package outbound
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -13,7 +12,6 @@ import (
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/proxydialer"
-	tlsC "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 	tuicCommon "github.com/metacubex/mihomo/transport/tuic/common"
@@ -21,6 +19,7 @@ import (
 	"github.com/metacubex/quic-go"
 	"github.com/metacubex/sing-quic/hysteria2"
 	M "github.com/metacubex/sing/common/metadata"
+	"github.com/metacubex/tls"
 )
 
 func init() {
@@ -157,7 +156,7 @@ func NewHysteria2(option Hysteria2Option) (*Hysteria2, error) {
 		tlsConfig.NextProtos = option.ALPN
 	}
 
-	tlsClientConfig := tlsC.UConfig(tlsConfig)
+	tlsClientConfig := tlsConfig
 	echConfig, err := option.ECHOpts.Parse()
 	if err != nil {
 		return nil, err

@@ -2,7 +2,6 @@ package outbound
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"math"
 	"net"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/ech"
-	tlsC "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/tuic"
 
@@ -19,6 +17,7 @@ import (
 	"github.com/metacubex/quic-go"
 	M "github.com/metacubex/sing/common/metadata"
 	"github.com/metacubex/sing/common/uot"
+	"github.com/metacubex/tls"
 )
 
 type Tuic struct {
@@ -26,7 +25,7 @@ type Tuic struct {
 	option *TuicOption
 	client *tuic.PoolClient
 
-	tlsConfig *tlsC.Config
+	tlsConfig *tls.Config
 	echConfig *ech.Config
 }
 
@@ -233,7 +232,7 @@ func NewTuic(option TuicOption) (*Tuic, error) {
 		tlsConfig.InsecureSkipVerify = true // tls: either ServerName or InsecureSkipVerify must be specified in the tls.Config
 	}
 
-	tlsClientConfig := tlsC.UConfig(tlsConfig)
+	tlsClientConfig := tlsConfig
 	echConfig, err := option.ECHOpts.Parse()
 	if err != nil {
 		return nil, err

@@ -9,6 +9,7 @@ import (
 	"github.com/metacubex/mihomo/adapter/inbound"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
+	"github.com/metacubex/mihomo/listener/sing"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/transport/socks5"
 	"github.com/metacubex/mihomo/transport/sudoku"
@@ -19,6 +20,7 @@ type Listener struct {
 	addr      string
 	closed    bool
 	protoConf sudoku.ProtocolConfig
+	handler   *sing.ListenerHandler
 }
 
 // RawAddress implements C.Listener
@@ -59,7 +61,8 @@ func (l *Listener) handleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbou
 			_ = session.Conn.Close()
 			return
 		}
-		tunnel.HandleTCPConn(inbound.NewSocket(targetAddr, session.Conn, C.SUDOKU, additions...))
+		l.handler.HandleSocket(targetAddr, session.Conn, additions...)
+		//tunnel.HandleTCPConn(inbound.NewSocket(targetAddr, session.Conn, C.SUDOKU, additions...))
 	}
 }
 
@@ -122,6 +125,17 @@ func New(config LC.SudokuServer, tunnel C.Tunnel, additions ...inbound.Addition)
 		}
 	}
 
+	// Using sing handler for sing-mux support
+	h, err := sing.NewListenerHandler(sing.ListenerConfig{
+		Tunnel:    tunnel,
+		Type:      C.SUDOKU,
+		Additions: additions,
+		MuxOption: config.MuxOption,
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	l, err := inbound.Listen("tcp", config.Listen)
 	if err != nil {
 		return nil, err
@@ -152,7 +166,7 @@ func New(config LC.SudokuServer, tunnel C.Tunnel, additions ...inbound.Addition)
 		enablePureDownlink = *config.EnablePureDownlink
 	}
 
-	table, err := sudoku.NewTableWithCustom(config.Key, tableType, config.CustomTable)
+	tables, err := sudoku.NewTablesWithCustomPatterns(config.Key, tableType, config.CustomTable, config.CustomTables)
 	if err != nil {
 		_ = l.Close()
 		return nil, err
@@ -166,11 +180,15 @@ func New(config LC.SudokuServer, tunnel C.Tunnel, additions ...inbound.Addition)
 	protoConf := sudoku.ProtocolConfig{
 		Key:                     config.Key,
 		AEADMethod:              defaultConf.AEADMethod,
-		Table:                   table,
 		PaddingMin:              paddingMin,
 		PaddingMax:              paddingMax,
 		EnablePureDownlink:      enablePureDownlink,
 		HandshakeTimeoutSeconds: handshakeTimeout,
+	}
+	if len(tables) == 1 {
+		protoConf.Table = tables[0]
+	} else {
+		protoConf.Tables = tables
 	}
 	if config.AEADMethod != "" {
 		protoConf.AEADMethod = config.AEADMethod
@@ -180,6 +198,7 @@ func New(config LC.SudokuServer, tunnel C.Tunnel, additions ...inbound.Addition)
 		listener:  l,
 		addr:      config.Listen,
 		protoConf: protoConf,
+		handler:   h,
 	}
 
 	go func() {

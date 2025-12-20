@@ -2,7 +2,6 @@ package sing_shadowtls
 
 import (
 	"context"
-	"crypto/tls"
 	"net"
 
 	"github.com/metacubex/mihomo/component/ca"
@@ -10,6 +9,7 @@ import (
 	"github.com/metacubex/mihomo/log"
 
 	"github.com/metacubex/sing-shadowtls"
+	"github.com/metacubex/tls"
 	"golang.org/x/exp/slices"
 )
 

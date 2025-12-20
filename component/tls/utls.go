@@ -1,13 +1,16 @@
 package tls
 
 import (
-	"crypto/tls"
+	"context"
 	"net"
+	"reflect"
+	"unsafe"
 
 	"github.com/metacubex/mihomo/common/once"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/log"
 
+	"github.com/metacubex/tls"
 	utls "github.com/metacubex/utls"
 	"github.com/mroth/weightedrand/v2"
 )
@@ -126,8 +129,11 @@ type EncryptedClientHelloKey = utls.EncryptedClientHelloKey
 
 type Config = utls.Config
 
+var tlsCertificateRequestInfoCtxOffset = utils.MustOK(reflect.TypeOf((*tls.CertificateRequestInfo)(nil)).Elem().FieldByName("ctx")).Offset
+var tlsClientHelloInfoCtxOffset = utils.MustOK(reflect.TypeOf((*tls.ClientHelloInfo)(nil)).Elem().FieldByName("ctx")).Offset
+
 func UConfig(config *tls.Config) *utls.Config {
-	return &utls.Config{
+	cfg := &utls.Config{
 		Rand:                  config.Rand,
 		Time:                  config.Time,
 		Certificates:          utils.Map(config.Certificates, UCertificate),
@@ -147,6 +153,52 @@ func UConfig(config *tls.Config) *utls.Config {
 		SessionTicketsDisabled: config.SessionTicketsDisabled,
 		Renegotiation:          utls.RenegotiationSupport(config.Renegotiation),
 	}
+	if config.GetClientCertificate != nil {
+		cfg.GetClientCertificate = func(info *utls.CertificateRequestInfo) (*utls.Certificate, error) {
+			tlsInfo := &tls.CertificateRequestInfo{
+				AcceptableCAs: info.AcceptableCAs,
+				SignatureSchemes: utils.Map(info.SignatureSchemes, func(it utls.SignatureScheme) tls.SignatureScheme {
+					return tls.SignatureScheme(it)
+				}),
+				Version: info.Version,
+			}
+			*(*context.Context)(unsafe.Add(unsafe.Pointer(tlsInfo), tlsCertificateRequestInfoCtxOffset)) = info.Context() // for tlsInfo.ctx
+			cert, err := config.GetClientCertificate(tlsInfo)
+			if err != nil {
+				return nil, err
+			}
+			uCert := UCertificate(*cert)
+			return &uCert, err
+		}
+	}
+	if config.GetCertificate != nil {
+		cfg.GetCertificate = func(info *utls.ClientHelloInfo) (*utls.Certificate, error) {
+			tlsInfo := &tls.ClientHelloInfo{
+				CipherSuites: info.CipherSuites,
+				ServerName:   info.ServerName,
+				SupportedCurves: utils.Map(info.SupportedCurves, func(it utls.CurveID) tls.CurveID {
+					return tls.CurveID(it)
+				}),
+				SupportedPoints: info.SupportedPoints,
+				SignatureSchemes: utils.Map(info.SignatureSchemes, func(it utls.SignatureScheme) tls.SignatureScheme {
+					return tls.SignatureScheme(it)
+				}),
+				SupportedProtos:   info.SupportedProtos,
+				SupportedVersions: info.SupportedVersions,
+				Extensions:        info.Extensions,
+				Conn:              info.Conn,
+				//HelloRetryRequest: info.HelloRetryRequest,
+			}
+			*(*context.Context)(unsafe.Add(unsafe.Pointer(tlsInfo), tlsClientHelloInfoCtxOffset)) = info.Context() // for tlsInfo.ctx
+			cert, err := config.GetCertificate(tlsInfo)
+			if err != nil {
+				return nil, err
+			}
+			uCert := UCertificate(*cert)
+			return &uCert, err
+		}
+	}
+	return cfg
 }
 
 // BuildWebsocketHandshakeState it will only send http/1.1 in its ALPN.

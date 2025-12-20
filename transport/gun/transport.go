@@ -5,11 +5,11 @@ import (
 	"net"
 	"sync"
 
-	"golang.org/x/net/http2"
+	"github.com/metacubex/http"
 )
 
 type TransportWrap struct {
-	*http2.Transport
+	*http.Http2Transport
 	ctx       context.Context
 	cancel    context.CancelFunc
 	closeOnce sync.Once
@@ -18,7 +18,7 @@ type TransportWrap struct {
 func (tw *TransportWrap) Close() error {
 	tw.closeOnce.Do(func() {
 		tw.cancel()
-		closeTransport(tw.Transport)
+		closeTransport(tw.Http2Transport)
 	})
 	return nil
 }

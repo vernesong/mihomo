@@ -15,17 +15,17 @@ import (
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/pool"
 	"github.com/metacubex/mihomo/common/xsync"
-	tlsC "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/transport/tuic/common"
 
 	"github.com/metacubex/quic-go"
 	"github.com/metacubex/randv2"
+	"github.com/metacubex/tls"
 )
 
 type ClientOption struct {
-	TlsConfig             *tlsC.Config
+	TlsConfig             *tls.Config
 	QuicConfig            *quic.Config
 	Uuid                  [16]byte
 	Password              string

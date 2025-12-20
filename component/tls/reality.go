@@ -10,22 +10,21 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/sha512"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"net"
-	"net/http"
 	"strings"
 	"time"
 
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/ntp"
 
+	"github.com/metacubex/http"
 	"github.com/metacubex/randv2"
+	"github.com/metacubex/tls"
 	utls "github.com/metacubex/utls"
 	"golang.org/x/crypto/hkdf"
-	"golang.org/x/net/http2"
 )
 
 const RealityMaxShortIDLen = 8
@@ -37,13 +36,14 @@ type RealityConfig struct {
 	SupportX25519MLKEM768 bool
 }
 
-func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHelloID, tlsConfig *Config, realityConfig *RealityConfig) (net.Conn, error) {
+func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHelloID, serverName string, realityConfig *RealityConfig) (net.Conn, error) {
 	for retry := 0; ; retry++ {
 		verifier := &realityVerifier{
-			serverName: tlsConfig.ServerName,
+			serverName: serverName,
 		}
 		uConfig := &utls.Config{
-			ServerName:             tlsConfig.ServerName,
+			Time:                   ntp.Now,
+			ServerName:             serverName,
 			InsecureSkipVerify:     true,
 			SessionTicketsDisabled: true,
 			VerifyPeerCertificate:  verifier.VerifyPeerCertificate,
@@ -132,7 +132,7 @@ func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHello
 func realityClientFallback(uConn net.Conn, serverName string, fingerprint utls.ClientHelloID) {
 	defer uConn.Close()
 	client := http.Client{
-		Transport: &http2.Transport{
+		Transport: &http.Http2Transport{
 			DialTLSContext: func(ctx context.Context, network, addr string, config *tls.Config) (net.Conn, error) {
 				return uConn, nil
 			},

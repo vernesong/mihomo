@@ -3,7 +3,6 @@ package gun
 import (
 	"io"
 	"net"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -12,8 +11,8 @@ import (
 	N "github.com/metacubex/mihomo/common/net"
 	C "github.com/metacubex/mihomo/constant"
 
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
+	"github.com/metacubex/http"
+	"github.com/metacubex/http/h2c"
 )
 
 const idleTimeout = 30 * time.Second
@@ -72,7 +71,7 @@ func NewServerHandler(options ServerOption) http.Handler {
 		}
 
 		httpHandler.ServeHTTP(writer, request)
-	}), &http2.Server{
+	}), &http.Http2Server{
 		IdleTimeout: idleTimeout,
 	})
 }

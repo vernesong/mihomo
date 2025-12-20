@@ -13,7 +13,6 @@ import (
 	"github.com/metacubex/mihomo/common/buf"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/ech"
-	tlsC "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/sing"
@@ -24,13 +23,14 @@ import (
 	"github.com/metacubex/sing/common/auth"
 	"github.com/metacubex/sing/common/bufio"
 	M "github.com/metacubex/sing/common/metadata"
+	"github.com/metacubex/tls"
 )
 
 type Listener struct {
 	closed    bool
 	config    LC.AnyTLSServer
 	listeners []net.Listener
-	tlsConfig *tlsC.Config
+	tlsConfig *tls.Config
 	userMap   map[[32]byte]string
 	padding   atomic.Pointer[padding.PaddingFactory]
 }
@@ -43,29 +43,31 @@ func New(config LC.AnyTLSServer, tunnel C.Tunnel, additions ...inbound.Addition)
 		}
 	}
 
-	tlsConfig := &tlsC.Config{Time: ntp.Now}
+	tlsConfig := &tls.Config{Time: ntp.Now}
 	if config.Certificate != "" && config.PrivateKey != "" {
-		cert, err := ca.LoadTLSKeyPair(config.Certificate, config.PrivateKey, C.Path)
+		certLoader, err := ca.NewTLSKeyPairLoader(config.Certificate, config.PrivateKey)
 		if err != nil {
 			return nil, err
 		}
-		tlsConfig.Certificates = []tlsC.Certificate{tlsC.UCertificate(cert)}
+		tlsConfig.GetCertificate = func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return certLoader()
+		}
 
 		if config.EchKey != "" {
-			err = ech.LoadECHKey(config.EchKey, tlsConfig, C.Path)
+			err = ech.LoadECHKey(config.EchKey, tlsConfig)
 			if err != nil {
 				return nil, err
 			}
 		}
 	}
-	tlsConfig.ClientAuth = tlsC.ClientAuthTypeFromString(config.ClientAuthType)
+	tlsConfig.ClientAuth = ca.ClientAuthTypeFromString(config.ClientAuthType)
 	if len(config.ClientAuthCert) > 0 {
-		if tlsConfig.ClientAuth == tlsC.NoClientCert {
-			tlsConfig.ClientAuth = tlsC.RequireAndVerifyClientCert
+		if tlsConfig.ClientAuth == tls.NoClientCert {
+			tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
 		}
 	}
-	if tlsConfig.ClientAuth == tlsC.VerifyClientCertIfGiven || tlsConfig.ClientAuth == tlsC.RequireAndVerifyClientCert {
-		pool, err := ca.LoadCertificates(config.ClientAuthCert, C.Path)
+	if tlsConfig.ClientAuth == tls.VerifyClientCertIfGiven || tlsConfig.ClientAuth == tls.RequireAndVerifyClientCert {
+		pool, err := ca.LoadCertificates(config.ClientAuthCert)
 		if err != nil {
 			return nil, err
 		}
@@ -108,8 +110,8 @@ func New(config LC.AnyTLSServer, tunnel C.Tunnel, additions ...inbound.Addition)
 		if err != nil {
 			return nil, err
 		}
-		if len(tlsConfig.Certificates) > 0 {
-			l = tlsC.NewListener(l, tlsConfig)
+		if tlsConfig.GetCertificate != nil {
+			l = tls.NewListener(l, tlsConfig)
 		} else {
 			return nil, errors.New("disallow using AnyTLS without certificates config")
 		}

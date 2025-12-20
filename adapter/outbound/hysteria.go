@@ -2,7 +2,6 @@ package outbound
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"net"
@@ -13,7 +12,6 @@ import (
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/ech"
-	tlsC "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 	hyCongestion "github.com/metacubex/mihomo/transport/hysteria/congestion"
@@ -22,6 +20,8 @@ import (
 	"github.com/metacubex/mihomo/transport/hysteria/pmtud_fix"
 	"github.com/metacubex/mihomo/transport/hysteria/transport"
 	"github.com/metacubex/mihomo/transport/hysteria/utils"
+
+	"github.com/metacubex/tls"
 
 	"github.com/metacubex/quic-go"
 	"github.com/metacubex/quic-go/congestion"
@@ -45,7 +45,7 @@ type Hysteria struct {
 	option *HysteriaOption
 	client *core.Client
 
-	tlsConfig *tlsC.Config
+	tlsConfig *tls.Config
 	echConfig *ech.Config
 }
 
@@ -175,7 +175,7 @@ func NewHysteria(option HysteriaOption) (*Hysteria, error) {
 	if err != nil {
 		return nil, err
 	}
-	tlsClientConfig := tlsC.UConfig(tlsConfig)
+	tlsClientConfig := tlsConfig
 
 	quicConfig := &quic.Config{
 		InitialStreamReceiveWindow:     uint64(option.ReceiveWindowConn),

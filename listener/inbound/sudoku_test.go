@@ -50,6 +50,8 @@ func testInboundSudoku(t *testing.T, inboundOptions inbound.SudokuOption, outbou
 	defer out.Close()
 
 	tunnel.DoTest(t, out)
+
+	testSingMux(t, tunnel, out)
 }
 
 func TestInboundSudoku_Basic(t *testing.T) {

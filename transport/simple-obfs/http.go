@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 
 	"github.com/metacubex/mihomo/common/pool"
 
+	"github.com/metacubex/http"
 	"github.com/metacubex/randv2"
 )
 

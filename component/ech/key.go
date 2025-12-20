@@ -8,10 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
+	"sync"
 
-	"github.com/metacubex/mihomo/component/ca"
-	tlsC "github.com/metacubex/mihomo/component/tls"
+	C "github.com/metacubex/mihomo/constant"
 
+	"github.com/metacubex/fswatch"
+	"github.com/metacubex/tls"
 	"golang.org/x/crypto/cryptobyte"
 )
 
@@ -85,11 +88,11 @@ func GenECHConfig(publicName string) (configBase64 string, keyPem string, err er
 	return
 }
 
-func UnmarshalECHKeys(raw []byte) ([]tlsC.EncryptedClientHelloKey, error) {
-	var keys []tlsC.EncryptedClientHelloKey
+func UnmarshalECHKeys(raw []byte) ([]tls.EncryptedClientHelloKey, error) {
+	var keys []tls.EncryptedClientHelloKey
 	rawString := cryptobyte.String(raw)
 	for !rawString.Empty() {
-		var key tlsC.EncryptedClientHelloKey
+		var key tls.EncryptedClientHelloKey
 		if !rawString.ReadUint16LengthPrefixed((*cryptobyte.String)(&key.PrivateKey)) {
 			return nil, errors.New("error parsing private key")
 		}
@@ -104,40 +107,65 @@ func UnmarshalECHKeys(raw []byte) ([]tlsC.EncryptedClientHelloKey, error) {
 	return keys, nil
 }
 
-func LoadECHKey(key string, tlsConfig *tlsC.Config, path ca.Path) error {
+func LoadECHKey(key string, tlsConfig *tls.Config) error {
 	if key == "" {
 		return nil
 	}
-	painTextErr := loadECHKey([]byte(key), tlsConfig)
+	echKeys, painTextErr := loadECHKey([]byte(key))
 	if painTextErr == nil {
+		tlsConfig.GetEncryptedClientHelloKeys = func(info *tls.ClientHelloInfo) ([]tls.EncryptedClientHelloKey, error) {
+			return echKeys, nil
+		}
 		return nil
 	}
-	key = path.Resolve(key)
+	key = C.Path.Resolve(key)
 	var loadErr error
-	if !path.IsSafePath(key) {
-		loadErr = path.ErrNotSafePath(key)
+	if !C.Path.IsSafePath(key) {
+		loadErr = C.Path.ErrNotSafePath(key)
 	} else {
 		var echKey []byte
 		echKey, loadErr = os.ReadFile(key)
 		if loadErr == nil {
-			loadErr = loadECHKey(echKey, tlsConfig)
+			echKeys, loadErr = loadECHKey(echKey)
 		}
 	}
 	if loadErr != nil {
 		return fmt.Errorf("parse ECH keys failed, maybe format error:%s, or path error: %s", painTextErr.Error(), loadErr.Error())
 	}
+	gcFlag := new(os.File)
+	updateMutex := sync.RWMutex{}
+	if watcher, err := fswatch.NewWatcher(fswatch.Options{Path: []string{key}, Callback: func(path string) {
+		updateMutex.Lock()
+		defer updateMutex.Unlock()
+		if echKey, err := os.ReadFile(key); err == nil {
+			if newEchKeys, err := loadECHKey(echKey); err == nil {
+				echKeys = newEchKeys
+			}
+		}
+	}}); err == nil {
+		if err = watcher.Start(); err == nil {
+			runtime.SetFinalizer(gcFlag, func(f *os.File) {
+				_ = watcher.Close()
+			})
+		}
+	}
+	tlsConfig.GetEncryptedClientHelloKeys = func(info *tls.ClientHelloInfo) ([]tls.EncryptedClientHelloKey, error) {
+		defer runtime.KeepAlive(gcFlag)
+		updateMutex.RLock()
+		defer updateMutex.RUnlock()
+		return echKeys, nil
+	}
 	return nil
 }
 
-func loadECHKey(echKey []byte, tlsConfig *tlsC.Config) error {
+func loadECHKey(echKey []byte) ([]tls.EncryptedClientHelloKey, error) {
 	block, rest := pem.Decode(echKey)
 	if block == nil || block.Type != "ECH KEYS" || len(rest) > 0 {
-		return errors.New("invalid ECH keys pem")
+		return nil, errors.New("invalid ECH keys pem")
 	}
 	echKeys, err := UnmarshalECHKeys(block.Bytes)
 	if err != nil {
-		return fmt.Errorf("parse ECH keys: %w", err)
+		return nil, fmt.Errorf("parse ECH keys: %w", err)
 	}
-	tlsConfig.EncryptedClientHelloKeys = echKeys
-	return nil
+	return echKeys, err
 }

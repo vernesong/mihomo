@@ -7,7 +7,7 @@ import (
 	"fmt"
 
 	"github.com/metacubex/blake3"
-	"github.com/metacubex/utls/mlkem"
+	"github.com/metacubex/mlkem"
 )
 
 const MLKEM768SeedLength = mlkem.SeedSize
