@@ -3,6 +3,7 @@ module github.com/metacubex/mihomo
 go 1.20
 
 require (
+	filippo.io/edwards25519 v1.1.0
 	github.com/bahlo/generic-list-go v0.2.0
 	github.com/coreos/go-iptables v0.8.0
 	github.com/dlclark/regexp2 v1.11.5
@@ -25,7 +26,7 @@ require (
 	github.com/metacubex/http v0.1.0
 	github.com/metacubex/kcp-go v0.0.0-20251111012849-7455698490e9
 	github.com/metacubex/mlkem v0.1.0
-	github.com/metacubex/quic-go v0.57.1-0.20251217071004-e89f497a2e72
+	github.com/metacubex/quic-go v0.58.1-0.20251222092318-72a81ab195ec
 	github.com/metacubex/randv2 v0.2.0
 	github.com/metacubex/restls-client-go v0.1.7
 	github.com/metacubex/sing v0.5.6
@@ -46,7 +47,6 @@ require (
 	github.com/mroth/weightedrand/v2 v2.1.0
 	github.com/openacid/low v0.1.21
 	github.com/oschwald/maxminddb-golang v1.12.0 // lastest version compatible with golang1.20
-	github.com/saba-futai/sudoku v0.0.2-d
 	github.com/sagernet/netlink v0.0.0-20240612041022-b9a21c07ac6a
 	github.com/samber/lo v1.52.0
 	github.com/sirupsen/logrus v1.9.3
@@ -66,7 +66,6 @@ require (
 )
 
 require (
-	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/RyuaNerin/go-krypto v1.3.0 // indirect
 	github.com/Yawning/aez v0.0.0-20211027044916-e49e68abd344 // indirect
 	github.com/ajg/form v1.5.1 // indirect

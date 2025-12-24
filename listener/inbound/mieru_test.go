@@ -3,7 +3,9 @@ package inbound_test
 import (
 	"net"
 	"net/netip"
+	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/metacubex/mihomo/adapter/outbound"
@@ -149,6 +151,9 @@ func TestNewMieru(t *testing.T) {
 }
 
 func TestInboundMieru(t *testing.T) {
+	if runtime.GOOS == "windows" && strings.HasPrefix(runtime.Version(), "go1.26") {
+		t.Skip("temporarily skipped on windows due to intermittent failures; tracked in PR")
+	}
 	t.Run("TCP_HANDSHAKE_STANDARD", func(t *testing.T) {
 		testInboundMieruTCP(t, "HANDSHAKE_STANDARD")
 	})

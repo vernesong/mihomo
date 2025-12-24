@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -331,11 +332,19 @@ func NewHTTP2Client(dialFn DialFn, tlsConfig *tls.Config, clientFingerprint stri
 	return wrap
 }
 
+func ServiceNameToPath(serviceName string) string {
+	if strings.HasPrefix(serviceName, "/") { // custom paths
+		return serviceName
+	}
+	return "/" + serviceName + "/Tun"
+}
+
 func StreamGunWithTransport(transport *TransportWrap, cfg *Config) (net.Conn, error) {
 	serviceName := "GunService"
 	if cfg.ServiceName != "" {
 		serviceName = cfg.ServiceName
 	}
+	path := ServiceNameToPath(serviceName)
 
 	reader, writer := io.Pipe()
 	request := &http.Request{
@@ -344,9 +353,9 @@ func StreamGunWithTransport(transport *TransportWrap, cfg *Config) (net.Conn, er
 		URL: &url.URL{
 			Scheme: "https",
 			Host:   cfg.Host,
-			Path:   fmt.Sprintf("/%s/Tun", serviceName),
+			Path:   path,
 			// for unescape path
-			Opaque: fmt.Sprintf("//%s/%s/Tun", cfg.Host, serviceName),
+			Opaque: "//" + cfg.Host + path,
 		},
 		Proto:      "HTTP/2",
 		ProtoMajor: 2,

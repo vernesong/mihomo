@@ -63,6 +63,8 @@ jobs:
           - { goos: linux, goarch: s390x, output: s390x, debian: s390x, rpm: s390x }
           - { goos: linux, goarch: ppc64le, output: ppc64le, debian: ppc64el, rpm: ppc64le }
 
+          # Go 1.25 with special patch can work on Windows 7
+          # https://github.com/MetaCubeX/go/commits/release-branch.go1.25/
           - { goos: windows, goarch: '386', output: '386' }
           - { goos: windows, goarch: amd64, goamd64: v1, output: amd64-compatible } # old style file name will be removed in next released
           - { goos: windows, goarch: amd64, goamd64: v3, output: amd64 }
@@ -180,6 +182,8 @@ jobs:
       # 7c1157f9544922e96945196b47b95664b1e39108: "net: remove sysSocket fallback for Windows 7"
       # 48042aa09c2f878c4faa576948b07fe625c4707a: "syscall: remove Windows 7 console handle workaround"
       # a17d959debdb04cd550016a3501dd09d50cd62e7: "runtime: always use LoadLibraryEx to load system libraries"
+      # sepical fix:
+      # - os.RemoveAll not working on Windows7
     - name: Revert Golang1.25 commit for Windows7/8
       if: ${{ matrix.jobs.goos == 'windows' && matrix.jobs.goversion == '' }}
       run: |

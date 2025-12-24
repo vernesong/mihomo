@@ -24,7 +24,7 @@ type ServerOption struct {
 }
 
 func NewServerHandler(options ServerOption) http.Handler {
-	path := "/" + options.ServiceName + "/Tun"
+	path := ServiceNameToPath(options.ServiceName)
 	connHandler := options.ConnHandler
 	httpHandler := options.HttpHandler
 	if httpHandler == nil {

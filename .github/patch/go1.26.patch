@@ -10,8 +10,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/crypto/internal/sysrand/rand_windows.go b/src/crypto/internal/sysrand/rand_windows.go
---- a/src/crypto/internal/sysrand/rand_windows.go	(revision 6e676ab2b809d46623acb5988248d95d1eb7939c)
-+++ b/src/crypto/internal/sysrand/rand_windows.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
+--- a/src/crypto/internal/sysrand/rand_windows.go	(revision c599a8f2385849a225d02843b3c6389dbfc5aa69)
++++ b/src/crypto/internal/sysrand/rand_windows.go	(revision b0d48afabb9fd14976c27221cb525c5d2ebbfe79)
 @@ -7,5 +7,26 @@
  import "internal/syscall/windows"
  
@@ -46,9 +46,9 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/crypto/rand/rand.go b/src/crypto/rand/rand.go
---- a/src/crypto/rand/rand.go	(revision 6e676ab2b809d46623acb5988248d95d1eb7939c)
-+++ b/src/crypto/rand/rand.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
-@@ -22,7 +22,7 @@
+--- a/src/crypto/rand/rand.go	(revision c599a8f2385849a225d02843b3c6389dbfc5aa69)
++++ b/src/crypto/rand/rand.go	(revision b0d48afabb9fd14976c27221cb525c5d2ebbfe79)
+@@ -25,7 +25,7 @@
  //   - On legacy Linux (< 3.17), Reader opens /dev/urandom on first use.
  //   - On macOS, iOS, and OpenBSD Reader, uses arc4random_buf(3).
  //   - On NetBSD, Reader uses the kern.arandom sysctl.
@@ -63,9 +63,9 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/internal/syscall/windows/syscall_windows.go b/src/internal/syscall/windows/syscall_windows.go
---- a/src/internal/syscall/windows/syscall_windows.go	(revision 6e676ab2b809d46623acb5988248d95d1eb7939c)
-+++ b/src/internal/syscall/windows/syscall_windows.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
-@@ -419,7 +419,7 @@
+--- a/src/internal/syscall/windows/syscall_windows.go	(revision c599a8f2385849a225d02843b3c6389dbfc5aa69)
++++ b/src/internal/syscall/windows/syscall_windows.go	(revision b0d48afabb9fd14976c27221cb525c5d2ebbfe79)
+@@ -421,7 +421,7 @@
  //sys	DestroyEnvironmentBlock(block *uint16) (err error) = userenv.DestroyEnvironmentBlock
  //sys	CreateEvent(eventAttrs *SecurityAttributes, manualReset uint32, initialState uint32, name *uint16) (handle syscall.Handle, err error) = kernel32.CreateEventW
  
@@ -80,8 +80,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/internal/syscall/windows/zsyscall_windows.go b/src/internal/syscall/windows/zsyscall_windows.go
---- a/src/internal/syscall/windows/zsyscall_windows.go	(revision 6e676ab2b809d46623acb5988248d95d1eb7939c)
-+++ b/src/internal/syscall/windows/zsyscall_windows.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
+--- a/src/internal/syscall/windows/zsyscall_windows.go	(revision c599a8f2385849a225d02843b3c6389dbfc5aa69)
++++ b/src/internal/syscall/windows/zsyscall_windows.go	(revision b0d48afabb9fd14976c27221cb525c5d2ebbfe79)
 @@ -38,7 +38,6 @@
  
  var (
@@ -99,7 +99,7 @@ diff --git a/src/internal/syscall/windows/zsyscall_windows.go b/src/internal/sys
  	procGetAdaptersAddresses              = modiphlpapi.NewProc("GetAdaptersAddresses")
  	procCreateEventW                      = modkernel32.NewProc("CreateEventW")
  	procCreateIoCompletionPort            = modkernel32.NewProc("CreateIoCompletionPort")
-@@ -242,12 +241,12 @@
+@@ -244,12 +243,12 @@
  	return
  }
  
@@ -109,8 +109,8 @@ diff --git a/src/internal/syscall/windows/zsyscall_windows.go b/src/internal/sys
  	if len(buf) > 0 {
  		_p0 = &buf[0]
  	}
--	r1, _, e1 := syscall.Syscall(procProcessPrng.Addr(), 2, uintptr(unsafe.Pointer(_p0)), uintptr(len(buf)), 0)
-+	r1, _, e1 := syscall.Syscall(procSystemFunction036.Addr(), 2, uintptr(unsafe.Pointer(_p0)), uintptr(len(buf)), 0)
+-	r1, _, e1 := syscall.SyscallN(procProcessPrng.Addr(), uintptr(unsafe.Pointer(_p0)), uintptr(len(buf)))
++	r1, _, e1 := syscall.SyscallN(procSystemFunction036.Addr(), uintptr(unsafe.Pointer(_p0)), uintptr(len(buf)), 0)
  	if r1 == 0 {
  		err = errnoErr(e1)
  	}
@@ -120,19 +120,19 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/runtime/os_windows.go b/src/runtime/os_windows.go
---- a/src/runtime/os_windows.go	(revision 6e676ab2b809d46623acb5988248d95d1eb7939c)
-+++ b/src/runtime/os_windows.go	(revision f56f1e23507e646c85243a71bde7b9629b2f970c)
-@@ -39,8 +39,8 @@
+--- a/src/runtime/os_windows.go	(revision c599a8f2385849a225d02843b3c6389dbfc5aa69)
++++ b/src/runtime/os_windows.go	(revision ea2726a6fa25fbfa1092e696e522eafca544d24c)
+@@ -40,7 +40,8 @@
  //go:cgo_import_dynamic runtime._GetSystemInfo GetSystemInfo%1 "kernel32.dll"
  //go:cgo_import_dynamic runtime._GetThreadContext GetThreadContext%2 "kernel32.dll"
  //go:cgo_import_dynamic runtime._SetThreadContext SetThreadContext%2 "kernel32.dll"
 -//go:cgo_import_dynamic runtime._LoadLibraryExW LoadLibraryExW%3 "kernel32.dll"
- //go:cgo_import_dynamic runtime._LoadLibraryW LoadLibraryW%1 "kernel32.dll"
++//go:cgo_import_dynamic runtime._LoadLibraryW LoadLibraryW%1 "kernel32.dll"
 +//go:cgo_import_dynamic runtime._LoadLibraryA LoadLibraryA%1 "kernel32.dll"
  //go:cgo_import_dynamic runtime._PostQueuedCompletionStatus PostQueuedCompletionStatus%4 "kernel32.dll"
  //go:cgo_import_dynamic runtime._QueryPerformanceCounter QueryPerformanceCounter%1 "kernel32.dll"
  //go:cgo_import_dynamic runtime._QueryPerformanceFrequency QueryPerformanceFrequency%1 "kernel32.dll"
-@@ -74,7 +74,6 @@
+@@ -74,7 +75,6 @@
  	// Following syscalls are available on every Windows PC.
  	// All these variables are set by the Windows executable
  	// loader before the Go program starts.
@@ -140,17 +140,17 @@ diff --git a/src/runtime/os_windows.go b/src/runtime/os_windows.go
  	_AddVectoredExceptionHandler,
  	_CloseHandle,
  	_CreateEventA,
-@@ -97,8 +96,8 @@
+@@ -97,7 +97,8 @@
  	_GetSystemInfo,
  	_GetThreadContext,
  	_SetThreadContext,
 -	_LoadLibraryExW,
- 	_LoadLibraryW,
++	_LoadLibraryW,
 +	_LoadLibraryA,
  	_PostQueuedCompletionStatus,
  	_QueryPerformanceCounter,
  	_QueryPerformanceFrequency,
-@@ -127,8 +126,23 @@
+@@ -126,8 +127,23 @@
  	_WriteFile,
  	_ stdFunction
  
@@ -176,7 +176,7 @@ diff --git a/src/runtime/os_windows.go b/src/runtime/os_windows.go
  
  	// Load ntdll.dll manually during startup, otherwise Mingw
  	// links wrong printf function to cgo executable (see issue
-@@ -145,13 +159,6 @@
+@@ -144,13 +160,6 @@
  	_ stdFunction
  )
  
@@ -190,12 +190,13 @@ diff --git a/src/runtime/os_windows.go b/src/runtime/os_windows.go
  // Function to be called by windows CreateThread
  // to start new os thread.
  func tstart_stdcall(newm *m)
-@@ -244,8 +251,18 @@
+@@ -242,9 +251,40 @@
  	return unsafe.String(&sysDirectory[0], sysDirectoryLen)
  }
  
 -func windowsLoadSystemLib(name []uint16) uintptr {
--	return stdcall3(_LoadLibraryExW, uintptr(unsafe.Pointer(&name[0])), 0, _LOAD_LIBRARY_SEARCH_SYSTEM32)
+-	const _LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800
+-	return stdcall(_LoadLibraryExW, uintptr(unsafe.Pointer(&name[0])), 0, _LOAD_LIBRARY_SEARCH_SYSTEM32)
 +//go:linkname syscall_getSystemDirectory syscall.getSystemDirectory
 +func syscall_getSystemDirectory() string {
 +	return unsafe.String(&sysDirectory[0], sysDirectoryLen)
@@ -203,15 +204,37 @@ diff --git a/src/runtime/os_windows.go b/src/runtime/os_windows.go
 +
 +func windowsLoadSystemLib(name []byte) uintptr {
 +	if useLoadLibraryEx {
-+		return stdcall3(_LoadLibraryExA, uintptr(unsafe.Pointer(&name[0])), 0, _LOAD_LIBRARY_SEARCH_SYSTEM32)
++		return stdcall(_LoadLibraryExA, uintptr(unsafe.Pointer(&name[0])), 0, _LOAD_LIBRARY_SEARCH_SYSTEM32)
 +	} else {
 +		absName := append(sysDirectory[:sysDirectoryLen], name...)
-+		return stdcall1(_LoadLibraryA, uintptr(unsafe.Pointer(&absName[0])))
++		return stdcall(_LoadLibraryA, uintptr(unsafe.Pointer(&absName[0])))
 +	}
++}
++
++const _LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800
++
++// When available, this function will use LoadLibraryEx with the filename
++// parameter and the important SEARCH_SYSTEM32 argument. But on systems that
++// do not have that option, absoluteFilepath should contain a fallback
++// to the full path inside of system32 for use with vanilla LoadLibrary.
++//
++//go:linkname syscall_loadsystemlibrary syscall.loadsystemlibrary
++func syscall_loadsystemlibrary(filename *uint16, absoluteFilepath *uint16) (handle, err uintptr) {
++	if useLoadLibraryEx {
++		handle, _, err = syscall_syscalln(uintptr(unsafe.Pointer(_LoadLibraryExW)), 3, uintptr(unsafe.Pointer(filename)), 0, _LOAD_LIBRARY_SEARCH_SYSTEM32)
++	} else {
++		handle, _, err = syscall_syscalln(uintptr(unsafe.Pointer(_LoadLibraryW)), 1, uintptr(unsafe.Pointer(absoluteFilepath)))
++	}
++	KeepAlive(filename)
++	KeepAlive(absoluteFilepath)
++	if handle != 0 {
++		err = 0
++	}
++	return
  }
  
  //go:linkname windows_QueryPerformanceCounter internal/syscall/windows.QueryPerformanceCounter
-@@ -263,13 +280,28 @@
+@@ -262,13 +302,28 @@
  }
  
  func loadOptionalSyscalls() {
@@ -219,7 +242,7 @@ diff --git a/src/runtime/os_windows.go b/src/runtime/os_windows.go
 -	if bcryptPrimitives == 0 {
 -		throw("bcryptprimitives.dll not found")
 +	var kernel32dll = []byte("kernel32.dll\000")
-+	k32 := stdcall1(_LoadLibraryA, uintptr(unsafe.Pointer(&kernel32dll[0])))
++	k32 := stdcall(_LoadLibraryA, uintptr(unsafe.Pointer(&kernel32dll[0])))
 +	if k32 == 0 {
 +		throw("kernel32.dll not found")
  	}
@@ -245,7 +268,7 @@ diff --git a/src/runtime/os_windows.go b/src/runtime/os_windows.go
  	if n32 == 0 {
  		throw("ntdll.dll not found")
  	}
-@@ -298,7 +330,7 @@
+@@ -297,7 +352,7 @@
  		context  uintptr
  	}
  
@@ -254,7 +277,7 @@ diff --git a/src/runtime/os_windows.go b/src/runtime/os_windows.go
  	if powrprof == 0 {
  		return // Running on Windows 7, where we don't need it anyway.
  	}
-@@ -357,6 +389,22 @@
+@@ -351,6 +406,22 @@
  // in sys_windows_386.s and sys_windows_amd64.s:
  func getlasterror() uint32
  
@@ -277,7 +300,7 @@ diff --git a/src/runtime/os_windows.go b/src/runtime/os_windows.go
  var timeBeginPeriodRetValue uint32
  
  // osRelaxMinNS indicates that sysmon shouldn't osRelax if the next
-@@ -430,7 +478,8 @@
+@@ -417,7 +488,8 @@
  		// Only load winmm.dll if we need it.
  		// This avoids a dependency on winmm.dll for Go programs
  		// that run on new Windows versions.
@@ -287,7 +310,7 @@ diff --git a/src/runtime/os_windows.go b/src/runtime/os_windows.go
  		if m32 == 0 {
  			print("runtime: LoadLibraryExW failed; errno=", getlasterror(), "\n")
  			throw("winmm.dll not found")
-@@ -471,6 +520,28 @@
+@@ -458,6 +530,28 @@
  	canUseLongPaths = true
  }
  
@@ -298,12 +321,12 @@ diff --git a/src/runtime/os_windows.go b/src/runtime/os_windows.go
 +}
 +
 +func initOsVersionInfo() {
-+	info := _OSVERSIONINFOW{}
-+	info.osVersionInfoSize = uint32(unsafe.Sizeof(info))
-+	stdcall1(_RtlGetVersion, uintptr(unsafe.Pointer(&info)))
-+	osVersionInfo.majorVersion = info.majorVersion
-+	osVersionInfo.minorVersion = info.minorVersion
-+	osVersionInfo.buildNumber = info.buildNumber
++	info := windows.OSVERSIONINFOW{}
++	info.OSVersionInfoSize = uint32(unsafe.Sizeof(info))
++	stdcall(_RtlGetVersion, uintptr(unsafe.Pointer(&info)))
++	osVersionInfo.majorVersion = info.MajorVersion
++	osVersionInfo.minorVersion = info.MinorVersion
++	osVersionInfo.buildNumber = info.BuildNumber
 +}
 +
 +//go:linkname rtlGetNtVersionNumbers syscall.rtlGetNtVersionNumbers
@@ -314,9 +337,9 @@ diff --git a/src/runtime/os_windows.go b/src/runtime/os_windows.go
 +}
 +
  func osinit() {
- 	asmstdcallAddr = unsafe.Pointer(abi.FuncPCABI0(asmstdcall))
+ 	asmstdcallAddr = unsafe.Pointer(windows.AsmStdCallAddr())
  
-@@ -483,8 +554,8 @@
+@@ -470,8 +564,8 @@
  	initHighResTimer()
  	timeBeginPeriodRetValue = osRelax(false)
  
@@ -326,12 +349,12 @@ diff --git a/src/runtime/os_windows.go b/src/runtime/os_windows.go
  
  	numCPUStartup = getCPUCount()
  
-@@ -500,7 +571,7 @@
+@@ -487,7 +581,7 @@
  //go:nosplit
  func readRandom(r []byte) int {
  	n := 0
--	if stdcall2(_ProcessPrng, uintptr(unsafe.Pointer(&r[0])), uintptr(len(r)))&0xff != 0 {
-+	if stdcall2(_RtlGenRandom, uintptr(unsafe.Pointer(&r[0])), uintptr(len(r)))&0xff != 0 {
+-	if stdcall(_ProcessPrng, uintptr(unsafe.Pointer(&r[0])), uintptr(len(r)))&0xff != 0 {
++	if stdcall(_RtlGenRandom, uintptr(unsafe.Pointer(&r[0])), uintptr(len(r)))&0xff != 0 {
  		n = len(r)
  	}
  	return n
@@ -341,8 +364,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/net/hook_windows.go b/src/net/hook_windows.go
---- a/src/net/hook_windows.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
-+++ b/src/net/hook_windows.go	(revision 6788c4c6f9fafb56729bad6b660f7ee2272d699f)
+--- a/src/net/hook_windows.go	(revision b0d48afabb9fd14976c27221cb525c5d2ebbfe79)
++++ b/src/net/hook_windows.go	(revision 44e76f7cf1bc6e04b5da724e0b2e48f393713506)
 @@ -13,6 +13,7 @@
  	hostsFilePath = windows.GetSystemDirectory() + "/Drivers/etc/hosts"
  
@@ -357,8 +380,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/net/internal/socktest/main_test.go b/src/net/internal/socktest/main_test.go
---- a/src/net/internal/socktest/main_test.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
-+++ b/src/net/internal/socktest/main_test.go	(revision 6788c4c6f9fafb56729bad6b660f7ee2272d699f)
+--- a/src/net/internal/socktest/main_test.go	(revision b0d48afabb9fd14976c27221cb525c5d2ebbfe79)
++++ b/src/net/internal/socktest/main_test.go	(revision 44e76f7cf1bc6e04b5da724e0b2e48f393713506)
 @@ -2,7 +2,7 @@
  // Use of this source code is governed by a BSD-style
  // license that can be found in the LICENSE file.
@@ -375,8 +398,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 ===================================================================
 diff --git a/src/net/internal/socktest/main_windows_test.go b/src/net/internal/socktest/main_windows_test.go
 new file mode 100644
---- /dev/null	(revision 6788c4c6f9fafb56729bad6b660f7ee2272d699f)
-+++ b/src/net/internal/socktest/main_windows_test.go	(revision 6788c4c6f9fafb56729bad6b660f7ee2272d699f)
+--- /dev/null	(revision 44e76f7cf1bc6e04b5da724e0b2e48f393713506)
++++ b/src/net/internal/socktest/main_windows_test.go	(revision 44e76f7cf1bc6e04b5da724e0b2e48f393713506)
 @@ -0,0 +1,22 @@
 +// Copyright 2015 The Go Authors. All rights reserved.
 +// Use of this source code is governed by a BSD-style
@@ -406,8 +429,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/net/internal/socktest/sys_windows.go b/src/net/internal/socktest/sys_windows.go
---- a/src/net/internal/socktest/sys_windows.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
-+++ b/src/net/internal/socktest/sys_windows.go	(revision 6788c4c6f9fafb56729bad6b660f7ee2272d699f)
+--- a/src/net/internal/socktest/sys_windows.go	(revision b0d48afabb9fd14976c27221cb525c5d2ebbfe79)
++++ b/src/net/internal/socktest/sys_windows.go	(revision 44e76f7cf1bc6e04b5da724e0b2e48f393713506)
 @@ -9,6 +9,38 @@
  	"syscall"
  )
@@ -453,8 +476,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/net/main_windows_test.go b/src/net/main_windows_test.go
---- a/src/net/main_windows_test.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
-+++ b/src/net/main_windows_test.go	(revision 6788c4c6f9fafb56729bad6b660f7ee2272d699f)
+--- a/src/net/main_windows_test.go	(revision b0d48afabb9fd14976c27221cb525c5d2ebbfe79)
++++ b/src/net/main_windows_test.go	(revision 44e76f7cf1bc6e04b5da724e0b2e48f393713506)
 @@ -12,6 +12,7 @@
  
  var (
@@ -485,8 +508,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/net/sock_windows.go b/src/net/sock_windows.go
---- a/src/net/sock_windows.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
-+++ b/src/net/sock_windows.go	(revision 6788c4c6f9fafb56729bad6b660f7ee2272d699f)
+--- a/src/net/sock_windows.go	(revision b0d48afabb9fd14976c27221cb525c5d2ebbfe79)
++++ b/src/net/sock_windows.go	(revision 44e76f7cf1bc6e04b5da724e0b2e48f393713506)
 @@ -20,6 +20,21 @@
  func sysSocket(family, sotype, proto int) (syscall.Handle, error) {
  	s, err := wsaSocketFunc(int32(family), int32(sotype), int32(proto),
@@ -515,9 +538,9 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/syscall/exec_windows.go b/src/syscall/exec_windows.go
---- a/src/syscall/exec_windows.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
-+++ b/src/syscall/exec_windows.go	(revision a5b2168bb836ed9d6601c626f95e56c07923f906)
-@@ -14,7 +14,6 @@
+--- a/src/syscall/exec_windows.go	(revision b0d48afabb9fd14976c27221cb525c5d2ebbfe79)
++++ b/src/syscall/exec_windows.go	(revision b4aece36e51ecce81c3ee9fe03e31db552e90018)
+@@ -15,7 +15,6 @@
  	"unsafe"
  )
  
@@ -525,7 +548,7 @@ diff --git a/src/syscall/exec_windows.go b/src/syscall/exec_windows.go
  var ForkLock sync.RWMutex
  
  // EscapeArg rewrites command line argument s as prescribed
-@@ -254,6 +253,9 @@
+@@ -304,6 +303,9 @@
  var zeroProcAttr ProcAttr
  var zeroSysProcAttr SysProcAttr
  
@@ -535,7 +558,7 @@ diff --git a/src/syscall/exec_windows.go b/src/syscall/exec_windows.go
  func StartProcess(argv0 string, argv []string, attr *ProcAttr) (pid int, handle uintptr, err error) {
  	if len(argv0) == 0 {
  		return 0, 0, EWINDOWS
-@@ -317,6 +319,17 @@
+@@ -367,6 +369,17 @@
  		}
  	}
  
@@ -553,7 +576,7 @@ diff --git a/src/syscall/exec_windows.go b/src/syscall/exec_windows.go
  	p, _ := GetCurrentProcess()
  	parentProcess := p
  	if sys.ParentProcess != 0 {
-@@ -325,7 +338,15 @@
+@@ -375,7 +388,15 @@
  	fd := make([]Handle, len(attr.Files))
  	for i := range attr.Files {
  		if attr.Files[i] > 0 {
@@ -570,7 +593,7 @@ diff --git a/src/syscall/exec_windows.go b/src/syscall/exec_windows.go
  			if err != nil {
  				return 0, 0, err
  			}
-@@ -356,6 +377,14 @@
+@@ -406,6 +427,14 @@
  
  	fd = append(fd, sys.AdditionalInheritedHandles...)
  
@@ -585,55 +608,31 @@ diff --git a/src/syscall/exec_windows.go b/src/syscall/exec_windows.go
  	// The presence of a NULL handle in the list is enough to cause PROC_THREAD_ATTRIBUTE_HANDLE_LIST
  	// to treat the entire list as empty, so remove NULL handles.
  	j := 0
-Index: src/runtime/syscall_windows.go
-IDEA additional info:
-Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
-<+>UTF-8
-===================================================================
-diff --git a/src/runtime/syscall_windows.go b/src/runtime/syscall_windows.go
---- a/src/runtime/syscall_windows.go	(revision a5b2168bb836ed9d6601c626f95e56c07923f906)
-+++ b/src/runtime/syscall_windows.go	(revision f56f1e23507e646c85243a71bde7b9629b2f970c)
-@@ -413,10 +413,20 @@
- 
- const _LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800
- 
-+// When available, this function will use LoadLibraryEx with the filename
-+// parameter and the important SEARCH_SYSTEM32 argument. But on systems that
-+// do not have that option, absoluteFilepath should contain a fallback
-+// to the full path inside of system32 for use with vanilla LoadLibrary.
-+//
- //go:linkname syscall_loadsystemlibrary syscall.loadsystemlibrary
--func syscall_loadsystemlibrary(filename *uint16) (handle, err uintptr) {
--	handle, _, err = syscall_SyscallN(uintptr(unsafe.Pointer(_LoadLibraryExW)), uintptr(unsafe.Pointer(filename)), 0, _LOAD_LIBRARY_SEARCH_SYSTEM32)
-+func syscall_loadsystemlibrary(filename *uint16, absoluteFilepath *uint16) (handle, err uintptr) {
-+	if useLoadLibraryEx {
-+		handle, _, err = syscall_SyscallN(uintptr(unsafe.Pointer(_LoadLibraryExW)), uintptr(unsafe.Pointer(filename)), 0, _LOAD_LIBRARY_SEARCH_SYSTEM32)
-+	} else {
-+		handle, _, err = syscall_SyscallN(uintptr(unsafe.Pointer(_LoadLibraryW)), uintptr(unsafe.Pointer(absoluteFilepath)))
-+	}
- 	KeepAlive(filename)
-+	KeepAlive(absoluteFilepath)
- 	if handle != 0 {
- 		err = 0
- 	}
 Index: src/syscall/dll_windows.go
 IDEA additional info:
 Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/syscall/dll_windows.go b/src/syscall/dll_windows.go
---- a/src/syscall/dll_windows.go	(revision a5b2168bb836ed9d6601c626f95e56c07923f906)
-+++ b/src/syscall/dll_windows.go	(revision f56f1e23507e646c85243a71bde7b9629b2f970c)
-@@ -45,7 +45,7 @@
- //go:noescape
- func SyscallN(trap uintptr, args ...uintptr) (r1, r2 uintptr, err Errno)
- func loadlibrary(filename *uint16) (handle uintptr, err Errno)
--func loadsystemlibrary(filename *uint16) (handle uintptr, err Errno)
-+func loadsystemlibrary(filename *uint16, absoluteFilepath *uint16) (handle uintptr, err Errno)
- func getprocaddress(handle uintptr, procname *uint8) (proc uintptr, err Errno)
+--- a/src/syscall/dll_windows.go	(revision b4aece36e51ecce81c3ee9fe03e31db552e90018)
++++ b/src/syscall/dll_windows.go	(revision ea2726a6fa25fbfa1092e696e522eafca544d24c)
+@@ -119,14 +119,7 @@
+ }
  
- // A DLL implements access to a single DLL.
-@@ -54,6 +54,9 @@
+ //go:linkname loadsystemlibrary
+-func loadsystemlibrary(filename *uint16) (uintptr, Errno) {
+-	const _LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800
+-	handle, _, err := SyscallN(uintptr(__LoadLibraryExW), uintptr(unsafe.Pointer(filename)), 0, _LOAD_LIBRARY_SEARCH_SYSTEM32)
+-	if handle != 0 {
+-		err = 0
+-	}
+-	return handle, err
+-}
++func loadsystemlibrary(filename *uint16, absoluteFilepath *uint16) (handle uintptr, err Errno)
+ 
+ //go:linkname getprocaddress
+ func getprocaddress(handle uintptr, procname *uint8) (uintptr, Errno) {
+@@ -143,6 +136,9 @@
  	Handle Handle
  }
  
@@ -643,7 +642,7 @@ diff --git a/src/syscall/dll_windows.go b/src/syscall/dll_windows.go
  // LoadDLL loads the named DLL file into memory.
  //
  // If name is not an absolute path and is not a known system DLL used by
-@@ -70,7 +73,11 @@
+@@ -159,7 +155,11 @@
  	var h uintptr
  	var e Errno
  	if sysdll.IsSystemDLL[name] {
@@ -662,8 +661,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/os/removeall_at.go b/src/os/removeall_at.go
---- a/src/os/removeall_at.go	(revision f56f1e23507e646c85243a71bde7b9629b2f970c)
-+++ b/src/os/removeall_at.go	(revision 0a52622d2331ff975fb0442617ec19bc352bb2ed)
+--- a/src/os/removeall_at.go	(revision ea2726a6fa25fbfa1092e696e522eafca544d24c)
++++ b/src/os/removeall_at.go	(revision d47e0d22130d597dcf9daa6b41fd9501274f0cb2)
 @@ -2,7 +2,7 @@
  // Use of this source code is governed by a BSD-style
  // license that can be found in the LICENSE file.
@@ -705,8 +704,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/os/removeall_noat.go b/src/os/removeall_noat.go
---- a/src/os/removeall_noat.go	(revision f56f1e23507e646c85243a71bde7b9629b2f970c)
-+++ b/src/os/removeall_noat.go	(revision 0a52622d2331ff975fb0442617ec19bc352bb2ed)
+--- a/src/os/removeall_noat.go	(revision ea2726a6fa25fbfa1092e696e522eafca544d24c)
++++ b/src/os/removeall_noat.go	(revision d47e0d22130d597dcf9daa6b41fd9501274f0cb2)
 @@ -2,7 +2,7 @@
  // Use of this source code is governed by a BSD-style
  // license that can be found in the LICENSE file.
@@ -745,8 +744,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/os/root_noopenat.go b/src/os/root_noopenat.go
---- a/src/os/root_noopenat.go	(revision f56f1e23507e646c85243a71bde7b9629b2f970c)
-+++ b/src/os/root_noopenat.go	(revision 0a52622d2331ff975fb0442617ec19bc352bb2ed)
+--- a/src/os/root_noopenat.go	(revision ea2726a6fa25fbfa1092e696e522eafca544d24c)
++++ b/src/os/root_noopenat.go	(revision d47e0d22130d597dcf9daa6b41fd9501274f0cb2)
 @@ -11,7 +11,6 @@
  	"internal/filepathlite"
  	"internal/stringslite"
@@ -787,9 +786,9 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/os/root_openat.go b/src/os/root_openat.go
---- a/src/os/root_openat.go	(revision f56f1e23507e646c85243a71bde7b9629b2f970c)
-+++ b/src/os/root_openat.go	(revision 0a52622d2331ff975fb0442617ec19bc352bb2ed)
-@@ -194,28 +194,6 @@
+--- a/src/os/root_openat.go	(revision ea2726a6fa25fbfa1092e696e522eafca544d24c)
++++ b/src/os/root_openat.go	(revision d47e0d22130d597dcf9daa6b41fd9501274f0cb2)
+@@ -196,28 +196,6 @@
  	return nil
  }
  
@@ -824,8 +823,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/os/root_windows.go b/src/os/root_windows.go
---- a/src/os/root_windows.go	(revision f56f1e23507e646c85243a71bde7b9629b2f970c)
-+++ b/src/os/root_windows.go	(revision 0a52622d2331ff975fb0442617ec19bc352bb2ed)
+--- a/src/os/root_windows.go	(revision ea2726a6fa25fbfa1092e696e522eafca544d24c)
++++ b/src/os/root_windows.go	(revision d47e0d22130d597dcf9daa6b41fd9501274f0cb2)
 @@ -402,3 +402,14 @@
  	}
  	return fi.Mode(), nil

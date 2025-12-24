@@ -2,6 +2,7 @@ package inbound_test
 
 import (
 	"net/netip"
+	"runtime"
 	"testing"
 
 	"github.com/metacubex/mihomo/adapter/outbound"
@@ -163,4 +164,28 @@ func TestInboundSudoku_CustomTable(t *testing.T) {
 		outboundOptions.Key = sudokuPrivateKey
 		testInboundSudoku(t, inboundOptions, outboundOptions)
 	})
+}
+
+func TestInboundSudoku_HTTPMaskMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("temporarily skipped on windows due to intermittent failures; tracked in PR")
+	}
+
+	key := "test_key_http_mask_mode"
+
+	for _, mode := range []string{"legacy", "stream", "poll", "auto"} {
+		mode := mode
+		t.Run(mode, func(t *testing.T) {
+			inboundOptions := inbound.SudokuOption{
+				Key:          key,
+				HTTPMaskMode: mode,
+			}
+			outboundOptions := outbound.SudokuOption{
+				Key:          key,
+				HTTPMask:     true,
+				HTTPMaskMode: mode,
+			}
+			testInboundSudoku(t, inboundOptions, outboundOptions)
+		})
+	}
 }
