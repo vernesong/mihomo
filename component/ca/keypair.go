@@ -52,7 +52,7 @@ func NewTLSKeyPairLoader(certificate, privateKey string) (func() (*tls.Certifica
 	if loadErr != nil {
 		return nil, fmt.Errorf("parse certificate failed, maybe format error:%s, or path error: %s", painTextErr.Error(), loadErr.Error())
 	}
-	gcFlag := new(os.File)
+	gcFlag := new(os.File) // tiny (on the order of 16 bytes or less) and pointer-free objects may never run the finalizer, so we choose new an os.File
 	updateMutex := sync.RWMutex{}
 	if watcher, err := fswatch.NewWatcher(fswatch.Options{Path: []string{certificate, privateKey}, Callback: func(path string) {
 		updateMutex.Lock()

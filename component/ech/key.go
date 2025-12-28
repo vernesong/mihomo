@@ -132,7 +132,7 @@ func LoadECHKey(key string, tlsConfig *tls.Config) error {
 	if loadErr != nil {
 		return fmt.Errorf("parse ECH keys failed, maybe format error:%s, or path error: %s", painTextErr.Error(), loadErr.Error())
 	}
-	gcFlag := new(os.File)
+	gcFlag := new(os.File) // tiny (on the order of 16 bytes or less) and pointer-free objects may never run the finalizer, so we choose new an os.File
 	updateMutex := sync.RWMutex{}
 	if watcher, err := fswatch.NewWatcher(fswatch.Options{Path: []string{key}, Callback: func(path string) {
 		updateMutex.Lock()
