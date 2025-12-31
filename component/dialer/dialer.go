@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/component/keepalive"
+	"github.com/metacubex/mihomo/component/mptcp"
 	"github.com/metacubex/mihomo/component/resolver"
 )
 
@@ -140,9 +141,7 @@ func dialContext(ctx context.Context, network string, destination netip.Addr, po
 
 	dialer := netDialer.(*net.Dialer)
 	keepalive.SetNetDialer(dialer)
-	if opt.mpTcp {
-		setMultiPathTCP(dialer)
-	}
+	mptcp.SetNetDialer(dialer, opt.mpTcp)
 
 	if DefaultSocketHook != nil { // ignore interfaceName, routingMark and tfo when DefaultSocketHook not null (in CMFA)
 		socketHookToToDialer(dialer)

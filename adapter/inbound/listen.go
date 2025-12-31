@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/metacubex/mihomo/component/keepalive"
+	"github.com/metacubex/mihomo/component/mptcp"
 
 	"github.com/metacubex/tfo-go"
 )
@@ -34,13 +35,13 @@ func Tfo() bool {
 func SetMPTCP(open bool) {
 	mutex.Lock()
 	defer mutex.Unlock()
-	setMultiPathTCP(&lc.ListenConfig, open)
+	mptcp.SetNetListenConfig(&lc.ListenConfig, open)
 }
 
 func MPTCP() bool {
 	mutex.RLock()
 	defer mutex.RUnlock()
-	return getMultiPathTCP(&lc.ListenConfig)
+	return mptcp.GetNetListenConfig(&lc.ListenConfig)
 }
 
 func preResolve(network, address string) (string, error) {
