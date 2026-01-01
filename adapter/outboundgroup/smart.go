@@ -48,7 +48,7 @@ const (
 	maxRetries               = 4
 	maxSelected              = 10
 
-	targetFailureLimit       = 10
+	targetFailureLimit       = 5
 
 	parallelDials            = 3
 	connectThreshold         = 3.0
@@ -1517,8 +1517,7 @@ func (s *Smart) findSameConnection(metadata *C.Metadata, target, asnInfo string,
 	if close {
 		for id := range allIDs {
 			if tracker := statistic.DefaultManager.Get(id); tracker != nil {
-				trackerMetadata := tracker.Info().Metadata
-				if trackerMetadata.UUID != metadata.UUID && lo.Contains(tracker.Chains(), s.Name()) {
+				if id != metadata.UUID && lo.Contains(tracker.Chains(), s.Name()) {
 					_ = tracker.Close()
 				}
 			}
