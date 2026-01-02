@@ -114,8 +114,8 @@ github.com/metacubex/nftables v0.0.0-20250503052935-30a69ab87793 h1:1Qpuy+sU3Dmy
 github.com/metacubex/nftables v0.0.0-20250503052935-30a69ab87793/go.mod h1:RjRNb4G52yAgfR+Oe/kp9G4PJJ97Fnj89eY1BFO3YyA=
 github.com/metacubex/qpack v0.6.0 h1:YqClGIMOpiRYLjV1qOs483Od08MdPgRnHjt90FuaAKw=
 github.com/metacubex/qpack v0.6.0/go.mod h1:lKGSi7Xk94IMvHGOmxS9eIei3bvIqpOAImEBsaOwTkA=
-github.com/metacubex/quic-go v0.58.1-0.20251222092318-72a81ab195ec h1:5ePGO2Xht06fpwjNIzfY5XS+82xwDHHx4xGbqgLbxjA=
-github.com/metacubex/quic-go v0.58.1-0.20251222092318-72a81ab195ec/go.mod h1:oNzMrmylS897M3zSMuapIdwSwfq6F2qW01Z3NhVRJhk=
+github.com/metacubex/quic-go v0.57.1-0.20251217071004-e89f497a2e72 h1:kNlYHZ75itJwkerDiySpixX+dKsv/K0TYQsKvuxogNM=
+github.com/metacubex/quic-go v0.57.1-0.20251217071004-e89f497a2e72/go.mod h1:N071X2oW2+kIhLlHW3mfcD2QP+zWu2bEs1EEAm66bvI=
 github.com/metacubex/randv2 v0.2.0 h1:uP38uBvV2SxYfLj53kuvAjbND4RUDfFJjwr4UigMiLs=
 github.com/metacubex/randv2 v0.2.0/go.mod h1:kFi2SzrQ5WuneuoLLCMkABtiBu6VRrMrWFqSPyj2cxY=
 github.com/metacubex/restls-client-go v0.1.7 h1:eCwiXCTQb5WJu9IlgYvDBA1OgrINv58dEe7hcN5H15k=
