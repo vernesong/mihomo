@@ -875,13 +875,6 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
 				}
 			}
 
-			if len(sortedNodes) > 10 {
-				if sortedWeights[9] > AllowedWeight {
-					sortedNodes = sortedNodes[:10]
-					sortedWeights = sortedWeights[:10]
-				}
-			}
-
 			if item.asnNumber != "" && !CdnASNs[item.asnNumber] {
 				key := asnCacheKey{item.asnNumber, item.isUDP}
 				asnCache[key] = asnCacheValue{

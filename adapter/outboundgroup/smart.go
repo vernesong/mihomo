@@ -482,12 +482,13 @@ func (s *Smart) MarshalJSON() ([]byte, error) {
 }
 
 func (s *Smart) fillProxies(selected []C.Proxy, weights map[string]float64, all []C.Proxy, minCount int, blockedNodes map[string]bool, isUDP bool, metadata *C.Metadata) []C.Proxy {
-	if len(all) == len(selected) {
+	if len(all) <= len(selected) {
 		return selected
 	}
 
-	if len(selected) >= minCount {
-		return selected
+	ratio := float64(len(selected)) / float64(len(all))
+	if len(selected) >= minCount && rand.Float64() < ratio {
+		return selected[:minCount]
 	}
 
 	selectedNames := make(map[string]bool, minCount)
@@ -531,6 +532,7 @@ func (s *Smart) fillProxies(selected []C.Proxy, weights map[string]float64, all 
 				}
 				selectedNames[p.Name()] = true
 				if len(selected) >= minCount {
+					selected = selected[:minCount]
 					break
 				}
 			}
