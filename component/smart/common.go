@@ -134,6 +134,43 @@ type (
 		Status             map[string]bool    `json:"status"`
 	}
 
+	ModelInput struct {
+		// 节点历史性能指标
+		Success     int64 // 成功次数
+		Failure     int64 // 失败次数
+		ConnectTime int64 // 连接时间(毫秒)
+		Latency     int64 // 延迟(毫秒)
+
+		// 上传相关特征
+		UploadTotal          float64 // 上传流量(字节)
+		HistoryUploadTotal   float64 // 历史上传流量(字节)
+		MaxuploadRate        float64 // 最大上传速率(字节/秒)
+		HistoryMaxUploadRate float64 // 历史最大上传速率(字节/秒)
+
+		// 下载相关特征
+		DownloadTotal          float64 // 下载流量(字节)
+		HistoryDownloadTotal   float64 // 历史下载流量(字节)
+		MaxdownloadRate        float64 // 最大下载速率(字节/秒)
+		HistoryMaxDownloadRate float64 // 历史最大下载速率(字节/秒)
+
+		ConnectionDuration float64 // 连接持续时间(毫秒)
+		LastUsed           int64   // 上次使用时间
+
+		// 连接特征
+		IsUDP bool // 是否UDP连接
+		IsTCP bool // 是否TCP连接
+
+		// 元数据特征
+		DestIPASN string   // 目标IP的ASN信息
+		Host      string   // 域名信息
+		DestIP    string   // 目标IP地址
+		DestPort  uint16   // 目标端口
+		DestGeoIP []string // 目标IP的地理位置信息
+
+		GroupName string // 策略组名称
+		NodeName  string // 节点名称
+	}
+
 	NodeState struct {
 		Name               string         `json:"name"`
 		FailureCount       int            `json:"failure_count"`

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/metacubex/mihomo/component/smart"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 )
@@ -52,8 +53,8 @@ func GetCollector() *DataCollector {
 	return smartCollector
 }
 
-func (c *DataCollector) AddSample(input *ModelInput, metadata *C.Metadata, actualWeight float64, weightSource string) {
-	if c == nil || input == nil {
+func (c *DataCollector) AddSample(input *smart.ModelInput, metadata *C.Metadata, actualWeight float64, weightSource string) {
+	if c == nil {
 		return
 	}
 
