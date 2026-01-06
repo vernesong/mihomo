@@ -8,7 +8,7 @@ import (
 )
 
 type ASN struct {
-	*Base
+	Base
 	asn         string
 	adapter     string
 	noResolveIP bool
@@ -72,10 +72,12 @@ func NewIPASN(asn string, adapter string, isSrc, noResolveIP bool) (*ASN, error)
 	}
 
 	return &ASN{
-		Base:        &Base{},
+		Base:        Base{},
 		asn:         asn,
 		adapter:     adapter,
 		noResolveIP: noResolveIP,
 		isSourceIP:  isSrc,
 	}, nil
 }
+
+var _ C.Rule = (*ASN)(nil)

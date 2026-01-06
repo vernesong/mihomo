@@ -9,7 +9,7 @@ import (
 )
 
 type RuleSet struct {
-	*common.Base
+	common.Base
 	ruleProviderName string
 	adapter          string
 	isSrc            bool
@@ -66,7 +66,7 @@ func (rs *RuleSet) getProvider() (P.RuleProvider, bool) {
 
 func NewRuleSet(ruleProviderName string, adapter string, isSrc bool, noResolveIP bool) (*RuleSet, error) {
 	rs := &RuleSet{
-		Base:             &common.Base{},
+		Base:             common.Base{},
 		ruleProviderName: ruleProviderName,
 		adapter:          adapter,
 		isSrc:            isSrc,
@@ -74,3 +74,5 @@ func NewRuleSet(ruleProviderName string, adapter string, isSrc bool, noResolveIP
 	}
 	return rs, nil
 }
+
+var _ C.Rule = (*RuleSet)(nil)

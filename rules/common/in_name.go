@@ -8,7 +8,7 @@ import (
 )
 
 type InName struct {
-	*Base
+	Base
 	names   []string
 	adapter string
 	payload string
@@ -46,9 +46,11 @@ func NewInName(iNames, adapter string) (*InName, error) {
 	}
 
 	return &InName{
-		Base:    &Base{},
+		Base:    Base{},
 		names:   names,
 		adapter: adapter,
 		payload: iNames,
 	}, nil
 }
+
+var _ C.Rule = (*InName)(nil)

@@ -62,9 +62,82 @@ type TunnelDialOptions struct {
 	Mode         string
 	TLSEnabled   bool   // when true, use HTTPS; otherwise, use HTTP (no port-based inference)
 	HostOverride string // optional Host header / SNI host (without scheme); accepts "example.com" or "example.com:443"
+	// Multiplex controls whether the caller should reuse underlying HTTP connections (HTTP/1.1 keep-alive / HTTP/2).
+	// To reuse across multiple dials, create a TunnelClient per proxy and reuse it.
+	// Values: "off" disables reuse; "auto"/"on" enables it.
+	Multiplex string
 	// DialContext overrides how the HTTP tunnel dials raw TCP/TLS connections.
 	// It must not be nil; passing nil is a programming error.
 	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+}
+
+type TunnelClientOptions struct {
+	TLSEnabled   bool
+	HostOverride string
+	DialContext  func(ctx context.Context, network, addr string) (net.Conn, error)
+	MaxIdleConns int
+}
+
+type TunnelClient struct {
+	client    *http.Client
+	transport *http.Transport
+	target    httpClientTarget
+}
+
+func NewTunnelClient(serverAddress string, opts TunnelClientOptions) (*TunnelClient, error) {
+	maxIdle := opts.MaxIdleConns
+	if maxIdle <= 0 {
+		maxIdle = 32
+	}
+
+	transport, target, err := buildHTTPTransport(serverAddress, opts.TLSEnabled, opts.HostOverride, opts.DialContext, maxIdle)
+	if err != nil {
+		return nil, err
+	}
+
+	return &TunnelClient{
+		client:    &http.Client{Transport: transport},
+		transport: transport,
+		target:    target,
+	}, nil
+}
+
+func (c *TunnelClient) CloseIdleConnections() {
+	if c == nil || c.transport == nil {
+		return
+	}
+	c.transport.CloseIdleConnections()
+}
+
+func (c *TunnelClient) DialTunnel(ctx context.Context, mode string) (net.Conn, error) {
+	if c == nil || c.client == nil {
+		return nil, fmt.Errorf("nil tunnel client")
+	}
+	tm := normalizeTunnelMode(mode)
+	if tm == TunnelModeLegacy {
+		return nil, fmt.Errorf("legacy mode does not use http tunnel")
+	}
+
+	switch tm {
+	case TunnelModeStream:
+		return dialStreamWithClient(ctx, c.client, c.target)
+	case TunnelModePoll:
+		return dialPollWithClient(ctx, c.client, c.target)
+	case TunnelModeAuto:
+		streamCtx, cancelX := context.WithTimeout(ctx, 3*time.Second)
+		c1, errX := dialStreamWithClient(streamCtx, c.client, c.target)
+		cancelX()
+		if errX == nil {
+			return c1, nil
+		}
+		c2, errP := dialPollWithClient(ctx, c.client, c.target)
+		if errP == nil {
+			return c2, nil
+		}
+		return nil, fmt.Errorf("auto tunnel failed: stream: %v; poll: %w", errX, errP)
+	default:
+		return dialStreamWithClient(ctx, c.client, c.target)
+	}
 }
 
 // DialTunnel establishes a bidirectional stream over HTTP:
@@ -192,41 +265,152 @@ type httpClientTarget struct {
 	headerHost string
 }
 
-func newHTTPClient(serverAddress string, opts TunnelDialOptions, maxIdleConns int) (*http.Client, httpClientTarget, error) {
-	if opts.DialContext == nil {
+func buildHTTPTransport(serverAddress string, tlsEnabled bool, hostOverride string, dialContext func(ctx context.Context, network, addr string) (net.Conn, error), maxIdleConns int) (*http.Transport, httpClientTarget, error) {
+	if dialContext == nil {
 		panic("httpmask: DialContext is nil")
 	}
 
-	scheme, urlHost, dialAddr, serverName, err := normalizeHTTPDialTarget(serverAddress, opts.TLSEnabled, opts.HostOverride)
+	scheme, urlHost, dialAddr, serverName, err := normalizeHTTPDialTarget(serverAddress, tlsEnabled, hostOverride)
 	if err != nil {
 		return nil, httpClientTarget{}, err
 	}
 
 	transport := &http.Transport{
-		ForceAttemptHTTP2:   scheme == "https",
-		DisableCompression:  true,
-		MaxIdleConns:        maxIdleConns,
-		IdleConnTimeout:     30 * time.Second,
-		TLSHandshakeTimeout: 10 * time.Second,
+		ForceAttemptHTTP2:     scheme == "https",
+		DisableCompression:    true,
+		MaxIdleConns:          maxIdleConns,
+		MaxIdleConnsPerHost:   maxIdleConns,
+		IdleConnTimeout:       30 * time.Second,
+		ResponseHeaderTimeout: 20 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
 		DialContext: func(dialCtx context.Context, network, _ string) (net.Conn, error) {
-			return opts.DialContext(dialCtx, network, dialAddr)
+			return dialContext(dialCtx, network, dialAddr)
 		},
 	}
 	if scheme == "https" {
-		transport.TLSClientConfig, err = ca.GetTLSConfig(ca.Option{TLSConfig: &tls.Config{
+		var tlsConf *tls.Config
+		tlsConf, err = ca.GetTLSConfig(ca.Option{TLSConfig: &tls.Config{
 			ServerName: serverName,
 			MinVersion: tls.VersionTLS12,
 		}})
 		if err != nil {
 			return nil, httpClientTarget{}, err
 		}
+		transport.TLSClientConfig = tlsConf
 	}
 
-	return &http.Client{Transport: transport}, httpClientTarget{
+	return transport, httpClientTarget{
 		scheme:     scheme,
 		urlHost:    urlHost,
 		headerHost: canonicalHeaderHost(urlHost, scheme),
 	}, nil
+}
+
+func newHTTPClient(serverAddress string, opts TunnelDialOptions, maxIdleConns int) (*http.Client, httpClientTarget, error) {
+	transport, target, err := buildHTTPTransport(serverAddress, opts.TLSEnabled, opts.HostOverride, opts.DialContext, maxIdleConns)
+	if err != nil {
+		return nil, httpClientTarget{}, err
+	}
+	return &http.Client{Transport: transport}, target, nil
+}
+
+type sessionDialInfo struct {
+	client     *http.Client
+	pushURL    string
+	pullURL    string
+	closeURL   string
+	headerHost string
+}
+
+func dialSessionWithClient(ctx context.Context, client *http.Client, target httpClientTarget, mode TunnelMode) (*sessionDialInfo, error) {
+	if client == nil {
+		return nil, fmt.Errorf("nil http client")
+	}
+
+	authorizeURL := (&url.URL{Scheme: target.scheme, Host: target.urlHost, Path: "/session"}).String()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, authorizeURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Host = target.headerHost
+	applyTunnelHeaders(req.Header, target.headerHost, mode)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+	_ = resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s authorize bad status: %s (%s)", mode, resp.Status, strings.TrimSpace(string(bodyBytes)))
+	}
+
+	token, err := parseTunnelToken(bodyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("%s authorize failed: %q", mode, strings.TrimSpace(string(bodyBytes)))
+	}
+	if token == "" {
+		return nil, fmt.Errorf("%s authorize empty token", mode)
+	}
+
+	pushURL := (&url.URL{Scheme: target.scheme, Host: target.urlHost, Path: "/api/v1/upload", RawQuery: "token=" + url.QueryEscape(token)}).String()
+	pullURL := (&url.URL{Scheme: target.scheme, Host: target.urlHost, Path: "/stream", RawQuery: "token=" + url.QueryEscape(token)}).String()
+	closeURL := (&url.URL{Scheme: target.scheme, Host: target.urlHost, Path: "/api/v1/upload", RawQuery: "token=" + url.QueryEscape(token) + "&close=1"}).String()
+
+	return &sessionDialInfo{
+		client:     client,
+		pushURL:    pushURL,
+		pullURL:    pullURL,
+		closeURL:   closeURL,
+		headerHost: target.headerHost,
+	}, nil
+}
+
+func dialSession(ctx context.Context, serverAddress string, opts TunnelDialOptions, mode TunnelMode) (*sessionDialInfo, error) {
+	client, target, err := newHTTPClient(serverAddress, opts, 32)
+	if err != nil {
+		return nil, err
+	}
+	return dialSessionWithClient(ctx, client, target, mode)
+}
+
+func bestEffortCloseSession(client *http.Client, closeURL, headerHost string, mode TunnelMode) {
+	if client == nil || closeURL == "" || headerHost == "" {
+		return
+	}
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(closeCtx, http.MethodPost, closeURL, nil)
+	if err != nil {
+		return
+	}
+	req.Host = headerHost
+	applyTunnelHeaders(req.Header, headerHost, mode)
+
+	resp, err := client.Do(req)
+	if err != nil || resp == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4*1024))
+	_ = resp.Body.Close()
+}
+
+func dialStreamWithClient(ctx context.Context, client *http.Client, target httpClientTarget) (net.Conn, error) {
+	// Prefer split session (Cloudflare-friendly). Fall back to stream-one for older servers / environments.
+	c, errSplit := dialStreamSplitWithClient(ctx, client, target)
+	if errSplit == nil {
+		return c, nil
+	}
+	c2, errOne := dialStreamOneWithClient(ctx, client, target)
+	if errOne == nil {
+		return c2, nil
+	}
+	return nil, fmt.Errorf("dial stream failed: split: %v; stream-one: %w", errSplit, errOne)
 }
 
 func dialStream(ctx context.Context, serverAddress string, opts TunnelDialOptions) (net.Conn, error) {
@@ -242,10 +426,9 @@ func dialStream(ctx context.Context, serverAddress string, opts TunnelDialOption
 	return nil, fmt.Errorf("dial stream failed: split: %v; stream-one: %w", errSplit, errOne)
 }
 
-func dialStreamOne(ctx context.Context, serverAddress string, opts TunnelDialOptions) (net.Conn, error) {
-	client, target, err := newHTTPClient(serverAddress, opts, 16)
-	if err != nil {
-		return nil, err
+func dialStreamOneWithClient(ctx context.Context, client *http.Client, target httpClientTarget) (net.Conn, error) {
+	if client == nil {
+		return nil, fmt.Errorf("nil http client")
 	}
 
 	r := rngPool.Get().(*mrand.Rand)
@@ -312,16 +495,15 @@ func dialStreamOne(ctx context.Context, serverAddress string, opts TunnelDialOpt
 	}
 }
 
-type streamSplitConn struct {
-	ctx    context.Context
-	cancel context.CancelFunc
+func dialStreamOne(ctx context.Context, serverAddress string, opts TunnelDialOptions) (net.Conn, error) {
+	client, target, err := newHTTPClient(serverAddress, opts, 32)
+	if err != nil {
+		return nil, err
+	}
+	return dialStreamOneWithClient(ctx, client, target)
+}
 
-	client     *http.Client
-	pushURL    string
-	pullURL    string
-	closeURL   string
-	headerHost string
-
+type queuedConn struct {
 	rxc    chan []byte
 	closed chan struct{}
 
@@ -329,16 +511,46 @@ type streamSplitConn struct {
 
 	mu         sync.Mutex
 	readBuf    []byte
+	closeErr   error
 	localAddr  net.Addr
 	remoteAddr net.Addr
 }
 
-func (c *streamSplitConn) Read(b []byte) (n int, err error) {
+func (c *queuedConn) closeWithError(err error) error {
+	c.mu.Lock()
+	select {
+	case <-c.closed:
+		c.mu.Unlock()
+		return nil
+	default:
+		if err == nil {
+			err = io.ErrClosedPipe
+		}
+		if c.closeErr == nil {
+			c.closeErr = err
+		}
+		close(c.closed)
+	}
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *queuedConn) closedErr() error {
+	c.mu.Lock()
+	err := c.closeErr
+	c.mu.Unlock()
+	if err == nil {
+		return io.ErrClosedPipe
+	}
+	return err
+}
+
+func (c *queuedConn) Read(b []byte) (n int, err error) {
 	if len(c.readBuf) == 0 {
 		select {
 		case c.readBuf = <-c.rxc:
 		case <-c.closed:
-			return 0, io.ErrClosedPipe
+			return 0, c.closedErr()
 		}
 	}
 	n = copy(b, c.readBuf)
@@ -346,7 +558,7 @@ func (c *streamSplitConn) Read(b []byte) (n int, err error) {
 	return n, nil
 }
 
-func (c *streamSplitConn) Write(b []byte) (n int, err error) {
+func (c *queuedConn) Write(b []byte) (n int, err error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
@@ -354,7 +566,7 @@ func (c *streamSplitConn) Write(b []byte) (n int, err error) {
 	select {
 	case <-c.closed:
 		c.mu.Unlock()
-		return 0, io.ErrClosedPipe
+		return 0, c.closedErr()
 	default:
 	}
 	c.mu.Unlock()
@@ -365,111 +577,97 @@ func (c *streamSplitConn) Write(b []byte) (n int, err error) {
 	case c.writeCh <- payload:
 		return len(b), nil
 	case <-c.closed:
-		return 0, io.ErrClosedPipe
+		return 0, c.closedErr()
 	}
 }
 
+func (c *queuedConn) LocalAddr() net.Addr  { return c.localAddr }
+func (c *queuedConn) RemoteAddr() net.Addr { return c.remoteAddr }
+
+func (c *queuedConn) SetDeadline(time.Time) error      { return nil }
+func (c *queuedConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *queuedConn) SetWriteDeadline(time.Time) error { return nil }
+
+type streamSplitConn struct {
+	queuedConn
+
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	client     *http.Client
+	pushURL    string
+	pullURL    string
+	closeURL   string
+	headerHost string
+}
+
 func (c *streamSplitConn) Close() error {
-	c.mu.Lock()
-	select {
-	case <-c.closed:
-		c.mu.Unlock()
-		return nil
-	default:
-		close(c.closed)
-	}
-	c.mu.Unlock()
+	_ = c.closeWithError(io.ErrClosedPipe)
 
 	if c.cancel != nil {
 		c.cancel()
 	}
-
-	// Best-effort session close signal (avoid leaking server-side sessions).
-	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(closeCtx, http.MethodPost, c.closeURL, nil)
-	if err == nil {
-		req.Host = c.headerHost
-		applyTunnelHeaders(req.Header, c.headerHost, TunnelModeStream)
-		if resp, doErr := c.client.Do(req); doErr == nil && resp != nil {
-			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4*1024))
-			_ = resp.Body.Close()
-		}
-	}
-
+	bestEffortCloseSession(c.client, c.closeURL, c.headerHost, TunnelModeStream)
 	return nil
 }
 
-func (c *streamSplitConn) LocalAddr() net.Addr  { return c.localAddr }
-func (c *streamSplitConn) RemoteAddr() net.Addr { return c.remoteAddr }
-
-func (c *streamSplitConn) SetDeadline(time.Time) error      { return nil }
-func (c *streamSplitConn) SetReadDeadline(time.Time) error  { return nil }
-func (c *streamSplitConn) SetWriteDeadline(time.Time) error { return nil }
-
-func dialStreamSplit(ctx context.Context, serverAddress string, opts TunnelDialOptions) (net.Conn, error) {
-	client, target, err := newHTTPClient(serverAddress, opts, 32)
-	if err != nil {
-		return nil, err
+func newStreamSplitConnFromInfo(info *sessionDialInfo) *streamSplitConn {
+	if info == nil {
+		return nil
 	}
-
-	authorizeURL := (&url.URL{Scheme: target.scheme, Host: target.urlHost, Path: "/session"}).String()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, authorizeURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Host = target.headerHost
-	applyTunnelHeaders(req.Header, target.headerHost, TunnelModeStream)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
-	_ = resp.Body.Close()
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("stream authorize bad status: %s (%s)", resp.Status, strings.TrimSpace(string(bodyBytes)))
-	}
-
-	token, err := parseTunnelToken(bodyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("stream authorize failed: %q", strings.TrimSpace(string(bodyBytes)))
-	}
-	if token == "" {
-		return nil, fmt.Errorf("stream authorize empty token")
-	}
-
-	pushURL := (&url.URL{Scheme: target.scheme, Host: target.urlHost, Path: "/api/v1/upload", RawQuery: "token=" + url.QueryEscape(token)}).String()
-	pullURL := (&url.URL{Scheme: target.scheme, Host: target.urlHost, Path: "/stream", RawQuery: "token=" + url.QueryEscape(token)}).String()
-	closeURL := (&url.URL{Scheme: target.scheme, Host: target.urlHost, Path: "/api/v1/upload", RawQuery: "token=" + url.QueryEscape(token) + "&close=1"}).String()
 
 	connCtx, cancel := context.WithCancel(context.Background())
 	c := &streamSplitConn{
 		ctx:        connCtx,
 		cancel:     cancel,
-		client:     client,
-		pushURL:    pushURL,
-		pullURL:    pullURL,
-		closeURL:   closeURL,
-		headerHost: target.headerHost,
-		rxc:        make(chan []byte, 256),
-		closed:     make(chan struct{}),
-		writeCh:    make(chan []byte, 256),
-		localAddr:  &net.TCPAddr{},
-		remoteAddr: &net.TCPAddr{},
+		client:     info.client,
+		pushURL:    info.pushURL,
+		pullURL:    info.pullURL,
+		closeURL:   info.closeURL,
+		headerHost: info.headerHost,
+		queuedConn: queuedConn{
+			rxc:        make(chan []byte, 256),
+			closed:     make(chan struct{}),
+			writeCh:    make(chan []byte, 256),
+			localAddr:  &net.TCPAddr{},
+			remoteAddr: &net.TCPAddr{},
+		},
 	}
 
 	go c.pullLoop()
 	go c.pushLoop()
+	return c
+}
+
+func dialStreamSplitWithClient(ctx context.Context, client *http.Client, target httpClientTarget) (net.Conn, error) {
+	info, err := dialSessionWithClient(ctx, client, target, TunnelModeStream)
+	if err != nil {
+		return nil, err
+	}
+	c := newStreamSplitConnFromInfo(info)
+	if c == nil {
+		return nil, fmt.Errorf("failed to build stream split conn")
+	}
+	return c, nil
+}
+
+func dialStreamSplit(ctx context.Context, serverAddress string, opts TunnelDialOptions) (net.Conn, error) {
+	info, err := dialSession(ctx, serverAddress, opts, TunnelModeStream)
+	if err != nil {
+		return nil, err
+	}
+	c := newStreamSplitConnFromInfo(info)
+	if c == nil {
+		return nil, fmt.Errorf("failed to build stream split conn")
+	}
 	return c, nil
 }
 
 func (c *streamSplitConn) pullLoop() {
 	const (
-		requestTimeout = 30 * time.Second
+		// requestTimeout must be long enough for continuous high-throughput streams (e.g. mux + large downloads).
+		// If it is too short, the client cancels the response mid-body and corrupts the byte stream.
+		requestTimeout = 2 * time.Minute
 		readChunkSize  = 32 * 1024
 		idleBackoff    = 25 * time.Millisecond
 		maxDialRetry   = 12
@@ -688,22 +886,16 @@ func (c *streamSplitConn) pushLoop() {
 }
 
 type pollConn struct {
+	queuedConn
+
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	client     *http.Client
 	pushURL    string
 	pullURL    string
 	closeURL   string
 	headerHost string
-
-	rxc    chan []byte
-	closed chan struct{}
-
-	writeCh chan []byte
-
-	mu         sync.Mutex
-	readBuf    []byte
-	closeErr   error
-	localAddr  net.Addr
-	remoteAddr net.Addr
 }
 
 func isDialError(err error) bool {
@@ -721,147 +913,67 @@ func isDialError(err error) bool {
 }
 
 func (c *pollConn) closeWithError(err error) error {
-	c.mu.Lock()
-	select {
-	case <-c.closed:
-		c.mu.Unlock()
-		return nil
-	default:
-		if err == nil {
-			err = io.ErrClosedPipe
-		}
-		if c.closeErr == nil {
-			c.closeErr = err
-		}
-		close(c.closed)
+	_ = c.queuedConn.closeWithError(err)
+	if c.cancel != nil {
+		c.cancel()
 	}
-	c.mu.Unlock()
-
-	// Best-effort session close signal (avoid leaking server-side sessions).
-	req, reqErr := http.NewRequest(http.MethodPost, c.closeURL, nil)
-	if reqErr == nil {
-		req.Host = c.headerHost
-		req.Header.Set("X-Sudoku-Tunnel", string(TunnelModePoll))
-		req.Header.Set("X-Sudoku-Version", "1")
-		if resp, doErr := c.client.Do(req); doErr == nil && resp != nil {
-			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4*1024))
-			_ = resp.Body.Close()
-		}
-	}
+	bestEffortCloseSession(c.client, c.closeURL, c.headerHost, TunnelModePoll)
 	return nil
-}
-
-func (c *pollConn) closedErr() error {
-	c.mu.Lock()
-	err := c.closeErr
-	c.mu.Unlock()
-	if err == nil {
-		return io.ErrClosedPipe
-	}
-	return err
-}
-
-func (c *pollConn) Read(b []byte) (n int, err error) {
-	if len(c.readBuf) == 0 {
-		select {
-		case c.readBuf = <-c.rxc:
-		case <-c.closed:
-			return 0, c.closedErr()
-		}
-	}
-	n = copy(b, c.readBuf)
-	c.readBuf = c.readBuf[n:]
-	return n, nil
-}
-
-func (c *pollConn) Write(b []byte) (n int, err error) {
-	if len(b) == 0 {
-		return 0, nil
-	}
-	c.mu.Lock()
-	select {
-	case <-c.closed:
-		c.mu.Unlock()
-		return 0, c.closedErr()
-	default:
-	}
-	c.mu.Unlock()
-
-	payload := make([]byte, len(b))
-	copy(payload, b)
-	select {
-	case c.writeCh <- payload:
-		return len(b), nil
-	case <-c.closed:
-		return 0, c.closedErr()
-	}
 }
 
 func (c *pollConn) Close() error {
 	return c.closeWithError(io.ErrClosedPipe)
 }
 
-func (c *pollConn) LocalAddr() net.Addr  { return c.localAddr }
-func (c *pollConn) RemoteAddr() net.Addr { return c.remoteAddr }
-
-func (c *pollConn) SetDeadline(time.Time) error      { return nil }
-func (c *pollConn) SetReadDeadline(time.Time) error  { return nil }
-func (c *pollConn) SetWriteDeadline(time.Time) error { return nil }
-
-func dialPoll(ctx context.Context, serverAddress string, opts TunnelDialOptions) (net.Conn, error) {
-	client, target, err := newHTTPClient(serverAddress, opts, 32)
-	if err != nil {
-		return nil, err
+func newPollConnFromInfo(info *sessionDialInfo) *pollConn {
+	if info == nil {
+		return nil
 	}
 
-	authorizeURL := (&url.URL{Scheme: target.scheme, Host: target.urlHost, Path: "/session"}).String()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, authorizeURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Host = target.headerHost
-	applyTunnelHeaders(req.Header, target.headerHost, TunnelModePoll)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
-	_ = resp.Body.Close()
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("poll authorize bad status: %s (%s)", resp.Status, strings.TrimSpace(string(bodyBytes)))
-	}
-
-	token, err := parseTunnelToken(bodyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("poll authorize failed: %q", strings.TrimSpace(string(bodyBytes)))
-	}
-	if token == "" {
-		return nil, fmt.Errorf("poll authorize empty token")
-	}
-
-	pushURL := (&url.URL{Scheme: target.scheme, Host: target.urlHost, Path: "/api/v1/upload", RawQuery: "token=" + url.QueryEscape(token)}).String()
-	pullURL := (&url.URL{Scheme: target.scheme, Host: target.urlHost, Path: "/stream", RawQuery: "token=" + url.QueryEscape(token)}).String()
-	closeURL := (&url.URL{Scheme: target.scheme, Host: target.urlHost, Path: "/api/v1/upload", RawQuery: "token=" + url.QueryEscape(token) + "&close=1"}).String()
-
+	connCtx, cancel := context.WithCancel(context.Background())
 	c := &pollConn{
-		client:     client,
-		pushURL:    pushURL,
-		pullURL:    pullURL,
-		closeURL:   closeURL,
-		headerHost: target.headerHost,
-		rxc:        make(chan []byte, 128),
-		closed:     make(chan struct{}),
-		writeCh:    make(chan []byte, 256),
-		localAddr:  &net.TCPAddr{},
-		remoteAddr: &net.TCPAddr{},
+		ctx:        connCtx,
+		cancel:     cancel,
+		client:     info.client,
+		pushURL:    info.pushURL,
+		pullURL:    info.pullURL,
+		closeURL:   info.closeURL,
+		headerHost: info.headerHost,
+		queuedConn: queuedConn{
+			rxc:        make(chan []byte, 128),
+			closed:     make(chan struct{}),
+			writeCh:    make(chan []byte, 256),
+			localAddr:  &net.TCPAddr{},
+			remoteAddr: &net.TCPAddr{},
+		},
 	}
 
 	go c.pullLoop()
 	go c.pushLoop()
+	return c
+}
+
+func dialPollWithClient(ctx context.Context, client *http.Client, target httpClientTarget) (net.Conn, error) {
+	info, err := dialSessionWithClient(ctx, client, target, TunnelModePoll)
+	if err != nil {
+		return nil, err
+	}
+	c := newPollConnFromInfo(info)
+	if c == nil {
+		return nil, fmt.Errorf("failed to build poll conn")
+	}
+	return c, nil
+}
+
+func dialPoll(ctx context.Context, serverAddress string, opts TunnelDialOptions) (net.Conn, error) {
+	info, err := dialSession(ctx, serverAddress, opts, TunnelModePoll)
+	if err != nil {
+		return nil, err
+	}
+	c := newPollConnFromInfo(info)
+	if c == nil {
+		return nil, fmt.Errorf("failed to build poll conn")
+	}
 	return c, nil
 }
 

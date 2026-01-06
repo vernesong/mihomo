@@ -114,6 +114,7 @@ type kcpTunOption struct {
 	AutoExpire   int    `obfs:"autoexpire,omitempty"`
 	ScavengeTTL  int    `obfs:"scavengettl,omitempty"`
 	MTU          int    `obfs:"mtu,omitempty"`
+	RateLimit    int    `obfs:"ratelimit,omitempty"`
 	SndWnd       int    `obfs:"sndwnd,omitempty"`
 	RcvWnd       int    `obfs:"rcvwnd,omitempty"`
 	DataShard    int    `obfs:"datashard,omitempty"`
@@ -128,6 +129,7 @@ type kcpTunOption struct {
 	SockBuf      int    `obfs:"sockbuf,omitempty"`
 	SmuxVer      int    `obfs:"smuxver,omitempty"`
 	SmuxBuf      int    `obfs:"smuxbuf,omitempty"`
+	FrameSize    int    `obfs:"framesize,omitempty"`
 	StreamBuf    int    `obfs:"streambuf,omitempty"`
 	KeepAlive    int    `obfs:"keepalive,omitempty"`
 }
@@ -426,6 +428,7 @@ func NewShadowSocks(option ShadowSocksOption) (*ShadowSocks, error) {
 			AutoExpire:   kcptunOpt.AutoExpire,
 			ScavengeTTL:  kcptunOpt.ScavengeTTL,
 			MTU:          kcptunOpt.MTU,
+			RateLimit:    kcptunOpt.RateLimit,
 			SndWnd:       kcptunOpt.SndWnd,
 			RcvWnd:       kcptunOpt.RcvWnd,
 			DataShard:    kcptunOpt.DataShard,
@@ -440,6 +443,7 @@ func NewShadowSocks(option ShadowSocksOption) (*ShadowSocks, error) {
 			SockBuf:      kcptunOpt.SockBuf,
 			SmuxVer:      kcptunOpt.SmuxVer,
 			SmuxBuf:      kcptunOpt.SmuxBuf,
+			FrameSize:    kcptunOpt.FrameSize,
 			StreamBuf:    kcptunOpt.StreamBuf,
 			KeepAlive:    kcptunOpt.KeepAlive,
 		})

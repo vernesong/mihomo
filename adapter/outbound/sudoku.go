@@ -19,6 +19,9 @@ type Sudoku struct {
 	option   *SudokuOption
 	baseConf sudoku.ProtocolConfig
 
+	httpMaskMu     sync.Mutex
+	httpMaskClient *sudoku.HTTPMaskTunnelClient
+
 	muxMu           sync.Mutex
 	muxClient       *sudoku.MultiplexClient
 	muxBackoffUntil time.Time
@@ -40,7 +43,7 @@ type SudokuOption struct {
 	HTTPMaskMode       string   `proxy:"http-mask-mode,omitempty"`      // "legacy" (default), "stream", "poll", "auto"
 	HTTPMaskTLS        bool     `proxy:"http-mask-tls,omitempty"`       // only for http-mask-mode stream/poll/auto
 	HTTPMaskHost       string   `proxy:"http-mask-host,omitempty"`      // optional Host/SNI override (domain or domain:port)
-	HTTPMaskMultiplex  string   `proxy:"http-mask-multiplex,omitempty"` // "off" (default), "auto", "on"
+	HTTPMaskMultiplex  string   `proxy:"http-mask-multiplex,omitempty"` // "off" (default), "auto" (reuse h1/h2), "on" (single tunnel, multi-target)
 	CustomTable        string   `proxy:"custom-table,omitempty"`        // optional custom byte layout, e.g. xpxvvpvv
 	CustomTables       []string `proxy:"custom-tables,omitempty"`       // optional table rotation patterns, overrides custom-table when non-empty
 }
@@ -53,18 +56,12 @@ func (s *Sudoku) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Con
 	}
 
 	muxMode := normalizeHTTPMaskMultiplex(cfg.HTTPMaskMultiplex)
-	if !cfg.DisableHTTPMask && muxMode != "off" {
-		shouldTry := muxMode == "on" || (muxMode == "auto" && httpTunnelModeEnabled(cfg.HTTPMaskMode))
-		if shouldTry {
-			stream, muxErr := s.dialMultiplex(ctx, cfg.TargetAddress, muxMode)
-			if muxErr == nil {
-				return NewConn(stream, s), nil
-			}
-			if muxMode != "auto" {
-				return nil, muxErr
-			}
-			s.noteMuxFailure(muxMode, muxErr)
+	if muxMode == "on" && !cfg.DisableHTTPMask && httpTunnelModeEnabled(cfg.HTTPMaskMode) {
+		stream, muxErr := s.dialMultiplex(ctx, cfg.TargetAddress, muxMode)
+		if muxErr == nil {
+			return NewConn(stream, s), nil
 		}
+		return nil, muxErr
 	}
 
 	c, err := s.dialAndHandshake(ctx, cfg)
@@ -229,6 +226,7 @@ func NewSudoku(option SudokuOption) (*Sudoku, error) {
 
 func (s *Sudoku) Close() error {
 	s.resetMuxClient()
+	s.resetHTTPMaskClient()
 	return s.Base.Close()
 }
 
@@ -261,7 +259,17 @@ func (s *Sudoku) dialAndHandshake(ctx context.Context, cfg *sudoku.ProtocolConfi
 
 	var c net.Conn
 	if !cfg.DisableHTTPMask && httpTunnelModeEnabled(cfg.HTTPMaskMode) {
-		c, err = sudoku.DialHTTPMaskTunnel(ctx, cfg.ServerAddress, cfg, s.dialer.DialContext)
+		muxMode := normalizeHTTPMaskMultiplex(cfg.HTTPMaskMultiplex)
+		switch muxMode {
+		case "auto", "on":
+			client, errX := s.getOrCreateHTTPMaskClient(cfg)
+			if errX != nil {
+				return nil, errX
+			}
+			c, err = client.Dial(ctx)
+		default:
+			c, err = sudoku.DialHTTPMaskTunnel(ctx, cfg.ServerAddress, cfg, s.dialer.DialContext)
+		}
 	}
 	if c == nil && err == nil {
 		c, err = s.dialer.DialContext(ctx, "tcp", s.addr)
@@ -378,5 +386,37 @@ func (s *Sudoku) resetMuxClient() {
 	if s.muxClient != nil {
 		_ = s.muxClient.Close()
 		s.muxClient = nil
+	}
+}
+
+func (s *Sudoku) getOrCreateHTTPMaskClient(cfg *sudoku.ProtocolConfig) (*sudoku.HTTPMaskTunnelClient, error) {
+	if s == nil {
+		return nil, fmt.Errorf("nil adapter")
+	}
+	if cfg == nil {
+		return nil, fmt.Errorf("config is required")
+	}
+
+	s.httpMaskMu.Lock()
+	defer s.httpMaskMu.Unlock()
+
+	if s.httpMaskClient != nil {
+		return s.httpMaskClient, nil
+	}
+
+	c, err := sudoku.NewHTTPMaskTunnelClient(cfg.ServerAddress, cfg, s.dialer.DialContext)
+	if err != nil {
+		return nil, err
+	}
+	s.httpMaskClient = c
+	return c, nil
+}
+
+func (s *Sudoku) resetHTTPMaskClient() {
+	s.httpMaskMu.Lock()
+	defer s.httpMaskMu.Unlock()
+	if s.httpMaskClient != nil {
+		s.httpMaskClient.CloseIdleConnections()
+		s.httpMaskClient = nil
 	}
 }

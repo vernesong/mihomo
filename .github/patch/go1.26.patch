@@ -1,4 +1,5 @@
-Subject: [PATCH] Fix os.RemoveAll not working on Windows7
+Subject: [PATCH] Revert "os: remove 5ms sleep on Windows in (*Process).Wait"
+Fix os.RemoveAll not working on Windows7
 Revert "runtime: always use LoadLibraryEx to load system libraries"
 Revert "syscall: remove Windows 7 console handle workaround"
 Revert "net: remove sysSocket fallback for Windows 7"
@@ -840,3 +841,43 @@ diff --git a/src/os/root_windows.go b/src/os/root_windows.go
 +func checkPathEscapesLstat(r *Root, name string) error {
 +	return checkPathEscapes(r, name)
 +}
+Index: src/os/exec_windows.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/src/os/exec_windows.go b/src/os/exec_windows.go
+--- a/src/os/exec_windows.go	(revision d47e0d22130d597dcf9daa6b41fd9501274f0cb2)
++++ b/src/os/exec_windows.go	(revision 00e8daec9a4d88f44a8dc55d3bdb71878e525b41)
+@@ -10,6 +10,7 @@
+ 	"runtime"
+ 	"syscall"
+ 	"time"
++	_ "unsafe"
+ )
+ 
+ // Note that Process.handle is never nil because Windows always requires
+@@ -49,9 +50,23 @@
+ 	// than statusDone.
+ 	p.doRelease(statusReleased)
+ 
++	var maj, min, build uint32
++	rtlGetNtVersionNumbers(&maj, &min, &build)
++	if maj < 10 {
++		// NOTE(brainman): It seems that sometimes process is not dead
++		// when WaitForSingleObject returns. But we do not know any
++		// other way to wait for it. Sleeping for a while seems to do
++		// the trick sometimes.
++		// See https://golang.org/issue/25965 for details.
++		time.Sleep(5 * time.Millisecond)
++	}
++
+ 	return &ProcessState{p.Pid, syscall.WaitStatus{ExitCode: ec}, &u}, nil
+ }
+ 
++//go:linkname rtlGetNtVersionNumbers syscall.rtlGetNtVersionNumbers
++func rtlGetNtVersionNumbers(majorVersion *uint32, minorVersion *uint32, buildNumber *uint32)
++
+ func (p *Process) signal(sig Signal) error {
+ 	handle, status := p.handleTransientAcquire()
+ 	switch status {

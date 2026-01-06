@@ -43,6 +43,7 @@ func (s *Server) Serve(pc net.PacketConn, handler func(net.Conn)) error {
 		conn.SetMtu(s.config.MTU)
 		conn.SetWindowSize(s.config.SndWnd, s.config.RcvWnd)
 		conn.SetACKNoDelay(s.config.AckNodelay)
+		conn.SetRateLimit(uint32(s.config.RateLimit))
 
 		var netConn net.Conn = conn
 		if !s.config.NoComp {
@@ -55,6 +56,7 @@ func (s *Server) Serve(pc net.PacketConn, handler func(net.Conn)) error {
 			smuxConfig.Version = s.config.SmuxVer
 			smuxConfig.MaxReceiveBuffer = s.config.SmuxBuf
 			smuxConfig.MaxStreamBuffer = s.config.StreamBuf
+			smuxConfig.MaxFrameSize = s.config.FrameSize
 			smuxConfig.KeepAliveInterval = time.Duration(s.config.KeepAlive) * time.Second
 			if smuxConfig.KeepAliveInterval >= smuxConfig.KeepAliveTimeout {
 				smuxConfig.KeepAliveTimeout = 3 * smuxConfig.KeepAliveInterval

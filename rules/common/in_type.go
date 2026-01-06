@@ -8,7 +8,7 @@ import (
 )
 
 type InType struct {
-	*Base
+	Base
 	types   []C.Type
 	adapter string
 	payload string
@@ -51,7 +51,7 @@ func NewInType(iTypes, adapter string) (*InType, error) {
 	}
 
 	return &InType{
-		Base:    &Base{},
+		Base:    Base{},
 		types:   tps,
 		adapter: adapter,
 		payload: strings.ToUpper(iTypes),
@@ -77,3 +77,5 @@ func parseInTypes(tps []string) (res []C.Type, err error) {
 	}
 	return
 }
+
+var _ C.Rule = (*InType)(nil)

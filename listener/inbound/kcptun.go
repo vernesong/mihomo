@@ -14,6 +14,7 @@ type KcpTun struct {
 	AutoExpire   int    `inbound:"autoexpire,omitempty"`
 	ScavengeTTL  int    `inbound:"scavengettl,omitempty"`
 	MTU          int    `inbound:"mtu,omitempty"`
+	RateLimit    int    `inbound:"ratelimit,omitempty"`
 	SndWnd       int    `inbound:"sndwnd,omitempty"`
 	RcvWnd       int    `inbound:"rcvwnd,omitempty"`
 	DataShard    int    `inbound:"datashard,omitempty"`
@@ -28,6 +29,7 @@ type KcpTun struct {
 	SockBuf      int    `inbound:"sockbuf,omitempty"`
 	SmuxVer      int    `inbound:"smuxver,omitempty"`
 	SmuxBuf      int    `inbound:"smuxbuf,omitempty"`
+	FrameSize    int    `inbound:"framesize,omitempty"`
 	StreamBuf    int    `inbound:"streambuf,omitempty"`
 	KeepAlive    int    `inbound:"keepalive,omitempty"`
 }
@@ -43,6 +45,7 @@ func (c KcpTun) Build() LC.KcpTun {
 			AutoExpire:   c.AutoExpire,
 			ScavengeTTL:  c.ScavengeTTL,
 			MTU:          c.MTU,
+			RateLimit:    c.RateLimit,
 			SndWnd:       c.SndWnd,
 			RcvWnd:       c.RcvWnd,
 			DataShard:    c.DataShard,
@@ -57,6 +60,7 @@ func (c KcpTun) Build() LC.KcpTun {
 			SockBuf:      c.SockBuf,
 			SmuxVer:      c.SmuxVer,
 			SmuxBuf:      c.SmuxBuf,
+			FrameSize:    c.FrameSize,
 			StreamBuf:    c.StreamBuf,
 			KeepAlive:    c.KeepAlive,
 		},

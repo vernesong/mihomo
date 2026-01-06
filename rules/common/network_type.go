@@ -2,19 +2,20 @@ package common
 
 import (
 	"fmt"
-	C "github.com/metacubex/mihomo/constant"
 	"strings"
+
+	C "github.com/metacubex/mihomo/constant"
 )
 
 type NetworkType struct {
-	*Base
+	Base
 	network C.NetWork
 	adapter string
 }
 
 func NewNetworkType(network, adapter string) (*NetworkType, error) {
 	ntType := NetworkType{
-		Base: &Base{},
+		Base: Base{},
 	}
 
 	ntType.adapter = adapter
@@ -45,3 +46,5 @@ func (n *NetworkType) Adapter() string {
 func (n *NetworkType) Payload() string {
 	return n.network.String()
 }
+
+var _ C.Rule = (*NetworkType)(nil)

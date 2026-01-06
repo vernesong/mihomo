@@ -26,6 +26,7 @@ type Config struct {
 	AutoExpire   int    `json:"autoexpire"`
 	ScavengeTTL  int    `json:"scavengettl"`
 	MTU          int    `json:"mtu"`
+	RateLimit    int    `json:"ratelimit"`
 	SndWnd       int    `json:"sndwnd"`
 	RcvWnd       int    `json:"rcvwnd"`
 	DataShard    int    `json:"datashard"`
@@ -40,6 +41,7 @@ type Config struct {
 	SockBuf      int    `json:"sockbuf"`
 	SmuxVer      int    `json:"smuxver"`
 	SmuxBuf      int    `json:"smuxbuf"`
+	FrameSize    int    `json:"framesize"`
 	StreamBuf    int    `json:"streambuf"`
 	KeepAlive    int    `json:"keepalive"`
 }
@@ -86,6 +88,9 @@ func (config *Config) FillDefaults() {
 	}
 	if config.SmuxBuf == 0 {
 		config.SmuxBuf = 4194304
+	}
+	if config.FrameSize == 0 {
+		config.FrameSize = 8192
 	}
 	if config.StreamBuf == 0 {
 		config.StreamBuf = 2097152
@@ -144,6 +149,8 @@ func (config *Config) NewBlock() (block kcp.BlockCrypt) {
 		block, _ = kcp.NewXTEABlockCrypt(pass[:16])
 	case "salsa20":
 		block, _ = kcp.NewSalsa20BlockCrypt(pass)
+	case "aes-128-gcm":
+		block, _ = kcp.NewAESGCMCrypt(pass[:16])
 	default:
 		config.Crypt = "aes"
 		block, _ = kcp.NewAESBlockCrypt(pass)

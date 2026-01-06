@@ -70,6 +70,7 @@ func (c *Client) createConn(ctx context.Context, dial DialFn) (*smux.Session, er
 	kcpconn.SetWindowSize(config.SndWnd, config.RcvWnd)
 	kcpconn.SetMtu(config.MTU)
 	kcpconn.SetACKNoDelay(config.AckNodelay)
+	kcpconn.SetRateLimit(uint32(config.RateLimit))
 
 	_ = kcpconn.SetDSCP(config.DSCP)
 	_ = kcpconn.SetReadBuffer(config.SockBuf)
@@ -78,6 +79,7 @@ func (c *Client) createConn(ctx context.Context, dial DialFn) (*smux.Session, er
 	smuxConfig.Version = config.SmuxVer
 	smuxConfig.MaxReceiveBuffer = config.SmuxBuf
 	smuxConfig.MaxStreamBuffer = config.StreamBuf
+	smuxConfig.MaxFrameSize = config.FrameSize
 	smuxConfig.KeepAliveInterval = time.Duration(config.KeepAlive) * time.Second
 	if smuxConfig.KeepAliveInterval >= smuxConfig.KeepAliveTimeout {
 		smuxConfig.KeepAliveTimeout = 3 * smuxConfig.KeepAliveInterval

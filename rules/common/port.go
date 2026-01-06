@@ -8,7 +8,7 @@ import (
 )
 
 type Port struct {
-	*Base
+	Base
 	adapter    string
 	port       string
 	ruleType   C.RuleType
@@ -49,7 +49,7 @@ func NewPort(port string, adapter string, ruleType C.RuleType) (*Port, error) {
 	}
 
 	return &Port{
-		Base:       &Base{},
+		Base:       Base{},
 		adapter:    adapter,
 		port:       port,
 		ruleType:   ruleType,

@@ -21,7 +21,7 @@ func WithIPCIDRNoResolve(noResolve bool) IPCIDROption {
 }
 
 type IPCIDR struct {
-	*Base
+	Base
 	ipnet       netip.Prefix
 	adapter     string
 	isSourceIP  bool
@@ -62,7 +62,7 @@ func NewIPCIDR(s string, adapter string, opts ...IPCIDROption) (*IPCIDR, error) 
 	}
 
 	ipcidr := &IPCIDR{
-		Base:    &Base{},
+		Base:    Base{},
 		ipnet:   ipnet,
 		adapter: adapter,
 	}
@@ -74,4 +74,4 @@ func NewIPCIDR(s string, adapter string, opts ...IPCIDROption) (*IPCIDR, error) 
 	return ipcidr, nil
 }
 
-//var _ C.Rule = (*IPCIDR)(nil)
+var _ C.Rule = (*IPCIDR)(nil)

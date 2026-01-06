@@ -8,7 +8,7 @@ import (
 )
 
 type DomainWildcard struct {
-	*Base
+	Base
 	pattern string
 	adapter string
 }
@@ -34,8 +34,10 @@ var _ C.Rule = (*DomainWildcard)(nil)
 func NewDomainWildcard(pattern string, adapter string) (*DomainWildcard, error) {
 	pattern = strings.ToLower(pattern)
 	return &DomainWildcard{
-		Base:    &Base{},
+		Base:    Base{},
 		pattern: pattern,
 		adapter: adapter,
 	}, nil
 }
+
+var _ C.Rule = (*DomainWildcard)(nil)

@@ -7,7 +7,7 @@ require (
 	github.com/bahlo/generic-list-go v0.2.0
 	github.com/coreos/go-iptables v0.8.0
 	github.com/dlclark/regexp2 v1.11.5
-	github.com/enfein/mieru/v3 v3.26.0
+	github.com/enfein/mieru/v3 v3.26.2
 	github.com/gobwas/ws v1.4.0
 	github.com/gofrs/uuid/v5 v5.4.0
 	github.com/golang/snappy v1.0.0
@@ -24,7 +24,7 @@ require (
 	github.com/metacubex/fswatch v0.1.1
 	github.com/metacubex/gopacket v1.1.20-0.20230608035415-7e2f98a3e759
 	github.com/metacubex/http v0.1.0
-	github.com/metacubex/kcp-go v0.0.0-20251111012849-7455698490e9
+	github.com/metacubex/kcp-go v0.0.0-20260105040817-550693377604
 	github.com/metacubex/mlkem v0.1.0
 	github.com/metacubex/quic-go v0.57.1-0.20251217071004-e89f497a2e72
 	github.com/metacubex/randv2 v0.2.0
@@ -38,7 +38,7 @@ require (
 	github.com/metacubex/sing-tun v0.4.11
 	github.com/metacubex/sing-vmess v0.2.4
 	github.com/metacubex/sing-wireguard v0.0.0-20250503063753-2dc62acc626f
-	github.com/metacubex/smux v0.0.0-20251111013112-03f8d12dafc1
+	github.com/metacubex/smux v0.0.0-20260105030934-d0c8756d3141
 	github.com/metacubex/tfo-go v0.0.0-20251130171125-413e892ac443
 	github.com/metacubex/tls v0.1.0
 	github.com/metacubex/utls v1.8.3

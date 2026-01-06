@@ -27,6 +27,8 @@ const (
 	ProcessPath
 	ProcessNameRegex
 	ProcessPathRegex
+	ProcessNameWildcard
+	ProcessPathWildcard
 	RuleSet
 	Network
 	Uid
@@ -105,6 +107,10 @@ func (rt RuleType) String() string {
 		return "ProcessNameRegex"
 	case ProcessPathRegex:
 		return "ProcessPathRegex"
+	case ProcessNameWildcard:
+		return "ProcessNameWildcard"
+	case ProcessPathWildcard:
+		return "ProcessPathWildcard"
 	case MATCH:
 		return "Match"
 	case RuleSet:

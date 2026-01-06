@@ -8,7 +8,7 @@ import (
 )
 
 type DSCP struct {
-	*Base
+	Base
 	ranges  utils.IntRanges[uint8]
 	payload string
 	adapter string
@@ -41,9 +41,11 @@ func NewDSCP(dscp string, adapter string) (*DSCP, error) {
 		}
 	}
 	return &DSCP{
-		Base:    &Base{},
+		Base:    Base{},
 		payload: dscp,
 		ranges:  ranges,
 		adapter: adapter,
 	}, nil
 }
+
+var _ C.Rule = (*DSCP)(nil)

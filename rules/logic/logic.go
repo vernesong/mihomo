@@ -13,7 +13,7 @@ import (
 )
 
 type Logic struct {
-	*common.Base
+	common.Base
 	payload  string
 	adapter  string
 	ruleType C.RuleType
@@ -24,7 +24,7 @@ type Logic struct {
 }
 
 func NewSubRule(payload, adapter string, subRules map[string][]C.Rule, parseRule common.ParseRuleFunc) (*Logic, error) {
-	logic := &Logic{Base: &common.Base{}, payload: payload, adapter: adapter, ruleType: C.SubRules, subRules: subRules}
+	logic := &Logic{Base: common.Base{}, payload: payload, adapter: adapter, ruleType: C.SubRules, subRules: subRules}
 	err := logic.parsePayload(fmt.Sprintf("(%s)", payload), parseRule)
 	if err != nil {
 		return nil, err
@@ -37,7 +37,7 @@ func NewSubRule(payload, adapter string, subRules map[string][]C.Rule, parseRule
 }
 
 func NewNOT(payload string, adapter string, parseRule common.ParseRuleFunc) (*Logic, error) {
-	logic := &Logic{Base: &common.Base{}, payload: payload, adapter: adapter, ruleType: C.NOT}
+	logic := &Logic{Base: common.Base{}, payload: payload, adapter: adapter, ruleType: C.NOT}
 	err := logic.parsePayload(payload, parseRule)
 	if err != nil {
 		return nil, err
@@ -50,7 +50,7 @@ func NewNOT(payload string, adapter string, parseRule common.ParseRuleFunc) (*Lo
 }
 
 func NewOR(payload string, adapter string, parseRule common.ParseRuleFunc) (*Logic, error) {
-	logic := &Logic{Base: &common.Base{}, payload: payload, adapter: adapter, ruleType: C.OR}
+	logic := &Logic{Base: common.Base{}, payload: payload, adapter: adapter, ruleType: C.OR}
 	err := logic.parsePayload(payload, parseRule)
 	if err != nil {
 		return nil, err
@@ -59,7 +59,7 @@ func NewOR(payload string, adapter string, parseRule common.ParseRuleFunc) (*Log
 }
 
 func NewAND(payload string, adapter string, parseRule common.ParseRuleFunc) (*Logic, error) {
-	logic := &Logic{Base: &common.Base{}, payload: payload, adapter: adapter, ruleType: C.AND}
+	logic := &Logic{Base: common.Base{}, payload: payload, adapter: adapter, ruleType: C.AND}
 	err := logic.parsePayload(payload, parseRule)
 	if err != nil {
 		return nil, err
@@ -265,3 +265,5 @@ func (logic *Logic) ProviderNames() (names []string) {
 	}
 	return
 }
+
+var _ C.Rule = (*Logic)(nil)

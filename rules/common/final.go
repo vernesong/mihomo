@@ -5,7 +5,7 @@ import (
 )
 
 type Match struct {
-	*Base
+	Base
 	adapter string
 }
 
@@ -27,9 +27,9 @@ func (f *Match) Payload() string {
 
 func NewMatch(adapter string) *Match {
 	return &Match{
-		Base:    &Base{},
+		Base:    Base{},
 		adapter: adapter,
 	}
 }
 
-//var _ C.Rule = (*Match)(nil)
+var _ C.Rule = (*Match)(nil)

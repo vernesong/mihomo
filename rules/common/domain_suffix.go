@@ -8,7 +8,7 @@ import (
 )
 
 type DomainSuffix struct {
-	*Base
+	Base
 	suffix  string
 	adapter string
 }
@@ -33,10 +33,10 @@ func (ds *DomainSuffix) Payload() string {
 func NewDomainSuffix(suffix string, adapter string) *DomainSuffix {
 	punycode, _ := idna.ToASCII(strings.ToLower(suffix))
 	return &DomainSuffix{
-		Base:    &Base{},
+		Base:    Base{},
 		suffix:  punycode,
 		adapter: adapter,
 	}
 }
 
-//var _ C.Rule = (*DomainSuffix)(nil)
+var _ C.Rule = (*DomainSuffix)(nil)

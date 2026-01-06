@@ -10,7 +10,7 @@ import (
 )
 
 type Uid struct {
-	*Base
+	Base
 	uids    utils.IntRanges[uint32]
 	oUid    string
 	adapter string
@@ -30,7 +30,7 @@ func NewUid(oUid, adapter string) (*Uid, error) {
 		return nil, errPayload
 	}
 	return &Uid{
-		Base:    &Base{},
+		Base:    Base{},
 		adapter: adapter,
 		oUid:    oUid,
 		uids:    uidRange,
@@ -61,3 +61,5 @@ func (u *Uid) Adapter() string {
 func (u *Uid) Payload() string {
 	return u.oUid
 }
+
+var _ C.Rule = (*Uid)(nil)

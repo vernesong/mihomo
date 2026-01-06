@@ -83,6 +83,59 @@ func DialHTTPMaskTunnel(ctx context.Context, serverAddress string, cfg *Protocol
 		Mode:         cfg.HTTPMaskMode,
 		TLSEnabled:   cfg.HTTPMaskTLSEnabled,
 		HostOverride: cfg.HTTPMaskHost,
+		Multiplex:    cfg.HTTPMaskMultiplex,
 		DialContext:  dial,
 	})
+}
+
+type HTTPMaskTunnelClient struct {
+	mode   string
+	client *httpmask.TunnelClient
+}
+
+func NewHTTPMaskTunnelClient(serverAddress string, cfg *ProtocolConfig, dial TunnelDialer) (*HTTPMaskTunnelClient, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is required")
+	}
+	if cfg.DisableHTTPMask {
+		return nil, fmt.Errorf("http mask is disabled")
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.HTTPMaskMode)) {
+	case "stream", "poll", "auto":
+	default:
+		return nil, fmt.Errorf("http-mask-mode=%q does not use http tunnel", cfg.HTTPMaskMode)
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.HTTPMaskMultiplex)) {
+	case "auto", "on":
+	default:
+		return nil, fmt.Errorf("http-mask-multiplex=%q does not enable reuse", cfg.HTTPMaskMultiplex)
+	}
+
+	c, err := httpmask.NewTunnelClient(serverAddress, httpmask.TunnelClientOptions{
+		TLSEnabled:   cfg.HTTPMaskTLSEnabled,
+		HostOverride: cfg.HTTPMaskHost,
+		DialContext:  dial,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &HTTPMaskTunnelClient{
+		mode:   cfg.HTTPMaskMode,
+		client: c,
+	}, nil
+}
+
+func (c *HTTPMaskTunnelClient) Dial(ctx context.Context) (net.Conn, error) {
+	if c == nil || c.client == nil {
+		return nil, fmt.Errorf("nil httpmask tunnel client")
+	}
+	return c.client.DialTunnel(ctx, c.mode)
+}
+
+func (c *HTTPMaskTunnelClient) CloseIdleConnections() {
+	if c == nil || c.client == nil {
+		return
+	}
+	c.client.CloseIdleConnections()
 }

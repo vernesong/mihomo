@@ -12,7 +12,7 @@ import (
 )
 
 type GEOSITE struct {
-	*Base
+	Base
 	country    string
 	adapter    string
 	recodeSize int
@@ -68,7 +68,7 @@ func NewGEOSITE(country string, adapter string) (*GEOSITE, error) {
 	}
 
 	geoSite := &GEOSITE{
-		Base:    &Base{},
+		Base:    Base{},
 		country: country,
 		adapter: adapter,
 	}

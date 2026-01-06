@@ -8,7 +8,7 @@ import (
 )
 
 type InUser struct {
-	*Base
+	Base
 	users   []string
 	adapter string
 	payload string
@@ -46,9 +46,11 @@ func NewInUser(iUsers, adapter string) (*InUser, error) {
 	}
 
 	return &InUser{
-		Base:    &Base{},
+		Base:    Base{},
 		users:   users,
 		adapter: adapter,
 		payload: iUsers,
 	}, nil
 }
+
+var _ C.Rule = (*InUser)(nil)

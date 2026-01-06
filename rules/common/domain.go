@@ -8,7 +8,7 @@ import (
 )
 
 type Domain struct {
-	*Base
+	Base
 	domain  string
 	adapter string
 }
@@ -32,10 +32,10 @@ func (d *Domain) Payload() string {
 func NewDomain(domain string, adapter string) *Domain {
 	punycode, _ := idna.ToASCII(strings.ToLower(domain))
 	return &Domain{
-		Base:    &Base{},
+		Base:    Base{},
 		domain:  punycode,
 		adapter: adapter,
 	}
 }
 
-//var _ C.Rule = (*Domain)(nil)
+var _ C.Rule = (*Domain)(nil)

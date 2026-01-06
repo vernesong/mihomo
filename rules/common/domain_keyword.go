@@ -8,7 +8,7 @@ import (
 )
 
 type DomainKeyword struct {
-	*Base
+	Base
 	keyword string
 	adapter string
 }
@@ -33,10 +33,10 @@ func (dk *DomainKeyword) Payload() string {
 func NewDomainKeyword(keyword string, adapter string) *DomainKeyword {
 	punycode, _ := idna.ToASCII(strings.ToLower(keyword))
 	return &DomainKeyword{
-		Base:    &Base{},
+		Base:    Base{},
 		keyword: punycode,
 		adapter: adapter,
 	}
 }
 
-//var _ C.Rule = (*DomainKeyword)(nil)
+var _ C.Rule = (*DomainKeyword)(nil)
