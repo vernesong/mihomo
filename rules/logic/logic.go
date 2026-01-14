@@ -2,14 +2,12 @@ package logic
 
 import (
 	"fmt"
-	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/rules/common"
-
-	list "github.com/bahlo/generic-list-go"
 )
 
 type Logic struct {
@@ -70,7 +68,6 @@ func NewAND(payload string, adapter string, parseRule common.ParseRuleFunc) (*Lo
 type Range struct {
 	start int
 	end   int
-	index int
 }
 
 func (r Range) containRange(preStart, preEnd int) bool {
@@ -89,40 +86,35 @@ func (logic *Logic) payloadToRule(subPayload string, parseRule common.ParseRuleF
 }
 
 func (logic *Logic) format(payload string) ([]Range, error) {
-	stack := list.New[Range]()
-	num := 0
+	stack := make([]int, 0)
 	subRanges := make([]Range, 0)
 	for i, c := range payload {
 		if c == '(' {
-			sr := Range{
-				start: i,
-				index: num,
-			}
-
-			num++
-			stack.PushBack(sr)
+			stack = append(stack, i) // push
 		} else if c == ')' {
-			if stack.Len() == 0 {
+			if len(stack) == 0 {
 				return nil, fmt.Errorf("missing '('")
 			}
 
-			sr := stack.Back()
-			stack.Remove(sr)
-			sr.Value.end = i
-			subRanges = append(subRanges, sr.Value)
+			back := len(stack) - 1
+			start := stack[back] // back
+			stack = stack[:back] // pop
+			subRanges = append(subRanges, Range{
+				start: start,
+				end:   i,
+			})
 		}
 	}
 
-	if stack.Len() != 0 {
+	if len(stack) != 0 {
 		return nil, fmt.Errorf("format error is missing )")
 	}
 
-	sortResult := make([]Range, len(subRanges))
-	for _, sr := range subRanges {
-		sortResult[sr.index] = sr
-	}
+	sort.Slice(subRanges, func(i, j int) bool {
+		return subRanges[i].start < subRanges[j].start
+	})
 
-	return sortResult, nil
+	return subRanges, nil
 }
 
 func (logic *Logic) findSubRuleRange(payload string, ruleRanges []Range) []Range {
@@ -152,36 +144,32 @@ func (logic *Logic) findSubRuleRange(payload string, ruleRanges []Range) []Range
 }
 
 func (logic *Logic) parsePayload(payload string, parseRule common.ParseRuleFunc) error {
-	regex, err := regexp.Compile("\\(.*\\)")
+	if !strings.HasPrefix(payload, "(") || !strings.HasSuffix(payload, ")") { // the payload must be "(xxx)" format
+		return fmt.Errorf("payload format error")
+	}
+
+	subAllRanges, err := logic.format(payload)
 	if err != nil {
 		return err
 	}
 
-	if regex.MatchString(payload) {
-		subAllRanges, err := logic.format(payload)
+	rules := make([]C.Rule, 0, len(subAllRanges))
+
+	subRanges := logic.findSubRuleRange(payload, subAllRanges)
+	for _, subRange := range subRanges {
+		subPayload := payload[subRange.start+1 : subRange.end]
+
+		rule, err := logic.payloadToRule(subPayload, parseRule)
 		if err != nil {
 			return err
 		}
-		rules := make([]C.Rule, 0, len(subAllRanges))
 
-		subRanges := logic.findSubRuleRange(payload, subAllRanges)
-		for _, subRange := range subRanges {
-			subPayload := payload[subRange.start+1 : subRange.end]
-
-			rule, err := logic.payloadToRule(subPayload, parseRule)
-			if err != nil {
-				return err
-			}
-
-			rules = append(rules, rule)
-		}
-
-		logic.rules = rules
-
-		return nil
+		rules = append(rules, rule)
 	}
 
-	return fmt.Errorf("payload format error")
+	logic.rules = rules
+
+	return nil
 }
 
 func (logic *Logic) RuleType() C.RuleType {
