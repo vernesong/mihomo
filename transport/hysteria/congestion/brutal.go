@@ -85,7 +85,7 @@ func (b *BrutalSender) OnCongestionEvent(number congestion.PacketNumber, lostByt
 }
 
 func (b *BrutalSender) OnCongestionEventEx(priorInFlight congestion.ByteCount, eventTime monotime.Time, ackedPackets []congestion.AckedPacketInfo, lostPackets []congestion.LostPacketInfo) {
-	currentTimestamp := int64(eventTime)
+	currentTimestamp := int64(time.Duration(eventTime) / time.Second)
 	slot := currentTimestamp % pktInfoSlotCount
 	if b.pktInfoSlots[slot].Timestamp == currentTimestamp {
 		b.pktInfoSlots[slot].LossCount += uint64(len(lostPackets))

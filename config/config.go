@@ -35,6 +35,7 @@ import (
 	R "github.com/metacubex/mihomo/rules"
 	RC "github.com/metacubex/mihomo/rules/common"
 	RP "github.com/metacubex/mihomo/rules/provider"
+	RW "github.com/metacubex/mihomo/rules/wrapper"
 	T "github.com/metacubex/mihomo/tunnel"
 
 	orderedmap "github.com/wk8/go-ordered-map/v2"
@@ -1098,6 +1099,10 @@ func parseRules(rulesConfig []string, proxies map[string]C.Proxy, ruleProviders 
 			if _, ok := ruleProviders[name]; !ok {
 				return nil, fmt.Errorf("%s[%d] [%s] error: rule set [%s] not found", format, idx, line, name)
 			}
+		}
+
+		if format == "rules" { // only wrap top level rules
+			parsed = RW.NewRuleWrapper(parsed)
 		}
 
 		rules = append(rules, parsed)
