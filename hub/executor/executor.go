@@ -434,6 +434,9 @@ func updateGeneral(general *config.General, logging bool) {
 	mihomoHttp.SetUA(general.GlobalUA)
 	resource.SetETag(general.ETagSupport)
 
+	if general.GlobalClientFingerprint != "" {
+		log.Warnln("The `global-client-fingerprint` configuration is deprecated, please set `client-fingerprint` directly on the proxy instead")
+	}
 	tlsC.SetGlobalFingerprint(general.GlobalClientFingerprint)
 }
 

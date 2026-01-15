@@ -2,7 +2,6 @@ package sudoku
 
 import (
 	"bufio"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -153,14 +152,17 @@ func buildServerObfsConn(raw net.Conn, cfg *ProtocolConfig, table *sudoku.Table,
 func buildHandshakePayload(key string) [16]byte {
 	var payload [16]byte
 	binary.BigEndian.PutUint64(payload[:8], uint64(time.Now().Unix()))
-	// Hash the decoded HEX bytes of the key, not the HEX string itself.
-	// This ensures the user hash is computed on the actual key bytes.
-	keyBytes, err := hex.DecodeString(key)
-	if err != nil {
-		// Fallback: if key is not valid HEX (e.g., a UUID or plain string), hash the string bytes
-		keyBytes = []byte(key)
+
+	// Align with upstream: only decode hex bytes when this key is an ED25519 key material.
+	// For plain UUID/strings (even if they look like hex), hash the string bytes as-is.
+	src := []byte(key)
+	if _, err := crypto.RecoverPublicKey(key); err == nil {
+		if keyBytes, decErr := hex.DecodeString(key); decErr == nil && len(keyBytes) > 0 {
+			src = keyBytes
+		}
 	}
-	hash := sha256.Sum256(keyBytes)
+
+	hash := sha256.Sum256(src)
 	copy(payload[8:], hash[:8])
 	return payload
 }
@@ -211,12 +213,12 @@ func ClientHandshakeWithOptions(rawConn net.Conn, cfg *ProtocolConfig, opt Clien
 	}
 
 	if !cfg.DisableHTTPMask {
-		if err := WriteHTTPMaskHeader(rawConn, cfg.ServerAddress, opt.HTTPMaskStrategy); err != nil {
+		if err := WriteHTTPMaskHeader(rawConn, cfg.ServerAddress, cfg.HTTPMaskPathRoot, opt.HTTPMaskStrategy); err != nil {
 			return nil, fmt.Errorf("write http mask failed: %w", err)
 		}
 	}
 
-	table, tableID, err := pickClientTable(cfg)
+	table, err := pickClientTable(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -228,9 +230,6 @@ func ClientHandshakeWithOptions(rawConn net.Conn, cfg *ProtocolConfig, opt Clien
 	}
 
 	handshake := buildHandshakePayload(cfg.Key)
-	if len(cfg.tableCandidates()) > 1 {
-		handshake[8] = tableID
-	}
 	if _, err := cConn.Write(handshake[:]); err != nil {
 		cConn.Close()
 		return nil, fmt.Errorf("send handshake failed: %w", err)
@@ -376,19 +375,9 @@ func normalizeHTTPMaskStrategy(strategy string) string {
 	}
 }
 
-// randomByte returns a cryptographically random byte (with a math/rand fallback).
-func randomByte() byte {
-	var b [1]byte
-	if _, err := rand.Read(b[:]); err == nil {
-		return b[0]
-	}
-	return byte(time.Now().UnixNano())
-}
-
 func userHashFromHandshake(handshakeBuf []byte) string {
 	if len(handshakeBuf) < 16 {
 		return ""
 	}
-	// handshake[8] may be a table ID when table rotation is enabled; use [9:16] as stable user hash bytes.
-	return hex.EncodeToString(handshakeBuf[9:16])
+	return hex.EncodeToString(handshakeBuf[8:16])
 }
