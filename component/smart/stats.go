@@ -83,11 +83,6 @@ func (s *Store) GetOrCreateAtomicRecord(cacheKey string, group, config, target, 
 	}
 
 	record := &AtomicStatsRecord{
-		uploadTotal:     atomic.NewFloat64(0),
-		downloadTotal:   atomic.NewFloat64(0),
-		duration:        atomic.NewFloat64(0),
-		maxUploadRate:   atomic.NewFloat64(0),
-		maxDownloadRate: atomic.NewFloat64(0),
 		weights:         lru.New[string, float64](lru.WithSize[string, float64](100)),
 		status:          lru.New[string, bool](lru.WithSize[string, bool](100)),
 	}
@@ -127,7 +122,7 @@ func (s *Store) GetOrCreateAtomicRecord(cacheKey string, group, config, target, 
 // 创建统计快照
 func (record *AtomicStatsRecord) CreateStatsSnapshot() *StatsRecord {
 	if record == nil {
-		return &StatsRecord{Weights: make(map[string]float64)}
+		return &StatsRecord{}
 	}
 
 	return &StatsRecord{
@@ -1089,7 +1084,7 @@ func (s *Store) GetTargetFailureStats(group, config, target string) (map[string]
 }
 
 func (s *Store) UpdateTargetFailureStats(group, config, target string, failureCount int64, stats TargetFailureStats) {
-	if failureCount <= 0 && stats.FailureCount <= 0{
+	if failureCount <= 0 && stats.FailureCount <= 0 {
 		return
 	}
 
