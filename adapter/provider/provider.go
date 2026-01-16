@@ -13,6 +13,7 @@ import (
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/common/convert"
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/common/yaml"
 	"github.com/metacubex/mihomo/component/profile/cachefile"
 	"github.com/metacubex/mihomo/component/resource"
 	C "github.com/metacubex/mihomo/constant"
@@ -21,7 +22,6 @@ import (
 
 	"github.com/dlclark/regexp2"
 	"github.com/metacubex/http"
-	"gopkg.in/yaml.v3"
 )
 
 const (

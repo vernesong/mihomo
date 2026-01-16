@@ -7,20 +7,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/metacubex/mihomo/component/ca"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 
-	"github.com/metacubex/tls"
 	D "github.com/miekg/dns"
 )
 
 type client struct {
-	port           string
-	host           string
-	dialer         *dnsDialer
-	schema         string
-	skipCertVerify bool
+	port   string
+	host   string
+	dialer *dnsDialer
+	schema string
 }
 
 var _ dnsClient = (*client)(nil)
@@ -42,23 +39,6 @@ func (c *client) ExchangeContext(ctx context.Context, m *D.Msg) (*D.Msg, error) 
 		return nil, err
 	}
 	defer conn.Close()
-
-	if c.schema == "tls" {
-		tlsConfig, err := ca.GetTLSConfig(ca.Option{
-			TLSConfig: &tls.Config{
-				ServerName:         c.host,
-				InsecureSkipVerify: c.skipCertVerify,
-			},
-		})
-		if err != nil {
-			return nil, err
-		}
-		tlsConn := tls.Client(conn, tlsConfig)
-		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			return nil, err
-		}
-		conn = tlsConn
-	}
 
 	// miekg/dns ExchangeContext doesn't respond to context cancel.
 	// this is a workaround
@@ -117,12 +97,6 @@ func newClient(addr string, resolver *Resolver, netType string, params map[strin
 	}
 	if strings.HasPrefix(netType, "tcp") {
 		c.schema = "tcp"
-		if strings.HasSuffix(netType, "tls") {
-			c.schema = "tls"
-		}
-	}
-	if params["skip-cert-verify"] == "true" {
-		c.skipCertVerify = true
 	}
 	return c
 }
