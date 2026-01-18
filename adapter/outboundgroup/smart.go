@@ -38,7 +38,7 @@ import (
 
 const (
 	prefetchInterval         = 10 * time.Minute
-	cleanupInterval          = 6 * time.Hour
+	cleanupInterval          = 2 * time.Hour
 	cacheParamAdjustInterval = 5 * time.Minute
 	recoveryCheckInterval    = 5 * time.Minute
 	checkInterval            = 10 * time.Minute
