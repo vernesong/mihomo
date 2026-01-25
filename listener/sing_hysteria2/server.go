@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/adapter/outbound"
@@ -15,6 +16,7 @@ import (
 	"github.com/metacubex/mihomo/component/ech"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
+	"github.com/metacubex/mihomo/listener/inner"
 	"github.com/metacubex/mihomo/listener/sing"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/ntp"
@@ -122,6 +124,17 @@ func New(config LC.Hysteria2Server, tunnel C.Tunnel, additions ...inbound.Additi
 				},
 				ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 					w.WriteHeader(http.StatusBadGateway)
+				},
+				Transport: &http.Transport{
+					// from http.DefaultTransport
+					ForceAttemptHTTP2:     true,
+					MaxIdleConns:          100,
+					IdleConnTimeout:       90 * time.Second,
+					TLSHandshakeTimeout:   10 * time.Second,
+					ExpectContinueTimeout: 1 * time.Second,
+					DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+						return inner.HandleTcp(tunnel, address, "")
+					},
 				},
 			}
 		default:

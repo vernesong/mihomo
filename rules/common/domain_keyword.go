@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	C "github.com/metacubex/mihomo/constant"
-	"golang.org/x/net/idna"
 )
 
 type DomainKeyword struct {
@@ -31,10 +30,9 @@ func (dk *DomainKeyword) Payload() string {
 }
 
 func NewDomainKeyword(keyword string, adapter string) *DomainKeyword {
-	punycode, _ := idna.ToASCII(strings.ToLower(keyword))
 	return &DomainKeyword{
 		Base:    Base{},
-		keyword: punycode,
+		keyword: strings.ToLower(keyword),
 		adapter: adapter,
 	}
 }
