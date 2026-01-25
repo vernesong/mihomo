@@ -51,7 +51,7 @@ const (
 	targetFailureLimit       = 10
 
 	parallelDials            = 3
-	connectThreshold         = 3.0
+	connectThreshold         = 2.0
 )
 
 var (
@@ -1127,7 +1127,7 @@ func updateAverageValueFloat(oldValue, newValue float64, force bool) float64 {
 		if force {
 			return newValue
 		}
-		return (oldValue*4 + newValue*2) / 6
+		return math.Max((oldValue*4 + newValue*2) / 6, 0.1)
 	}
 	return newValue
 }
