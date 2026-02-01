@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
+	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/ech"
 	C "github.com/metacubex/mihomo/constant"
@@ -269,20 +271,25 @@ func (l *Listener) handleConn(inMux bool, conn net.Conn, tunnel C.Tunnel, additi
 		l.handler.HandleSocket(target, conn, additions...)
 	case trojan.CommandUDP:
 		pc := trojan.NewPacketConn(conn)
+		remoteAddr := conn.RemoteAddr()
+		connID := utils.NewUUIDV4().String() // make a new SNAT key
+
 		for {
-			data, put, remoteAddr, err := pc.WaitReadFrom()
+			data, put, addr, err := pc.WaitReadFrom()
 			if err != nil {
 				if put != nil {
 					put()
 				}
 				break
 			}
+			target := socks5.ParseAddrToSocksAddr(addr)
 			cPacket := &packet{
 				pc:      pc,
 				rAddr:   remoteAddr,
 				payload: data,
 				put:     put,
 			}
+			cPacket.rAddr = N.NewCustomAddr(C.TROJAN.String(), connID, cPacket.rAddr) // for tunnel's handleUDPConn
 
 			tunnel.HandleUDPPacket(inbound.NewPacket(target, cPacket, C.TROJAN, additions...))
 		}

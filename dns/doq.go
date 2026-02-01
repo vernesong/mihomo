@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/metacubex/mihomo/common/pool"
 	"github.com/metacubex/mihomo/component/ca"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
@@ -54,11 +55,6 @@ type dnsOverQUIC struct {
 	// re-opened when needed.
 	conn   *quic.Conn
 	connMu sync.RWMutex
-
-	// bytesPool is a *sync.Pool we use to store byte buffers in.  These byte
-	// buffers are used to read responses from the upstream.
-	bytesPool      *sync.Pool
-	bytesPoolGuard sync.Mutex
 
 	addr           string
 	dialer         *dnsDialer
@@ -201,24 +197,6 @@ func AddPrefix(b []byte) (m []byte) {
 // to re-open the connection and retry sending the request.
 func (doq *dnsOverQUIC) shouldRetry(err error) (ok bool) {
 	return isQUICRetryError(err)
-}
-
-// getBytesPool returns (creates if needed) a pool we store byte buffers in.
-func (doq *dnsOverQUIC) getBytesPool() (pool *sync.Pool) {
-	doq.bytesPoolGuard.Lock()
-	defer doq.bytesPoolGuard.Unlock()
-
-	if doq.bytesPool == nil {
-		doq.bytesPool = &sync.Pool{
-			New: func() interface{} {
-				b := make([]byte, MaxMsgSize)
-
-				return &b
-			},
-		}
-	}
-
-	return doq.bytesPool
 }
 
 // getConnection opens or returns an existing *quic.Conn. useCached
@@ -386,12 +364,9 @@ func (doq *dnsOverQUIC) closeConnWithError(err error) {
 
 // readMsg reads the incoming DNS message from the QUIC stream.
 func (doq *dnsOverQUIC) readMsg(stream *quic.Stream) (m *D.Msg, err error) {
-	pool := doq.getBytesPool()
-	bufPtr := pool.Get().(*[]byte)
+	respBuf := pool.Get(MaxMsgSize)
+	defer pool.Put(respBuf)
 
-	defer pool.Put(bufPtr)
-
-	respBuf := *bufPtr
 	n, err := stream.Read(respBuf)
 	if err != nil && n == 0 {
 		return nil, fmt.Errorf("reading response from %s: %w", doq.Address(), err)

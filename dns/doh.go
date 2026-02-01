@@ -725,14 +725,10 @@ func (doh *dnsOverHTTPS) tlsDial(ctx context.Context, network string, config *tl
 	// TLS handshake dialTimeout will be used as connection deadLine.
 	conn := tls.Client(rawConn, config)
 
-	err = conn.SetDeadline(time.Now().Add(dialTimeout))
-	if err != nil {
-		// Must not happen in normal circumstances.
-		log.Errorln("cannot set deadline: %v", err)
-		return nil, err
-	}
+	ctx, cancel := context.WithTimeout(ctx, dialTimeout)
+	defer cancel()
 
-	err = conn.Handshake()
+	err = conn.HandshakeContext(ctx)
 	if err != nil {
 		defer conn.Close()
 		return nil, err

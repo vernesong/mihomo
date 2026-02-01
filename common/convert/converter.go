@@ -201,6 +201,10 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 				trojan["client-fingerprint"] = fingerprint
 			}
 
+			if pcs := query.Get("pcs"); pcs != "" {
+				trojan["fingerprint"] = pcs
+			}
+
 			proxies = append(proxies, trojan)
 
 		case "vless":

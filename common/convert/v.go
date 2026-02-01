@@ -35,6 +35,9 @@ func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy m
 		if alpn := query.Get("alpn"); alpn != "" {
 			proxy["alpn"] = strings.Split(alpn, ",")
 		}
+		if pcs := query.Get("pcs"); pcs != "" {
+			proxy["fingerprint"] = pcs
+		}
 	}
 	if sni := query.Get("sni"); sni != "" {
 		proxy["servername"] = sni

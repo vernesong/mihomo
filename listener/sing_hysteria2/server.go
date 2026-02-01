@@ -126,6 +126,10 @@ func New(config LC.Hysteria2Server, tunnel C.Tunnel, additions ...inbound.Additi
 					w.WriteHeader(http.StatusBadGateway)
 				},
 				Transport: &http.Transport{
+					// fellow hysteria2's code skip verify
+					TLSClientConfig: &tls.Config{
+						InsecureSkipVerify: true,
+					},
 					// from http.DefaultTransport
 					ForceAttemptHTTP2:     true,
 					MaxIdleConns:          100,

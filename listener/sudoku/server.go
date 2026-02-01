@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
+	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/sing"
@@ -112,6 +114,7 @@ func (l *Listener) handleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbou
 func (l *Listener) handleUoTSession(conn net.Conn, tunnel C.Tunnel, additions ...inbound.Addition) {
 	writer := sudoku.NewUoTPacketConn(conn)
 	remoteAddr := conn.RemoteAddr()
+	connID := utils.NewUUIDV4().String() // make a new SNAT key
 
 	for {
 		addrStr, payload, err := sudoku.ReadDatagram(conn)
@@ -129,12 +132,13 @@ func (l *Listener) handleUoTSession(conn net.Conn, tunnel C.Tunnel, additions ..
 			continue
 		}
 
-		packet := &uotPacket{
+		cPacket := &uotPacket{
 			payload: payload,
 			writer:  writer,
 			rAddr:   remoteAddr,
 		}
-		tunnel.HandleUDPPacket(inbound.NewPacket(target, packet, C.SUDOKU, additions...))
+		cPacket.rAddr = N.NewCustomAddr(C.SUDOKU.String(), connID, cPacket.rAddr) // for tunnel's handleUDPConn
+		tunnel.HandleUDPPacket(inbound.NewPacket(target, cPacket, C.SUDOKU, additions...))
 	}
 }
 

@@ -136,7 +136,7 @@ type PacketConn struct {
 }
 
 func (pc *PacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
-	return WritePacket(pc, socks5.ParseAddr(addr.String()), b)
+	return WritePacket(pc, socks5.ParseAddrToSocksAddr(addr), b)
 }
 
 func (pc *PacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
