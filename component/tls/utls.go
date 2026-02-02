@@ -127,10 +127,45 @@ func UCertificate(it tls.Certificate) utls.Certificate {
 
 type EncryptedClientHelloKey = utls.EncryptedClientHelloKey
 
+func UEncryptedClientHelloKey(it tls.EncryptedClientHelloKey) utls.EncryptedClientHelloKey {
+	return utls.EncryptedClientHelloKey{
+		Config:      it.Config,
+		PrivateKey:  it.PrivateKey,
+		SendAsRetry: it.SendAsRetry,
+	}
+}
+
 type Config = utls.Config
 
 var tlsCertificateRequestInfoCtxOffset = utils.MustOK(reflect.TypeOf((*tls.CertificateRequestInfo)(nil)).Elem().FieldByName("ctx")).Offset
 var tlsClientHelloInfoCtxOffset = utils.MustOK(reflect.TypeOf((*tls.ClientHelloInfo)(nil)).Elem().FieldByName("ctx")).Offset
+var tlsConnectionStateEkmOffset = utils.MustOK(reflect.TypeOf((*tls.ConnectionState)(nil)).Elem().FieldByName("ekm")).Offset
+var utlsConnectionStateEkmOffset = utils.MustOK(reflect.TypeOf((*utls.ConnectionState)(nil)).Elem().FieldByName("ekm")).Offset
+
+func tlsConnectionState(state utls.ConnectionState) (tlsState tls.ConnectionState) {
+	tlsState = tls.ConnectionState{
+		Version:           state.Version,
+		HandshakeComplete: state.HandshakeComplete,
+		DidResume:         state.DidResume,
+		CipherSuite:       state.CipherSuite,
+		//CurveID:                     state.CurveID,
+		NegotiatedProtocol:          state.NegotiatedProtocol,
+		NegotiatedProtocolIsMutual:  state.NegotiatedProtocolIsMutual,
+		ServerName:                  state.ServerName,
+		PeerCertificates:            state.PeerCertificates,
+		VerifiedChains:              state.VerifiedChains,
+		SignedCertificateTimestamps: state.SignedCertificateTimestamps,
+		OCSPResponse:                state.OCSPResponse,
+		TLSUnique:                   state.TLSUnique,
+		ECHAccepted:                 state.ECHAccepted,
+		//HelloRetryRequest:           state.HelloRetryRequest,
+	}
+	// The layout of map, chan, and func types is equivalent to *T.
+	// state.ekm is a func(label string, context []byte, length int) ([]byte, error)
+	*(*unsafe.Pointer)(unsafe.Add(unsafe.Pointer(&tlsState), tlsConnectionStateEkmOffset)) =
+		*(*unsafe.Pointer)(unsafe.Add(unsafe.Pointer(&state), utlsConnectionStateEkmOffset))
+	return
+}
 
 func UConfig(config *tls.Config) *utls.Config {
 	cfg := &utls.Config{
@@ -152,6 +187,7 @@ func UConfig(config *tls.Config) *utls.Config {
 		}),
 		SessionTicketsDisabled: config.SessionTicketsDisabled,
 		Renegotiation:          utls.RenegotiationSupport(config.Renegotiation),
+		KeyLogWriter:           config.KeyLogWriter,
 	}
 	if config.GetClientCertificate != nil {
 		cfg.GetClientCertificate = func(info *utls.CertificateRequestInfo) (*utls.Certificate, error) {
@@ -198,6 +234,19 @@ func UConfig(config *tls.Config) *utls.Config {
 			return &uCert, err
 		}
 	}
+	if config.VerifyConnection != nil {
+		cfg.VerifyConnection = func(state utls.ConnectionState) error {
+			return config.VerifyConnection(tlsConnectionState(state))
+		}
+	}
+	config.EncryptedClientHelloConfigList = cfg.EncryptedClientHelloConfigList
+	if config.EncryptedClientHelloRejectionVerify != nil {
+		cfg.EncryptedClientHelloRejectionVerify = func(state utls.ConnectionState) error {
+			return config.EncryptedClientHelloRejectionVerify(tlsConnectionState(state))
+		}
+	}
+	//cfg.GetEncryptedClientHelloKeys =
+	cfg.EncryptedClientHelloKeys = utils.Map(config.EncryptedClientHelloKeys, UEncryptedClientHelloKey)
 	return cfg
 }
 

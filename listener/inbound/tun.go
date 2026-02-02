@@ -18,39 +18,40 @@ type TunOption struct {
 	AutoRoute           bool       `inbound:"auto-route,omitempty"`
 	AutoDetectInterface bool       `inbound:"auto-detect-interface,omitempty"`
 
-	MTU                    uint32         `inbound:"mtu,omitempty"`
-	GSO                    bool           `inbound:"gso,omitempty"`
-	GSOMaxSize             uint32         `inbound:"gso-max-size,omitempty"`
-	Inet4Address           []netip.Prefix `inbound:"inet4-address,omitempty"`
-	Inet6Address           []netip.Prefix `inbound:"inet6-address,omitempty"`
-	IPRoute2TableIndex     int            `inbound:"iproute2-table-index,omitempty"`
-	IPRoute2RuleIndex      int            `inbound:"iproute2-rule-index,omitempty"`
-	AutoRedirect           bool           `inbound:"auto-redirect,omitempty"`
-	AutoRedirectInputMark  uint32         `inbound:"auto-redirect-input-mark,omitempty"`
-	AutoRedirectOutputMark uint32         `inbound:"auto-redirect-output-mark,omitempty"`
-	LoopbackAddress        []netip.Addr   `inbound:"loopback-address,omitempty"`
-	StrictRoute            bool           `inbound:"strict-route,omitempty"`
-	RouteAddress           []netip.Prefix `inbound:"route-address,omitempty"`
-	RouteAddressSet        []string       `inbound:"route-address-set,omitempty"`
-	RouteExcludeAddress    []netip.Prefix `inbound:"route-exclude-address,omitempty"`
-	RouteExcludeAddressSet []string       `inbound:"route-exclude-address-set,omitempty"`
-	IncludeInterface       []string       `inbound:"include-interface,omitempty"`
-	ExcludeInterface       []string       `inbound:"exclude-interface,omitempty"`
-	IncludeUID             []uint32       `inbound:"include-uid,omitempty"`
-	IncludeUIDRange        []string       `inbound:"include-uid-range,omitempty"`
-	ExcludeUID             []uint32       `inbound:"exclude-uid,omitempty"`
-	ExcludeUIDRange        []string       `inbound:"exclude-uid-range,omitempty"`
-	ExcludeSrcPort         []uint16       `inbound:"exclude-src-port,omitempty"`
-	ExcludeSrcPortRange    []string       `inbound:"exclude-src-port-range,omitempty"`
-	ExcludeDstPort         []uint16       `inbound:"exclude-dst-port,omitempty"`
-	ExcludeDstPortRange    []string       `inbound:"exclude-dst-port-range,omitempty"`
-	IncludeAndroidUser     []int          `inbound:"include-android-user,omitempty"`
-	IncludePackage         []string       `inbound:"include-package,omitempty"`
-	ExcludePackage         []string       `inbound:"exclude-package,omitempty"`
-	EndpointIndependentNat bool           `inbound:"endpoint-independent-nat,omitempty"`
-	UDPTimeout             int64          `inbound:"udp-timeout,omitempty"`
-	DisableICMPForwarding  bool           `inbound:"disable-icmp-forwarding,omitempty"`
-	FileDescriptor         int            `inbound:"file-descriptor,omitempty"`
+	MTU                                   uint32         `inbound:"mtu,omitempty"`
+	GSO                                   bool           `inbound:"gso,omitempty"`
+	GSOMaxSize                            uint32         `inbound:"gso-max-size,omitempty"`
+	Inet4Address                          []netip.Prefix `inbound:"inet4-address,omitempty"`
+	Inet6Address                          []netip.Prefix `inbound:"inet6-address,omitempty"`
+	IPRoute2TableIndex                    int            `inbound:"iproute2-table-index,omitempty"`
+	IPRoute2RuleIndex                     int            `inbound:"iproute2-rule-index,omitempty"`
+	AutoRedirect                          bool           `inbound:"auto-redirect,omitempty"`
+	AutoRedirectInputMark                 uint32         `inbound:"auto-redirect-input-mark,omitempty"`
+	AutoRedirectOutputMark                uint32         `inbound:"auto-redirect-output-mark,omitempty"`
+	AutoRedirectIPRoute2FallbackRuleIndex int            `inbound:"auto-redirect-iproute2-fallback-rule-index,omitempty"`
+	LoopbackAddress                       []netip.Addr   `inbound:"loopback-address,omitempty"`
+	StrictRoute                           bool           `inbound:"strict-route,omitempty"`
+	RouteAddress                          []netip.Prefix `inbound:"route-address,omitempty"`
+	RouteAddressSet                       []string       `inbound:"route-address-set,omitempty"`
+	RouteExcludeAddress                   []netip.Prefix `inbound:"route-exclude-address,omitempty"`
+	RouteExcludeAddressSet                []string       `inbound:"route-exclude-address-set,omitempty"`
+	IncludeInterface                      []string       `inbound:"include-interface,omitempty"`
+	ExcludeInterface                      []string       `inbound:"exclude-interface,omitempty"`
+	IncludeUID                            []uint32       `inbound:"include-uid,omitempty"`
+	IncludeUIDRange                       []string       `inbound:"include-uid-range,omitempty"`
+	ExcludeUID                            []uint32       `inbound:"exclude-uid,omitempty"`
+	ExcludeUIDRange                       []string       `inbound:"exclude-uid-range,omitempty"`
+	ExcludeSrcPort                        []uint16       `inbound:"exclude-src-port,omitempty"`
+	ExcludeSrcPortRange                   []string       `inbound:"exclude-src-port-range,omitempty"`
+	ExcludeDstPort                        []uint16       `inbound:"exclude-dst-port,omitempty"`
+	ExcludeDstPortRange                   []string       `inbound:"exclude-dst-port-range,omitempty"`
+	IncludeAndroidUser                    []int          `inbound:"include-android-user,omitempty"`
+	IncludePackage                        []string       `inbound:"include-package,omitempty"`
+	ExcludePackage                        []string       `inbound:"exclude-package,omitempty"`
+	EndpointIndependentNat                bool           `inbound:"endpoint-independent-nat,omitempty"`
+	UDPTimeout                            int64          `inbound:"udp-timeout,omitempty"`
+	DisableICMPForwarding                 bool           `inbound:"disable-icmp-forwarding,omitempty"`
+	FileDescriptor                        int            `inbound:"file-descriptor,omitempty"`
 
 	Inet4RouteAddress        []netip.Prefix `inbound:"inet4-route-address,omitempty"`
 	Inet6RouteAddress        []netip.Prefix `inbound:"inet6-route-address,omitempty"`
@@ -86,45 +87,46 @@ func NewTun(options *TunOption) (*Tun, error) {
 		Base:   base,
 		config: options,
 		tun: LC.Tun{
-			Enable:                 true,
-			Device:                 options.Device,
-			Stack:                  options.Stack,
-			DNSHijack:              options.DNSHijack,
-			AutoRoute:              options.AutoRoute,
-			AutoDetectInterface:    options.AutoDetectInterface,
-			MTU:                    options.MTU,
-			GSO:                    options.GSO,
-			GSOMaxSize:             options.GSOMaxSize,
-			Inet4Address:           options.Inet4Address,
-			Inet6Address:           options.Inet6Address,
-			IPRoute2TableIndex:     options.IPRoute2TableIndex,
-			IPRoute2RuleIndex:      options.IPRoute2RuleIndex,
-			AutoRedirect:           options.AutoRedirect,
-			AutoRedirectInputMark:  options.AutoRedirectInputMark,
-			AutoRedirectOutputMark: options.AutoRedirectOutputMark,
-			LoopbackAddress:        options.LoopbackAddress,
-			StrictRoute:            options.StrictRoute,
-			RouteAddress:           options.RouteAddress,
-			RouteAddressSet:        options.RouteAddressSet,
-			RouteExcludeAddress:    options.RouteExcludeAddress,
-			RouteExcludeAddressSet: options.RouteExcludeAddressSet,
-			IncludeInterface:       options.IncludeInterface,
-			ExcludeInterface:       options.ExcludeInterface,
-			IncludeUID:             options.IncludeUID,
-			IncludeUIDRange:        options.IncludeUIDRange,
-			ExcludeUID:             options.ExcludeUID,
-			ExcludeUIDRange:        options.ExcludeUIDRange,
-			ExcludeSrcPort:         options.ExcludeSrcPort,
-			ExcludeSrcPortRange:    options.ExcludeSrcPortRange,
-			ExcludeDstPort:         options.ExcludeDstPort,
-			ExcludeDstPortRange:    options.ExcludeDstPortRange,
-			IncludeAndroidUser:     options.IncludeAndroidUser,
-			IncludePackage:         options.IncludePackage,
-			ExcludePackage:         options.ExcludePackage,
-			EndpointIndependentNat: options.EndpointIndependentNat,
-			UDPTimeout:             options.UDPTimeout,
-			DisableICMPForwarding:  options.DisableICMPForwarding,
-			FileDescriptor:         options.FileDescriptor,
+			Enable:                                true,
+			Device:                                options.Device,
+			Stack:                                 options.Stack,
+			DNSHijack:                             options.DNSHijack,
+			AutoRoute:                             options.AutoRoute,
+			AutoDetectInterface:                   options.AutoDetectInterface,
+			MTU:                                   options.MTU,
+			GSO:                                   options.GSO,
+			GSOMaxSize:                            options.GSOMaxSize,
+			Inet4Address:                          options.Inet4Address,
+			Inet6Address:                          options.Inet6Address,
+			IPRoute2TableIndex:                    options.IPRoute2TableIndex,
+			IPRoute2RuleIndex:                     options.IPRoute2RuleIndex,
+			AutoRedirect:                          options.AutoRedirect,
+			AutoRedirectInputMark:                 options.AutoRedirectInputMark,
+			AutoRedirectOutputMark:                options.AutoRedirectOutputMark,
+			AutoRedirectIPRoute2FallbackRuleIndex: options.AutoRedirectIPRoute2FallbackRuleIndex,
+			LoopbackAddress:                       options.LoopbackAddress,
+			StrictRoute:                           options.StrictRoute,
+			RouteAddress:                          options.RouteAddress,
+			RouteAddressSet:                       options.RouteAddressSet,
+			RouteExcludeAddress:                   options.RouteExcludeAddress,
+			RouteExcludeAddressSet:                options.RouteExcludeAddressSet,
+			IncludeInterface:                      options.IncludeInterface,
+			ExcludeInterface:                      options.ExcludeInterface,
+			IncludeUID:                            options.IncludeUID,
+			IncludeUIDRange:                       options.IncludeUIDRange,
+			ExcludeUID:                            options.ExcludeUID,
+			ExcludeUIDRange:                       options.ExcludeUIDRange,
+			ExcludeSrcPort:                        options.ExcludeSrcPort,
+			ExcludeSrcPortRange:                   options.ExcludeSrcPortRange,
+			ExcludeDstPort:                        options.ExcludeDstPort,
+			ExcludeDstPortRange:                   options.ExcludeDstPortRange,
+			IncludeAndroidUser:                    options.IncludeAndroidUser,
+			IncludePackage:                        options.IncludePackage,
+			ExcludePackage:                        options.ExcludePackage,
+			EndpointIndependentNat:                options.EndpointIndependentNat,
+			UDPTimeout:                            options.UDPTimeout,
+			DisableICMPForwarding:                 options.DisableICMPForwarding,
+			FileDescriptor:                        options.FileDescriptor,
 
 			Inet4RouteAddress:        options.Inet4RouteAddress,
 			Inet6RouteAddress:        options.Inet6RouteAddress,
