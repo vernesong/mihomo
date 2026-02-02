@@ -339,12 +339,8 @@ func GetEffectiveTarget(host string, dstIP string) (string) {
 }
 
 // 时间衰减
-func GetTimeDecayWithCache(lastUsedTime int64, now int64, minDecay float64, decayCache map[int64]float64) float64 {
+func GetTimeDecayWithCache(lastUsedTime int64, now int64, minDecay float64) float64 {
 	fuzzyLastUsedTime := (lastUsedTime / 3600) * 3600
-
-	if decay, ok := decayCache[fuzzyLastUsedTime]; ok {
-		return decay
-	}
 
 	hoursSinceLastConn := float64(now-fuzzyLastUsedTime) / 3600.0
 	var decay float64
@@ -363,11 +359,10 @@ func GetTimeDecayWithCache(lastUsedTime int64, now int64, minDecay float64, deca
 		// 168-720小时：线性衰减到0.3
 		decay = 0.5 - (hoursSinceLastConn-168.0)/552.0*0.2
 	default:
-		decay = 0.3
+		decay = 0.1
 	}
 
 	decay = math.Max(minDecay, decay)
-	decayCache[fuzzyLastUsedTime] = decay
 	return decay
 }
 

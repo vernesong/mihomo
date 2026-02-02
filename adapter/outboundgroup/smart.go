@@ -1008,7 +1008,7 @@ func (s *Smart) handleFailedConnection(proxyName string, oldWeight, calculatedWe
 		s.store.BatchSaveStats([]smart.StoreOperation{operation})
 	}
 
-	return updateAverageValueFloat(oldWeight, math.Max(0.1, calculatedWeight * nodeState.DegradedFactor), false), block
+	return updateAverageValueFloat(oldWeight, calculatedWeight * nodeState.DegradedFactor, false), block
 }
 
 // 单位转换
@@ -1125,11 +1125,11 @@ func updateAverageValueInt(oldValue int64, newValue int64) int64 {
 func updateAverageValueFloat(oldValue, newValue float64, force bool) float64 {
 	if oldValue > 0 {
 		if force {
-			return newValue
+			return math.Max(newValue, 0.1)
 		}
 		return math.Max((oldValue*4 + newValue*2) / 6, 0.1)
 	}
-	return newValue
+	return math.Max(newValue, 0.1)
 }
 
 func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy C.Proxy,
@@ -1175,10 +1175,13 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 		if proxy.Type() == C.Reject || proxy.Type() == C.Pass || proxy.Type() == C.RejectDrop {
 			return
 		}
+		defer func() {
+			if r := recover(); r != nil {
+				return
+			}
+		}()
 		atomicRecord.Add("failure", int64(1))
-		if err != nil {
-			s.onDialFailed(proxy.Type(), err, s.healthCheck)
-		}
+		s.onDialFailed(proxy.Type(), err, s.healthCheck)
 		if s.failedTimes > s.maxFailedTimes {
 			s.store.ClearUnwrapResult(s.Name(), s.configName)
 		}
@@ -1232,8 +1235,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 	if s.useLightGBM && s.weightModel != nil {
 		calculatedWeight, ModelPredicted = s.weightModel.PredictWeight(input, priorityFactor)
 	} else {
-		calculatedWeight = smart.CalculateWeight(input) * priorityFactor
-		ModelPredicted = false
+		calculatedWeight, ModelPredicted = smart.CalculateWeight(input, priorityFactor)
 	}
 
 	// 额外检查和权重调整
@@ -1245,7 +1247,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 		weightType, metadata.NetWork.String(),
 		lastUsedVal, target, wildcardTarget, asnInfo, metadata.NetWork == C.UDP)
 
-	go s.findSameConnection(metadata, target, asnInfo, metadata.NetWork == C.UDP, isDegraded)
+	go s.findSameConnection(metadata, proxy.Name(), target, asnInfo, metadata.NetWork == C.UDP, isDegraded)
 
 	baseWeight := degradedWeight / priorityFactor
 
@@ -1377,8 +1379,7 @@ func (s *Smart) checkNodeQualityDegradation(
 	}
 
 	now := time.Now().Unix()
-	cooldownSeconds := int64(600)
-	degradedWeight := updateAverageValueFloat(oldWeight, math.Max(0.1, newWeight * 0.1), metadata.SmartBlock == "blocked")
+	degradedWeight := updateAverageValueFloat(oldWeight, newWeight * 0.1, metadata.SmartBlock == "blocked")
 	statusMap := atomicRecord.Get("status").(map[string]bool)
 
 	// 目标屏蔽
@@ -1413,12 +1414,14 @@ func (s *Smart) checkNodeQualityDegradation(
 		return failedWeight, nodeBlock
 	}
 
-	// 用户手动屏蔽
+	// 用户手动/智能屏蔽
 	if metadata.SmartBlock == "blocked" {
-		s.store.UpdateTargetFailureStats(s.Name(), s.configName, host, 1, stats)
-		findExpectedNode(host, degradedWeight)
-		log.Debugln("[Smart] Connection [%s] - [%s] - [%s] - [%s] detected manual block, degraded form [%.4f] to [%.4f] ...",
-			s.Name(), proxyName, networkType, addressDisplay, oldWeight, degradedWeight)
+		if now - lastUsedVal > 5 {
+			s.store.UpdateTargetFailureStats(s.Name(), s.configName, host, 1, stats)
+			findExpectedNode(host, degradedWeight)
+			log.Debugln("[Smart] Connection [%s] - [%s] - [%s] - [%s] detected smart block, degraded form [%.4f] to [%.4f] ...",
+				s.Name(), proxyName, networkType, addressDisplay, oldWeight, degradedWeight)
+		}
 		return degradedWeight, true
 	}
 
@@ -1439,7 +1442,7 @@ func (s *Smart) checkNodeQualityDegradation(
 
 	// 异常状态码检测
 	if downloadTotal < 0.03 && metadata.Host != "" && metadata.DstPort == 443 && !isUDP {
-		if now - lastUsedVal > cooldownSeconds || !statusMap[host] {
+		if now - lastUsedVal > 300 || !statusMap[host] {
 			ctx, cancel := context.WithTimeout(context.Background(), C.DefaultTCPTimeout)
 			defer cancel()
 			url := "https://" + metadata.Host + "/?z=" + strconv.FormatInt(rand.Int63(), 10)
@@ -1482,7 +1485,7 @@ func (s *Smart) checkNodeQualityDegradation(
 	return newWeight, false
 }
 
-func (s *Smart) findSameConnection(metadata *C.Metadata, target, asnInfo string, isUDP, close bool) {
+func (s *Smart) findSameConnection(metadata *C.Metadata, proxyName, target, asnInfo string, isUDP, close bool) {
 	targetIDs, asnIDs := statistic.DefaultManager.GetSmartTargetIDs(target, metadata.DstIPASN)
 	allIDs := make(map[string]bool)
 	for id := range targetIDs {
@@ -1495,6 +1498,9 @@ func (s *Smart) findSameConnection(metadata *C.Metadata, target, asnInfo string,
 		for id := range allIDs {
 			if tracker := statistic.DefaultManager.Get(id); tracker != nil {
 				if id != metadata.UUID && lo.Contains(tracker.Chains(), s.Name()) {
+					if lo.Contains(tracker.Chains(), proxyName) {
+						tracker.Info().Metadata.SmartBlock = "blocked"
+					}
 					_ = tracker.Close()
 				}
 			}

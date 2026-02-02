@@ -116,19 +116,7 @@ func (s *Store) GetPrefetchResult(group, config string, target string, asnNumber
 		return nil, nil
 	}
 
-	getFromQueue := func(ops []StoreOperation, group, config, target string) (PrefetchMap, bool) {
-		for _, op := range ops {
-			if op.Type == OpSavePrefetch && op.Group == group && op.Config == config && op.Target == target {
-				var pm PrefetchMap
-				if json.Unmarshal(op.Data, &pm) == nil {
-					return pm, true
-				}
-			}
-		}
-		return PrefetchMap{}, false
-	}
-
-	getFromDB := func(pathPrefix string) (PrefetchMap, bool) {
+	getPrefetchMap := func(pathPrefix string) (PrefetchMap, bool) {
 		rawResult, err := s.GetSubBytesByPath(pathPrefix)
 		if err != nil {
 			return PrefetchMap{}, false
@@ -149,33 +137,16 @@ func (s *Store) GetPrefetchResult(group, config string, target string, asnNumber
 		return pm.RefTCP
 	}
 
-	ops := getGlobalQueueSnapshot()
-
 	// ASN
 	if asnNumber != "" && !CdnASNs[asnNumber] {
 		asnPathPrefix := FormatDBKey(KeyTypePrefetch, config, group, asnNumber)
-
-		if pm, ok := getFromQueue(ops, group, config, asnNumber); ok {
+		if pm, ok := getPrefetchMap(asnPathPrefix); ok {
 			if refKey := getRefKey(pm, isUDP); refKey != "" {
-				parts := strings.Split(refKey, ":")
-				if len(parts) >= 4 {
-					parsedTarget := strings.Join(parts[3:], ":")
-					if refPm, ok := getFromQueue(ops, group, config, parsedTarget); ok {
-						if nodes, weights := findResult(refPm); nodes != nil {
-							return nodes, weights
-						}
-					}
-				}
-			}
-		}
-
-		if pm, ok := getFromDB(asnPathPrefix); ok {
-			if refKey := getRefKey(pm, isUDP); refKey != "" {
-				parts := strings.Split(refKey, ":")
-				if len(parts) >= 4 {
-					parsedTarget := strings.Join(parts[3:], ":")
+				parts := strings.Split(refKey, "/")
+				if len(parts) >= 5 {
+					parsedTarget := strings.Join(parts[4:], "/")
 					targetPathPrefix := FormatDBKey(KeyTypePrefetch, config, group, parsedTarget)
-					if refPm, ok := getFromDB(targetPathPrefix); ok {
+					if refPm, ok := getPrefetchMap(targetPathPrefix); ok {
 						if nodes, weights := findResult(refPm); nodes != nil {
 							return nodes, weights
 						}
@@ -187,14 +158,7 @@ func (s *Store) GetPrefetchResult(group, config string, target string, asnNumber
 
 	// target
 	pathPrefix := FormatDBKey(KeyTypePrefetch, config, group, target)
-
-	if pm, ok := getFromQueue(ops, group, config, target); ok {
-		if nodes, weights := findResult(pm); nodes != nil {
-			return nodes, weights
-		}
-	}
-
-	if pm, ok := getFromDB(pathPrefix); ok {
+	if pm, ok := getPrefetchMap(pathPrefix); ok {
 		if nodes, weights := findResult(pm); nodes != nil {
 			return nodes, weights
 		}

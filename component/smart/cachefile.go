@@ -302,39 +302,29 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 	}
 
 	maxResults := -1
-	if configMaxTargets != 1 {
-		dbCount, err := s.DBViewPrefixCount(prefix, strict)
-		if err != nil {
-			return nil, err
-		}
-		if dbCount == 0 {
-			return result, nil
-		}
-
-		if dbCount > configMaxTargets {
-			maxResults = configMaxTargets
-		}
+	if configMaxTargets > 1 {
+		maxResults = configMaxTargets
 	}
 
-	dbResult := make(map[string][]byte)
 	if cached, ok := dbResultCache.Get(prefix); ok && maxResults > 0 {
 		for k, v := range cached {
-			dbResult[k] = v
+			if _, exists := result[k]; !exists {
+				result[k] = v
+			}
 		}
 	} else {
-		var err error
-		dbResult, err = s.DBViewPrefixScan(prefix, maxResults, strict)
+		dbResult, err := s.DBViewPrefixScan(prefix, maxResults, strict)
 		if err != nil {
 			return result, nil
 		}
-		if maxResults > 0 {
+		// KeyTypeStats use other cache
+		if maxResults > 0 && !(keyType == KeyTypeStats && strict) {
 			dbResultCache.Set(prefix, dbResult)
 		}
-	}
-
-	for k, v := range dbResult {
-		if _, exists := result[k]; !exists {
-			result[k] = v
+		for k, v := range dbResult {
+			if _, exists := result[k]; !exists {
+				result[k] = v
+			}
 		}
 	}
 
@@ -386,33 +376,6 @@ func (s *Store) DBBatchPutItem(key string, value []byte) error {
 	})
 }
 
-// 计算前缀匹配的记录数量
-func (s *Store) DBViewPrefixCount(prefix string, strict bool) (int, error) {
-	var count int
-	err := db.View(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(bucketSmartStats)
-		if bucket == nil {
-			return nil
-		}
-
-		cursor := bucket.Cursor()
-		prefixBytes := []byte(prefix)
-
-		for k, _ := cursor.Seek(prefixBytes); k != nil && bytes.HasPrefix(k, prefixBytes); k, _ = cursor.Next() {
-			if strict && len(k) > len(prefixBytes) && k[len(prefixBytes)] != '/' {
-				continue
-			}
-			count++
-		}
-		return nil
-	})
-	if err != nil {
-		return 0, err
-	}
-
-	return count, nil
-}
-
 // 扫描前缀匹配的记录并随机返回结果
 func (s *Store) DBViewPrefixScan(prefix string, maxResults int, strict bool) (map[string][]byte, error) {
 	result := make(map[string][]byte)
@@ -421,36 +384,11 @@ func (s *Store) DBViewPrefixScan(prefix string, maxResults int, strict bool) (ma
 		return result, nil
 	}
 
-	if maxResults < 0 {
-		err := db.View(func(tx *bbolt.Tx) error {
-			bucket := tx.Bucket(bucketSmartStats)
-			if bucket == nil {
-				return nil
-			}
-			cursor := bucket.Cursor()
-			prefixBytes := []byte(prefix)
-			for k, v := cursor.Seek(prefixBytes); k != nil && bytes.HasPrefix(k, prefixBytes); k, v = cursor.Next() {
-				if strict && len(k) > len(prefixBytes) && k[len(prefixBytes)] != '/' {
-					continue
-				}
-				dataCopy := make([]byte, len(v))
-				copy(dataCopy, v)
-				result[string(k)] = dataCopy
-			}
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-		return result, nil
-	}
-
 	type kv struct {
 		key string
 		val []byte
 	}
-	reservoir := make([]kv, 0, maxResults)
-	total := 0
+	var kvs []kv
 
 	err := db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(bucketSmartStats)
@@ -463,19 +401,9 @@ func (s *Store) DBViewPrefixScan(prefix string, maxResults int, strict bool) (ma
 			if strict && len(k) > len(prefixBytes) && k[len(prefixBytes)] != '/' {
 				continue
 			}
-			total++
 			dataCopy := make([]byte, len(v))
 			copy(dataCopy, v)
-			item := kv{key: string(k), val: dataCopy}
-
-			if len(reservoir) < maxResults {
-				reservoir = append(reservoir, item)
-			} else {
-				j := rand.Intn(total)
-				if j < maxResults {
-					reservoir[j] = item
-				}
-			}
+			kvs = append(kvs, kv{key: string(k), val: dataCopy})
 		}
 		return nil
 	})
@@ -484,8 +412,21 @@ func (s *Store) DBViewPrefixScan(prefix string, maxResults int, strict bool) (ma
 		return nil, err
 	}
 
-	for _, item := range reservoir {
-		result[item.key] = item.val
+	if maxResults < 0 || len(kvs) <= maxResults {
+		for _, item := range kvs {
+			result[item.key] = item.val
+		}
+	} else {
+		reservoir := kvs[:maxResults]
+		for i := maxResults; i < len(kvs); i++ {
+			j := rand.Intn(i + 1)
+			if j < maxResults {
+				reservoir[j] = kvs[i]
+			}
+		}
+		for _, item := range reservoir {
+			result[item.key] = item.val
+		}
 	}
 
 	return result, nil

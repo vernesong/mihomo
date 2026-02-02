@@ -535,7 +535,7 @@ func GetModelDownloadURL() string {
 
 func (m *WeightModel) PredictWeight(input *smart.ModelInput, priorityFactor float64) (float64, bool) {
 	if m == nil {
-		return smart.CalculateWeight(input) * priorityFactor, false
+		return smart.CalculateWeight(input, priorityFactor)
 	}
 
 	total := input.Success + input.Failure
@@ -549,13 +549,13 @@ func (m *WeightModel) PredictWeight(input *smart.ModelInput, priorityFactor floa
 	m.mutex.RUnlock()
 
 	if model == nil {
-		return smart.CalculateWeight(input) * priorityFactor, false
+		return smart.CalculateWeight(input, priorityFactor)
 	}
 
 	// 准备原始特征
 	features := prepareFeatures(input)
 	if len(features) == 0 {
-		return smart.CalculateWeight(input) * priorityFactor, false
+		return smart.CalculateWeight(input, priorityFactor)
 	}
 
 	// 应用特征变换
@@ -568,14 +568,14 @@ func (m *WeightModel) PredictWeight(input *smart.ModelInput, priorityFactor floa
 	defer func() {
 		if r := recover(); r != nil {
 			log.Errorln("[Smart] Model prediction panic: %v", r)
-			prediction = smart.CalculateWeight(input) * priorityFactor
+			prediction, _ = smart.CalculateWeight(input, priorityFactor)
 		}
 	}()
 
 	prediction = model.PredictSingle(features, 0)
 
 	if math.IsNaN(prediction) || prediction <= 0 {
-		return smart.CalculateWeight(input) * priorityFactor, false
+		return smart.CalculateWeight(input, priorityFactor)
 	}
 
 	return prediction * priorityFactor, true

@@ -27,7 +27,7 @@ type (
 )
 
 // 计算权重
-func CalculateWeight(input *ModelInput) float64 {
+func CalculateWeight(input *ModelInput, priorityFactor float64) (float64, bool) {
 	// 1. 数据准备
 	success := input.Success
 	failure := input.Failure
@@ -44,7 +44,7 @@ func CalculateWeight(input *ModelInput) float64 {
 	// 2. 检查样本数量
 	total := success + failure
 	if total < DefaultMinSampleCount {
-		return 0
+		return 0, false
 	}
 
 	// 3. 场景识别和参数获取
@@ -60,8 +60,7 @@ func CalculateWeight(input *ModelInput) float64 {
 	// 4. 计算时间衰减因子
 	timeFactor := 1.0
 	if lastConnectTimestamp > 0 {
-		simpleCache := make(map[int64]float64, 1)
-		timeFactor = GetTimeDecayWithCache(lastConnectTimestamp, time.Now().Unix(), params.minDecayFactor, simpleCache)
+		timeFactor = GetTimeDecayWithCache(lastConnectTimestamp, time.Now().Unix(), params.minDecayFactor)
 	}
 
 	// 5. 对所有历史数据应用时间衰减
@@ -165,7 +164,7 @@ func CalculateWeight(input *ModelInput) float64 {
 	return baseWeight * (1 +
 		trafficFactor*params.trafficWeight +
 		durationFactor*params.durationWeight +
-		qualityBonus*params.qualityWeight)
+		qualityBonus*params.qualityWeight) * priorityFactor, false
 }
 
 // 识别连接的使用场景类型

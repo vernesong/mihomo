@@ -660,6 +660,10 @@ func match(metadata *C.Metadata, helper C.RuleMatchHelper) (C.Proxy, C.Rule, err
 				}
 			}
 
+			if ! smart {
+				metadata.SmartTarget = ""
+			}
+
 			if passed {
 				log.Debugln("%s match Pass rule", adapter.Name())
 				continue
@@ -668,10 +672,6 @@ func match(metadata *C.Metadata, helper C.RuleMatchHelper) (C.Proxy, C.Rule, err
 			if metadata.NetWork == C.UDP && !adapter.SupportUDP() {
 				log.Debugln("%s UDP is not supported", adapter.Name())
 				continue
-			}
-
-			if ! smart {
-				metadata.SmartTarget = ""
 			}
 
 			return adapter, rule, nil

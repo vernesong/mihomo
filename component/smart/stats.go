@@ -447,11 +447,10 @@ func (s *Store) GetBestProxyForTarget(group, config, target, asnNumber string, i
 	}
 
 	now := time.Now().Unix()
-	minDecay := math.Max(0.1, 0.4)
-	decayCache := make(map[int64]float64, 72)
+	minDecay := 0.4
 
 	getTimeDecay := func(lastUsedTime int64) float64 {
-		return GetTimeDecayWithCache(lastUsedTime, now, minDecay, decayCache)
+		return GetTimeDecayWithCache(lastUsedTime, now, minDecay)
 	}
 
 	allStatsMap, err := s.GetAllStats(group, config)
@@ -1367,8 +1366,8 @@ func (s *Store) CleanupOldRecords(group, config string) error {
 			}
 		}
 
-		log.Debugln("[SmartStore] Cleaned up [%d] old %s records, keeping valuable and recent data (group %s)",
-			deleted, keyType, group)
+		log.Debugln("[SmartStore] Cleaned up [%d] old [%s] records, group [%s] keeping [%d] valuable and recent data...",
+			deleted, keyType, group, maxTargets)
 	}
 
 	return nil
