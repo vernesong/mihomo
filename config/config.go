@@ -1132,22 +1132,23 @@ func parseHosts(cfg *RawConfig) (*trie.DomainTrie[resolver.HostValue], error) {
 
 	if len(cfg.Hosts) != 0 {
 		for domain, anyValue := range cfg.Hosts {
-			if str, ok := anyValue.(string); ok && str == "lan" {
+			hosts, err := utils.ToStringSlice(anyValue)
+			if err != nil {
+				return nil, err
+			}
+			if len(hosts) == 1 && hosts[0] == "lan" {
 				if addrs, err := net.InterfaceAddrs(); err != nil {
 					log.Errorln("insert lan to host error: %s", err)
 				} else {
-					ips := make([]netip.Addr, 0)
+					hosts = make([]string, 0, len(addrs))
 					for _, addr := range addrs {
 						if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && !ipnet.IP.IsLinkLocalUnicast() {
-							if ip, err := netip.ParseAddr(ipnet.IP.String()); err == nil {
-								ips = append(ips, ip)
-							}
+							hosts = append(hosts, ipnet.IP.String())
 						}
 					}
-					anyValue = ips
 				}
 			}
-			value, err := resolver.NewHostValue(anyValue)
+			value, err := resolver.NewHostValue(hosts)
 			if err != nil {
 				return nil, fmt.Errorf("%s is not a valid value", anyValue)
 			}

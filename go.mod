@@ -38,7 +38,7 @@ require (
 	github.com/metacubex/sing-wireguard v0.0.0-20250503063753-2dc62acc626f
 	github.com/metacubex/smux v0.0.0-20260105030934-d0c8756d3141
 	github.com/metacubex/tfo-go v0.0.0-20251130171125-413e892ac443
-	github.com/metacubex/tls v0.1.3
+	github.com/metacubex/tls v0.1.4
 	github.com/metacubex/utls v1.8.4
 	github.com/metacubex/wireguard-go v0.0.0-20250820062549-a6cecdd7f57f
 	github.com/mroth/weightedrand/v2 v2.1.0

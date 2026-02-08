@@ -178,7 +178,7 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 		},
 	}
 	outbound.dialer = option.NewDialer(outbound.DialOptions())
-	singDialer := proxydialer.NewSlowDownSingDialer(proxydialer.NewSingDialer(outbound.dialer), slowdown.New())
+	singDialer := proxydialer.NewSingDialer(proxydialer.NewSlowDownDialer(outbound.dialer, slowdown.New()))
 
 	var reserved [3]uint8
 	if len(option.Reserved) > 0 {
