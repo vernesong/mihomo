@@ -63,7 +63,6 @@ var (
 	globalCacheParams struct {
 		BatchSaveThreshold int
 		MaxTargets         int
-		MemoryLimit        float64
 		LastMemoryUsage    float64
 		mutex              sync.RWMutex
 	}
@@ -380,22 +379,12 @@ func GetBatchSaveThreshold() int {
 
 // 获取系统内存使用情况
 func GetSystemMemoryUsage() float64 {
-	var memStats runtime.MemStats
-	runtime.ReadMemStats(&memStats)
-	inuse := float64(memStats.Alloc) / (1024 * 1024)
-
-	globalCacheParams.mutex.RLock()
-	memLimit := globalCacheParams.MemoryLimit
-	globalCacheParams.mutex.RUnlock()
-
-	return math.Min(inuse/memLimit, 1.0)
-}
-
-func getSystemMemoryLimit() float64 {
-	var memTotal float64 = 100.0
+	var total float64 = 0.0
+	var available float64 = 0.0
 	var output string
 	var err error
 
+	// 获取总内存
 	if runtime.GOOS == "windows" {
 		output, err = cmd.ExecCmd("wmic OS get TotalVisibleMemorySize")
 		if err == nil {
@@ -404,7 +393,7 @@ func getSystemMemoryLimit() float64 {
 				memStr := strings.TrimSpace(lines[1])
 				memKB, parseErr := strconv.ParseFloat(memStr, 64)
 				if parseErr == nil {
-					memTotal = memKB / 1024.0
+					total = memKB / 1024.0
 				}
 			}
 		}
@@ -417,15 +406,45 @@ func getSystemMemoryLimit() float64 {
 				memStr = strings.TrimSpace(memStr)
 				memKB, parseErr := strconv.ParseFloat(memStr, 64)
 				if parseErr == nil {
-					memTotal = memKB / 1024.0
+					total = memKB / 1024.0
 				}
 			}
 		}
 	}
 
-	memTotal = math.Max(100.0, math.Min(memTotal / 4.0, 512.0))
+	// 获取可用内存
+	if runtime.GOOS == "windows" {
+		output, err = cmd.ExecCmd("wmic OS get FreePhysicalMemory")
+		if err == nil {
+			lines := strings.Split(output, "\n")
+			if len(lines) >= 2 {
+				memStr := strings.TrimSpace(lines[1])
+				memKB, parseErr := strconv.ParseFloat(memStr, 64)
+				if parseErr == nil {
+					available = memKB / 1024.0
+				}
+			}
+		}
+	} else if runtime.GOOS == "linux" || runtime.GOOS == "android" || runtime.GOOS == "darwin" || runtime.GOOS == "freebsd" {
+		output, err = cmd.ExecCmd("grep MemAvailable /proc/meminfo")
+		if err == nil {
+			parts := strings.Fields(output)
+			if len(parts) >= 2 {
+				memStr := strings.TrimSuffix(parts[1], "kB")
+				memStr = strings.TrimSpace(memStr)
+				memKB, parseErr := strconv.ParseFloat(memStr, 64)
+				if parseErr == nil {
+					available = memKB / 1024.0
+				}
+			}
+		}
+	}
 
-	return memTotal
+	if total > 0 {
+		used := total - available
+		return math.Min(used/total, 1.0)
+	}
+	return 0.5
 }
 
 func InitQueue()  {
@@ -522,19 +541,19 @@ func (s *Store) FlushByLevel(level string, config string, group string) error {
 	s.clearCache(level, config, group)
 
 	if level == "all" {
-		s.DeleteByPath("smart", false)
+		s.DBBatchDeletePrefix("smart", false)
 	} else if level == "config" {
-		s.DeleteByPath(FormatDBKey(KeyTypeStats, config), false)
-		s.DeleteByPath(FormatDBKey(KeyTypeNode, config), false)
-		s.DeleteByPath(FormatDBKey(KeyTypeRanking, config), false)
-		s.DeleteByPath(FormatDBKey(KeyTypePrefetch, config), false)
-		s.DeleteByPath(FormatDBKey(KeyTypeTargetFailures, config), false)
+		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeStats, config), false)
+		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeNode, config), false)
+		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeRanking, config), false)
+		s.DBBatchDeletePrefix(FormatDBKey(KeyTypePrefetch, config), false)
+		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeTargetFailures, config), false)
 	} else if level == "group" {
-		s.DeleteByPath(FormatDBKey(KeyTypeStats, config, group), false)
-		s.DeleteByPath(FormatDBKey(KeyTypeNode, config, group), false)
-		s.DeleteByPath(FormatDBKey(KeyTypeRanking, config, group), false)
-		s.DeleteByPath(FormatDBKey(KeyTypePrefetch, config, group), false)
-		s.DeleteByPath(FormatDBKey(KeyTypeTargetFailures, config, group), false)
+		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeStats, config, group), false)
+		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeNode, config, group), false)
+		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeRanking, config, group), false)
+		s.DBBatchDeletePrefix(FormatDBKey(KeyTypePrefetch, config, group), false)
+		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeTargetFailures, config, group), false)
 	}
 
 	return nil

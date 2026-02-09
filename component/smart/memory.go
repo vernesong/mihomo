@@ -22,7 +22,6 @@ func InitCache() {
 
 	globalCacheParams.BatchSaveThreshold = MinBatchThreshLimit
 	globalCacheParams.MaxTargets = MinTargetsLimit
-	globalCacheParams.MemoryLimit = getSystemMemoryLimit()
 
 	targetCache = lru.New[string, string](
 		lru.WithSize[string, string](globalCacheParams.MaxTargets / 4),
@@ -352,8 +351,8 @@ func (s *Store) AdjustCacheParameters() {
 	needAdjust := isFirstRun
 
 	if !isFirstRun {
-		memoryChanged := math.Abs(memoryUsage - globalCacheParams.LastMemoryUsage) * globalCacheParams.MemoryLimit > 20
-		needAdjust = memoryChanged || memoryUsage > 0.7
+		memoryChanged := math.Abs(memoryUsage - globalCacheParams.LastMemoryUsage) > 0.05
+		needAdjust = memoryChanged || memoryUsage > 0.5
 	}
 
 	globalCacheParams.LastMemoryUsage = memoryUsage
@@ -379,10 +378,7 @@ func (s *Store) AdjustCacheParameters() {
 	unwrapCache = lru.ResetLRU(unwrapCache, globalCacheParams.MaxTargets / 4)
 	recordCache = lru.ResetLRU(recordCache, globalCacheParams.MaxTargets / 4)
 	dbResultCache = lru.ResetLRU(dbResultCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, map[string][]byte](300))
-
-	if (memoryUsage > 0.8) {
-		go s.FlushQueue(true)
-	}
+	go s.FlushQueue(true)
 }
 
 // 按级别清理内存缓存

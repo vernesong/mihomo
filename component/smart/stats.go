@@ -1119,7 +1119,6 @@ func (s *Store) RemoveNodesData(group, config string, nodes []string) error {
 		nodeSet[n] = struct{}{}
 	}
 
-	targetNodePairs := make(map[string][]string)
 	var firstErr error
 
 	// 清理 stats
@@ -1131,10 +1130,11 @@ func (s *Store) RemoveNodesData(group, config string, nodes []string) error {
 	for path := range statsResults {
 		parts := strings.Split(path, "/")
 		if len(parts) >= 6 {
-			target := parts[len(parts)-2]
 			node := parts[len(parts)-1]
 			if _, ok := nodeSet[node]; ok {
-				targetNodePairs[target] = append(targetNodePairs[target], node)
+				if delErr := s.DBBatchDeletePrefix(path, true); delErr != nil && firstErr == nil {
+					firstErr = delErr
+				}
 			}
 		}
 	}
@@ -1185,10 +1185,9 @@ func (s *Store) RemoveNodesData(group, config string, nodes []string) error {
 		pm.UDP.Nodes = newUDPNodes
 		pm.UDP.Weights = newUDPWeights
 
-		dbKey := path
 		if changed {
 			if len(pm.TCP.Nodes) == 0 && len(pm.UDP.Nodes) == 0 && pm.RefTCP == "" && pm.RefUDP == "" {
-				if delErr := s.DeleteByPath(dbKey, true); delErr != nil && firstErr == nil {
+				if delErr := s.DBBatchDeletePrefix(path, true); delErr != nil && firstErr == nil {
 					firstErr = delErr
 				}
 			} else {
@@ -1199,7 +1198,7 @@ func (s *Store) RemoveNodesData(group, config string, nodes []string) error {
 					}
 					continue
 				}
-				if perr := s.DBBatchPutItem(dbKey, newData); perr != nil && firstErr == nil {
+				if perr := s.DBBatchPutItem(path, newData); perr != nil && firstErr == nil {
 					firstErr = perr
 				}
 			}
@@ -1237,10 +1236,9 @@ func (s *Store) RemoveNodesData(group, config string, nodes []string) error {
 			}
 		}
 
-		dbKey := path
 		if changed {
 			if len(newRanking) == 0 {
-				if delErr := s.DeleteByPath(dbKey, true); delErr != nil && firstErr == nil {
+				if delErr := s.DBBatchDeletePrefix(path, true); delErr != nil && firstErr == nil {
 					firstErr = delErr
 				}
 			} else {
@@ -1251,7 +1249,7 @@ func (s *Store) RemoveNodesData(group, config string, nodes []string) error {
 					}
 					continue
 				}
-				if perr := s.DBBatchPutItem(dbKey, newData); perr != nil && firstErr == nil {
+				if perr := s.DBBatchPutItem(path, newData); perr != nil && firstErr == nil {
 					firstErr = perr
 				}
 			}
@@ -1260,7 +1258,7 @@ func (s *Store) RemoveNodesData(group, config string, nodes []string) error {
 
 	// 删除节点状态
 	for _, nodeName := range nodes {
-		s.DeleteByPath(FormatDBKey(KeyTypeNode, config, group, nodeName), true)
+		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeNode, config, group, nodeName), true)
 	}
 
 	return firstErr
@@ -1348,7 +1346,7 @@ func (s *Store) CleanupOldRecords(group, config string) error {
 			if deleted >= toDeleteCount {
 				break
 			}
-			s.DeleteTargetRecords(info.keyType, group, config, info.target)
+			s.DBBatchDeletePrefix(FormatDBKey(info.keyType, config, group, info.target), false)
 			deleted++
 		}
 
@@ -1361,7 +1359,7 @@ func (s *Store) CleanupOldRecords(group, config string) error {
 				return validTargets[i].time.Before(validTargets[j].time)
 			})
 			for i := 0; i < remaining && i < len(validTargets); i++ {
-				s.DeleteTargetRecords(validTargets[i].keyType, group, config, validTargets[i].target)
+				s.DBBatchDeletePrefix(FormatDBKey(validTargets[i].keyType, config, group, validTargets[i].target), false)
 				deleted++
 			}
 		}

@@ -38,7 +38,7 @@ import (
 
 const (
 	prefetchInterval         = 10 * time.Minute
-	cleanupInterval          = 2 * time.Hour
+	cleanupInterval          = 30 * time.Minute
 	cacheParamAdjustInterval = 5 * time.Minute
 	recoveryCheckInterval    = 5 * time.Minute
 	checkInterval            = 10 * time.Minute
@@ -1328,9 +1328,18 @@ func (s *Smart) checkNodeQualityDegradation(
 		addressDisplay += fmt.Sprintf(" (ASN: %s)", asnInfo)
 	}
 
-	expectedStatus, _ := utils.NewUnsignedRanges[uint16]("200-399")
+	newWeight = updateAverageValueFloat(oldWeight, newWeight, false)
 
-	findExpectedNode := func(host string, currentWeight float64) {
+	if s.selected != "" {
+		return newWeight, false
+	}
+
+	now := time.Now().Unix()
+	degradedWeight := updateAverageValueFloat(oldWeight, newWeight * 0.1, metadata.SmartBlock == "blocked")
+	statusMap := atomicRecord.Get("status").(map[string]bool)
+
+	// 查找替代节点
+	findExpectedNode := func(currentWeight float64) {
 		if host == "" {
 			return
 		}
@@ -1342,6 +1351,10 @@ func (s *Smart) checkNodeQualityDegradation(
 		updateNodes = append(updateNodes, proxyName)
 		updateWeights = append(updateWeights, currentWeight)
 		proxies := s.selectProxies(metadata, s.GetProxies(false), false)
+		if statusMap[host] {
+			statusMap[host] = false
+			atomicRecord.Set("status", statusMap)
+		}
 
 		for i := 0; i < len(proxies); i++ {
 			if proxies[i].Name() == proxyName || !proxies[i].AliveForTestUrl(s.testUrl) {
@@ -1371,17 +1384,6 @@ func (s *Smart) checkNodeQualityDegradation(
 		go s.updatePrefetchCache(metadata, target, addressDisplay, updateNodes, updateWeights, asnInfo, isUDP)
 	}
 
-	// 连接失败处理及质量降级
-	newWeight = updateAverageValueFloat(oldWeight, newWeight, false)
-
-	if s.selected != "" {
-		return newWeight, false
-	}
-
-	now := time.Now().Unix()
-	degradedWeight := updateAverageValueFloat(oldWeight, newWeight * 0.1, metadata.SmartBlock == "blocked")
-	statusMap := atomicRecord.Get("status").(map[string]bool)
-
 	// 目标屏蔽
 	targetFailureStats, _ := s.store.GetTargetFailureStats(s.Name(), s.configName, host)
 	var stats smart.TargetFailureStats
@@ -1407,7 +1409,7 @@ func (s *Smart) checkNodeQualityDegradation(
 		}
 		failedWeight, nodeBlock := s.handleFailedConnection(proxy.Name(), oldWeight, newWeight)
 		if nodeBlock {
-			findExpectedNode(host, failedWeight)
+			findExpectedNode(failedWeight)
 			log.Debugln("[Smart] Connection [%s] - [%s] - [%s] - [%s] detected failure, degraded form [%.4f] to [%.4f] ...",
 				s.Name(), proxyName, networkType, addressDisplay, oldWeight, failedWeight)
 		}
@@ -1418,7 +1420,7 @@ func (s *Smart) checkNodeQualityDegradation(
 	if metadata.SmartBlock == "blocked" {
 		if now - lastUsedVal > 5 {
 			s.store.UpdateTargetFailureStats(s.Name(), s.configName, host, 1, stats)
-			findExpectedNode(host, degradedWeight)
+			findExpectedNode(degradedWeight)
 			log.Debugln("[Smart] Connection [%s] - [%s] - [%s] - [%s] detected smart block, degraded form [%.4f] to [%.4f] ...",
 				s.Name(), proxyName, networkType, addressDisplay, oldWeight, degradedWeight)
 		}
@@ -1434,7 +1436,7 @@ func (s *Smart) checkNodeQualityDegradation(
 		if checkLimit {
 			return degradedWeight, false
 		}
-		findExpectedNode(host, degradedWeight)
+		findExpectedNode(degradedWeight)
 		log.Debugln("[Smart] Connection [%s] - [%s] - [%s] - [%s] detected zero-traffic, degraded form [%.4f] to [%.4f] ...",
 			s.Name(), proxyName, networkType, addressDisplay, oldWeight, degradedWeight)
 		return degradedWeight, true
@@ -1446,6 +1448,7 @@ func (s *Smart) checkNodeQualityDegradation(
 			ctx, cancel := context.WithTimeout(context.Background(), C.DefaultTCPTimeout)
 			defer cancel()
 			url := "https://" + metadata.Host + "/?z=" + strconv.FormatInt(rand.Int63(), 10)
+			expectedStatus, _ := utils.NewUnsignedRanges[uint16]("200-399")
 			status, ok, err := proxy.StatusTest(ctx, url, expectedStatus)
 			if err == nil {
 				if !ok {
@@ -1457,7 +1460,7 @@ func (s *Smart) checkNodeQualityDegradation(
 						if checkLimit {
 							return degradedWeight, false
 						}
-						findExpectedNode(host, degradedWeight)
+						findExpectedNode(degradedWeight)
 						log.Debugln("[Smart] Connection [%s] - [%s] - [%s] - [%s] detected abnormal response [%d], degraded form [%.4f] to [%.4f] ...",
 							s.Name(), proxyName, networkType, addressDisplay, status, oldWeight, degradedWeight)
 						return degradedWeight, true
@@ -1475,7 +1478,7 @@ func (s *Smart) checkNodeQualityDegradation(
 	if oldWeight > 0 && newWeight > 0 {
 		weightDropRatio := (oldWeight - newWeight) / oldWeight
 		if weightDropRatio > 0.3 {
-			findExpectedNode(host, newWeight)
+			findExpectedNode(newWeight)
 			log.Debugln("[Smart] Connection [%s] - [%s] - [%s] - [%s] detected weight drop %.2f%% form [%.4f] to [%.4f], refine selected result...",
 				s.Name(), proxyName, networkType, addressDisplay, weightDropRatio*100, oldWeight, newWeight)
 			return newWeight, true

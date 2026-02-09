@@ -331,19 +331,6 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 	return result, nil
 }
 
-// 删除指定路径前缀的数据
-func (s *Store) DeleteByPath(path string, strict bool) error {
-	return s.DBBatchDeletePrefix(path, strict)
-}
-
-// 删除域名记录
-func (s *Store) DeleteTargetRecords(keyType, group, config, target string) {
-	key := FormatDBKey(keyType, config, group, target)
-	if err := s.DeleteByPath(key, false); err != nil {
-		return
-	}
-}
-
 // 从数据库获取单个条目
 func (s *Store) DBViewGetItem(key string) ([]byte, error) {
 	var data []byte
