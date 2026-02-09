@@ -60,7 +60,7 @@ func (o *overrideSchema) Apply(mapping map[string]any) error {
 		mapping["skip-cert-verify"] = *o.SkipCertVerify
 	}
 	if o.Interface != nil {
-		mapping["interface"] = *o.Interface
+		mapping["interface-name"] = *o.Interface
 	}
 	if o.RoutingMark != nil {
 		mapping["routing-mark"] = *o.RoutingMark
