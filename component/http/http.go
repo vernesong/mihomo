@@ -50,7 +50,7 @@ func HttpRequest(ctx context.Context, url, method string, header map[string][]st
 		}
 	}
 
-	if _, ok := header["User-Agent"]; !ok {
+	if req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", UA())
 	}
 

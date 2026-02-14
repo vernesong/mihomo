@@ -351,7 +351,7 @@ func StreamGunWithTransport(transport *TransportWrap, cfg *Config) (net.Conn, er
 
 	header := defaultHeader.Clone()
 	if cfg.UserAgent != "" {
-		header["user-agent"] = []string{cfg.UserAgent}
+		header.Set("User-Agent", cfg.UserAgent)
 	}
 
 	request := &http.Request{
