@@ -15,10 +15,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/dlclark/regexp2"
+	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/callback"
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/utils"
@@ -393,28 +393,28 @@ func (s *Smart) WrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata
 
 	start := time.Now()
 
-	firstWriteErr := new(error)
-	firstReadErr := new(error)
-	firstReadLatency := new(int64)
+	var firstWriteErr atomic.TypedValue[error]
+	var firstReadErr atomic.TypedValue[error]
+	var firstReadLatency atomic.Int64
 
 	if N.NeedHandshake(c) {
 		c = callback.NewFirstWriteCallBackConn(c, func(err error) {
 			if err != nil {
-				*firstWriteErr = err
+				firstWriteErr.Store(err)
 			}
 		})
 	}
 
 	c = callback.NewFirstReadCallBackConn(c, func(err error) {
-		*firstReadLatency = time.Since(start).Milliseconds()
+		firstReadLatency.Store(time.Since(start).Milliseconds())
 		if err != nil {
-			*firstReadErr = err
+			firstReadErr.Store(err)
 		}
 	})
 
 	return s.registerClosureMetricsCallback(
 		c, proxy, metadata, connectTime,
-		firstReadLatency, firstReadErr, firstWriteErr,
+		&firstReadLatency, &firstReadErr, &firstWriteErr,
 	)
 }
 
@@ -498,8 +498,7 @@ func (s *Smart) fillProxies(selected []C.Proxy, weights map[string]float64, all 
 		}
 	}
 
-	selectedNames := make(map[string]bool, minCount)
-	proxiesFactor := make(map[string]float64)
+	selectedNames := make(map[string]bool)
 	var indexes []int
 
 	for _, p := range selected {
@@ -507,6 +506,7 @@ func (s *Smart) fillProxies(selected []C.Proxy, weights map[string]float64, all 
 	}
 
 	if len(s.policyPriority) > 0 {
+		proxiesFactor := make(map[string]float64)
 		for _, p := range all {
 			proxiesFactor[p.Name()] = s.getPriorityFactor(p.Name())
 		}
@@ -520,6 +520,32 @@ func (s *Smart) fillProxies(selected []C.Proxy, weights map[string]float64, all 
 			return factorI > factorJ
 		})
 		
+		indexes = make([]int, len(all))
+		for i := range indexes {
+			indexes[i] = i
+		}
+	} else if ranking, err := s.store.GetNodeWeightRankingCache(s.Name(), s.configName); err == nil && len(ranking) > 0 {
+		weights = make(map[string]float64)
+		for _, r := range ranking {
+			weights[r.Name] = float64(r.Weight)
+		}
+		sort.Slice(all, func(i, j int) bool {
+			wi, existsi := weights[all[i].Name()]
+			wj, existsj := weights[all[j].Name()]
+			if existsi && existsj {
+				if wi != wj {
+					return wi > wj
+				}
+				return all[i].Name() < all[j].Name()
+			}
+			if existsi {
+				return true
+			}
+			if existsj {
+				return false
+			}
+			return all[i].Name() < all[j].Name()
+		})
 		indexes = make([]int, len(all))
 		for i := range indexes {
 			indexes[i] = i
@@ -655,9 +681,9 @@ func (s *Smart) InitSmart() {
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 
 	smartInitOnce.Do(func() {
-		s.startTimedTask(5*time.Minute, checkInterval, "Clean up groups", s.cleanupOrphanedGroups, true)
-		s.startTimedTask(5*time.Second, cacheParamAdjustInterval, "Cache parameter adjustment", s.store.AdjustCacheParameters, false)
-		s.startTimedTask(5*time.Minute, flushQueueInterval, "Queue flush", func() {
+		s.startTimedTask(5*time.Minute, checkInterval, "Global orphaned groups Clean up", s.cleanupOrphanedGroups, true)
+		s.startTimedTask(5*time.Second, cacheParamAdjustInterval, "Global cache parameters adjustment", s.store.AdjustCacheParameters, false)
+		s.startTimedTask(5*time.Minute, flushQueueInterval, "Global queues flush", func() {
 			s.store.FlushQueue(true)
 		}, false)
 		// try load ASN database
@@ -668,11 +694,11 @@ func (s *Smart) InitSmart() {
 		}
 	})
 
-	s.startTimedTask(10*time.Minute, checkInterval, "Clean up Orphaned nodes", s.cleanupOrphanedNodeCache, true)
-	s.startTimedTask(5*time.Minute, prefetchInterval, "Prefetch", s.runPrefetch, false)
-	s.startTimedTask(10*time.Minute, rankingInterval, "Ranking", s.updateNodeRanking, false)
-	s.startTimedTask(5*time.Minute, recoveryCheckInterval, "Recovery check", s.checkAndRecoverDegradedNodes, false)
-	s.startTimedTask(10*time.Minute, cleanupInterval, "Old Records cleanup", func() {
+	s.startTimedTask(10*time.Minute, checkInterval, "Group orphaned nodes clean up", s.cleanupOrphanedNodeCache, true)
+	s.startTimedTask(5*time.Minute, prefetchInterval, "Group targets prefetch", s.runPrefetch, false)
+	s.startTimedTask(10*time.Minute, rankingInterval, "Group nodes Ranking", s.updateNodeRanking, false)
+	s.startTimedTask(5*time.Minute, recoveryCheckInterval, "Group nodes recovery check", s.checkAndRecoverDegradedNodes, false)
+	s.startTimedTask(10*time.Minute, cleanupInterval, "Group old records clean up", func() {
 		_ = s.store.CleanupOldRecords(s.Name(), s.configName)
 	}, false)
 	s.startTimedTask(5*time.Second, checkInterval, "Init LGBM Collector", func() {
@@ -718,12 +744,10 @@ func (s *Smart) startTimedTask(initialDelay, interval time.Duration, taskName st
 		}
 
 		if runOnce {
-			log.Debugln("[Smart] Task %s for group [%s] set to run once, exiting",
-				taskName, s.Name())
+			log.Debugln("[Smart] Task [%s] for group [%s] set to run once, exiting", taskName, s.Name())
 			return
 		} else {
-			log.Debugln("[Smart] Task %s for group [%s] started, interval: %s",
-				taskName, s.Name(), adjustedInterval.Round(time.Second).String())
+			log.Debugln("[Smart] Task [%s] for group [%s] started, interval: %s", taskName, s.Name(), adjustedInterval.Round(time.Second).String())
 		}
 
 		ticker := time.NewTicker(adjustedInterval)
@@ -1268,7 +1292,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 		uploadTotalMB, downloadTotalMB, maxUploadRateKB, maxDownloadRateKB, connectionDuration, asnInfo, ModelPredicted)
 }
 
-func (s *Smart) registerClosureMetricsCallback(c C.Conn, proxy C.Proxy, metadata *C.Metadata, connectTime int64, firstReadLatency *int64, firstReadErr *error, firstWriteErr *error) C.Conn {
+func (s *Smart) registerClosureMetricsCallback(c C.Conn, proxy C.Proxy, metadata *C.Metadata, connectTime int64, firstReadLatency *atomic.Int64, firstReadErr *atomic.TypedValue[error], firstWriteErr *atomic.TypedValue[error]) C.Conn {
 	return callback.NewCloseCallbackConn(c, func() {
 		tracker := statistic.DefaultManager.Get(metadata.UUID)
 		if tracker != nil {
@@ -1279,16 +1303,20 @@ func (s *Smart) registerClosureMetricsCallback(c C.Conn, proxy C.Proxy, metadata
 			maxUploadRate := info.MaxUploadRate.Load()
 			maxDownloadRate := info.MaxDownloadRate.Load()
 
-			if *firstReadErr == nil {
-				go s.recordConnectionStats("closed", metadata, proxy, connectTime, *firstReadLatency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, nil)
-			} else if *firstReadErr == io.EOF {
-				if *firstWriteErr != nil && *firstWriteErr != io.EOF {
-					go s.recordConnectionStats("failed", metadata, proxy, connectTime, *firstReadLatency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, *firstReadErr)
+			latency := firstReadLatency.Load()
+			readErr := firstReadErr.Load()
+			writeErr := firstWriteErr.Load()
+
+			if readErr == nil {
+				go s.recordConnectionStats("closed", metadata, proxy, connectTime, latency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, nil)
+			} else if readErr == io.EOF {
+				if writeErr != nil && writeErr != io.EOF {
+					go s.recordConnectionStats("failed", metadata, proxy, connectTime, latency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, readErr)
 				} else {
-					go s.recordConnectionStats("closed", metadata, proxy, connectTime, *firstReadLatency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, nil)
+					go s.recordConnectionStats("closed", metadata, proxy, connectTime, latency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, nil)
 				}
 			} else {
-				go s.recordConnectionStats("failed", metadata, proxy, connectTime, *firstReadLatency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, *firstReadErr)
+				go s.recordConnectionStats("failed", metadata, proxy, connectTime, latency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, readErr)
 			}
 			return
 		}

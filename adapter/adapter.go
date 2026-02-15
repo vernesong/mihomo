@@ -321,12 +321,19 @@ func (p *Proxy) StatusTest(ctx context.Context, url string, expectedStatus utils
 		return 1, false, err
 	}
 
+	instance, err := p.DialContext(ctx, &addr)
+	if err != nil {
+		return 1, false, err
+	}
+	defer func() {
+		_ = instance.Close()
+	}()
+
 	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			return p.DialContext(ctx, &addr)
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return instance, nil
 		},
 		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   100,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
