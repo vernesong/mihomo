@@ -204,8 +204,9 @@ type (
 	}
 
 	TargetFailureStats struct {
-		FailureCount int64  `json:"failure_count"`
+		FailureCount int  `json:"failure_count"`
 		LastFailure  int64  `json:"last_failure"`
+		Blocked	     bool   `json:"blocked"`
 	}
 )
 
@@ -228,6 +229,23 @@ func FormatDBKey(parts ...string) string {
 	}
 
 	return strings.Join(elements, "/")
+}
+
+func formatOperationKey(op *StoreOperation) string {
+    switch op.Type {
+    case OpSaveNodeState:
+        return FormatDBKey(KeyTypeNode, op.Config, op.Group, op.Node)
+    case OpSaveStats:
+        return FormatDBKey(KeyTypeStats, op.Config, op.Group, op.Target, op.Node)
+    case OpSavePrefetch:
+        return FormatDBKey(KeyTypePrefetch, op.Config, op.Group, op.Target)
+    case OpSaveRanking:
+        return FormatDBKey(KeyTypeRanking, op.Config, op.Group)
+    case OpSaveTargetFailures:
+        return FormatDBKey(KeyTypeTargetFailures, op.Config, op.Group, op.Target)
+    default:
+        return ""
+    }
 }
 
 // 获取有效顶级域名加一二级域名并使用通配符处理
@@ -453,13 +471,54 @@ func InitQueue()  {
 	replaceGlobalQueue(emptyQueue)
 }
 
-func appendToGlobalQueue(operations ...StoreOperation) {
+func (s *Store) AppendToGlobalQueue(operations ...StoreOperation) {
+	if len(operations) == 0 {
+		return
+	}
+
+	shouldFlush := false
+	var snapshot []StoreOperation
+
 	globalOperationQueue.Update(func(old []StoreOperation) []StoreOperation {
-		newQueue := make([]StoreOperation, len(old)+len(operations))
-		copy(newQueue, old)
-		copy(newQueue[len(old):], operations)
+		opMap := make(map[string]*StoreOperation)
+
+		for i := range old {
+			key := formatOperationKey(&old[i])
+			if key != "" {
+				opMap[key] = &old[i]
+			}
+		}
+
+		for i := range operations {
+			key := formatOperationKey(&operations[i])
+			if key != "" {
+				opMap[key] = &operations[i]
+			}
+		}
+
+		newQueue := make([]StoreOperation, 0, len(opMap))
+		for _, op := range opMap {
+			newQueue = append(newQueue, *op)
+		}
+
+		threshold := GetBatchSaveThreshold()
+		if len(newQueue) >= threshold {
+			shouldFlush = true
+			snapshot = make([]StoreOperation, len(newQueue))
+			copy(snapshot, newQueue)
+			newQueue = make([]StoreOperation, 0, threshold)
+		}
+
 		return newQueue
 	})
+
+	if shouldFlush && len(snapshot) > 0 {
+		go func() {
+			if err := s.BatchSave(snapshot); err == nil {
+				log.Debugln("[SmartStore] Queue datas saved, operations: [%d]", len(snapshot))
+			}
+		}()
+	}
 }
 
 func replaceGlobalQueue(newQueue []StoreOperation) {
@@ -530,8 +589,7 @@ func (s *Store) FlushByLevel(level string, config string, group string) error {
 	}
 
 	if level == "all" {
-		emptyQueue := make([]StoreOperation, 0, MinBatchThreshLimit)
-		replaceGlobalQueue(emptyQueue)
+		InitQueue()
 	} else if level == "config" {
 		filterQueueByConfig(config)
 	} else if level == "group" {

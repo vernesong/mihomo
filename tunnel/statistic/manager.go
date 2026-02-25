@@ -183,9 +183,8 @@ func (m *Manager) leaveSmartTarget(c Tracker) {
 	}
 }
 
-func (m *Manager) GetSmartTargetIDs(target, asn string) (map[string]bool, map[string]bool) {
+func (m *Manager) GetSmartTargetIDs(target, asn string) (map[string]bool) {
 	targetIDs := make(map[string]bool)
-	asnIDs := make(map[string]bool)
 
 	if result, ok := m.smartTarget.Load(target); ok {
 		result.Range(func(id string, _ bool) bool {
@@ -197,11 +196,11 @@ func (m *Manager) GetSmartTargetIDs(target, asn string) (map[string]bool, map[st
 	if asn != "" && asn != "unknown" {
 		if result, ok := m.smartTarget.Load(asn); ok {
 			result.Range(func(id string, _ bool) bool {
-				asnIDs[id] = true
+				targetIDs[id] = true
 				return true
 			})
 		}
 	}
 
-	return targetIDs, asnIDs
+	return targetIDs
 }

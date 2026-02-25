@@ -50,26 +50,26 @@ func (s *Store) StorePrefetchResult(group, config string, target string, asnNumb
 	targetCacheKey := FormatDBKey(KeyTypePrefetch, config, group, target)
 
 	var pm PrefetchMap
-
+	operations := make([]StoreOperation, 0, 2)
 	nodeWeight := NodesWithWeights{Nodes: proxyNames, Weights: weights}
+
 	if isUDP {
 		pm.UDP = nodeWeight
 	} else {
 		pm.TCP = nodeWeight
 	}
 	pm.UpdatedTime = time.Now().Unix()
-	data, err := json.Marshal(pm)
-	if err != nil {
-		return
-	}
 
-	appendToGlobalQueue(StoreOperation{
-		Type:   OpSavePrefetch,
-		Group:  group,
-		Config: config,
-		Target: target,
-		Data:   data,
-	})
+	data, err := json.Marshal(pm)
+	if err == nil {
+		operations = append(operations, StoreOperation{
+			Type:   OpSavePrefetch,
+			Group:  group,
+			Config: config,
+			Target: target,
+			Data:   data,
+		})
+	}
 
 	if asnNumber != "" && !CdnASNs[asnNumber] {
 		var asnPm PrefetchMap
@@ -79,21 +79,22 @@ func (s *Store) StorePrefetchResult(group, config string, target string, asnNumb
 			asnPm.RefTCP = targetCacheKey
 		}
 		asnPm.UpdatedTime = time.Now().Unix()
+		
 		asnData, asnErr := json.Marshal(asnPm)
-		if asnErr != nil {
-			return
+		if asnErr == nil {
+			operations = append(operations, StoreOperation{
+				Type:   OpSavePrefetch,
+				Group:  group,
+				Config: config,
+				Target: asnNumber,
+				Data:   asnData,
+			})
 		}
-
-		appendToGlobalQueue(StoreOperation{
-			Type:   OpSavePrefetch,
-			Group:  group,
-			Config: config,
-			Target: asnNumber,
-			Data:   asnData,
-		})
 	}
 
-	go s.FlushQueue(false)
+	if len(operations) > 0 {
+		s.AppendToGlobalQueue(operations...)
+	}
 }
 
 // 获取预取结果

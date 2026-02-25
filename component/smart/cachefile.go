@@ -3,7 +3,6 @@ package smart
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -40,22 +39,8 @@ func (s *Store) BatchSave(operations []StoreOperation) error {
 		curBatch := operations[start:end]
 		b.Go(fmt.Sprintf("batch-%d", i), func() (struct{}, error) {
 			for _, op := range curBatch {
-				var key string
-
-				switch op.Type {
-				case OpSaveNodeState:
-					key = FormatDBKey(KeyTypeNode, op.Config, op.Group, op.Node)
-				case OpSaveStats:
-					key = FormatDBKey(KeyTypeStats, op.Config, op.Group, op.Target, op.Node)
-				case OpSavePrefetch:
-					key = FormatDBKey(KeyTypePrefetch, op.Config, op.Group, op.Target)
-				case OpSaveRanking:
-					key = FormatDBKey(KeyTypeRanking, op.Config, op.Group)
-				case OpSaveTargetFailures:
-                    key = FormatDBKey(KeyTypeTargetFailures, op.Config, op.Group, op.Target)
-                }
-
-				if key != "" && op.Data != nil {
+				key := formatOperationKey(&op)
+				if key != "" {
 					writeMapSync.Store(key, op.Data)
 				}
 			}
@@ -92,107 +77,6 @@ func (s *Store) BatchSave(operations []StoreOperation) error {
 	}
 
 	return err
-}
-
-// 批量保存连接统计数据
-func (s *Store) BatchSaveStats(operations []StoreOperation) error {
-	if len(operations) == 0 {
-		return nil
-	}
-
-	existingOps := getGlobalQueueSnapshot()
-
-	opMap := xsync.NewMap[string, *StoreOperation]()
-
-	for i, op := range existingOps {
-		opKey := fmt.Sprintf("%d:%s:%s:%s:%s", op.Type, op.Group, op.Config, op.Target, op.Node)
-		opMap.Store(opKey, &existingOps[i])
-	}
-
-	concurrency := 2
-	batchSize := 100
-
-	b, _ := batch.New[struct{}](context.Background(), batch.WithConcurrencyNum[struct{}](concurrency))
-
-	for batchStart := 0; batchStart < len(operations); batchStart += batchSize {
-		batchEnd := batchStart + batchSize
-		if batchEnd > len(operations) {
-			batchEnd = len(operations)
-		}
-
-		batchIndex := batchStart
-		b.Go(fmt.Sprintf("batch-%d", batchIndex/batchSize), func() (struct{}, error) {
-			start, end := batchIndex, batchEnd
-			for i := start; i < end; i++ {
-				op := operations[i]
-				lookupKey := fmt.Sprintf("%d:%s:%s:%s:%s", op.Type, op.Group, op.Config, op.Target, op.Node)
-				if op.Type == OpSaveStats {
-					opMap.Compute(lookupKey, func(oldOp *StoreOperation, loaded bool) (*StoreOperation, xsync.ComputeOp) {
-						if !loaded {
-							return &op, xsync.UpdateOp
-						}
-
-						var existingRecord, newRecord StatsRecord
-						if oldOp.Data != nil && op.Data != nil &&
-							json.Unmarshal(oldOp.Data, &existingRecord) == nil &&
-							json.Unmarshal(op.Data, &newRecord) == nil {
-
-							oldWeights := make(map[string]float64, len(existingRecord.Weights))
-							if existingRecord.Weights != nil {
-								for k, v := range existingRecord.Weights {
-									oldWeights[k] = v
-								}
-							}
-
-							existingRecord = newRecord
-
-							if existingRecord.Success > 1000000 {
-								existingRecord.Success = existingRecord.Success / 2
-							}
-							if existingRecord.Failure > 1000000 {
-								existingRecord.Failure = existingRecord.Failure / 2
-							}
-
-							if len(oldWeights) > 0 {
-								if existingRecord.Weights == nil {
-									existingRecord.Weights = oldWeights
-								} else {
-									for k, v := range oldWeights {
-										if _, exists := existingRecord.Weights[k]; !exists {
-											existingRecord.Weights[k] = v
-										}
-									}
-								}
-							}
-
-							mergedData, err := json.Marshal(existingRecord)
-							if err == nil {
-								oldOp.Data = mergedData
-							}
-						}
-						return oldOp, xsync.UpdateOp
-					})
-				} else {
-					opMap.Store(lookupKey, &op)
-				}
-			}
-			return struct{}{}, nil
-		})
-	}
-
-	b.Wait()
-
-	newQueue := make([]StoreOperation, 0, opMap.Size())
-	opMap.Range(func(key string, op *StoreOperation) bool {
-		newQueue = append(newQueue, *op)
-		return true
-	})
-
-	replaceGlobalQueue(newQueue)
-
-	go s.FlushQueue(false)
-
-	return nil
 }
 
 // 刷新队列中的操作到数据库
