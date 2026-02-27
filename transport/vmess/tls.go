@@ -24,8 +24,8 @@ type TLSConfig struct {
 	Reality           *tlsC.RealityConfig
 }
 
-func StreamTLSConn(ctx context.Context, conn net.Conn, cfg *TLSConfig) (net.Conn, error) {
-	tlsConfig, err := ca.GetTLSConfig(ca.Option{
+func (cfg *TLSConfig) ToStdConfig() (*tls.Config, error) {
+	return ca.GetTLSConfig(ca.Option{
 		TLSConfig: &tls.Config{
 			ServerName:         cfg.Host,
 			InsecureSkipVerify: cfg.SkipCertVerify,
@@ -35,6 +35,10 @@ func StreamTLSConn(ctx context.Context, conn net.Conn, cfg *TLSConfig) (net.Conn
 		Certificate: cfg.Certificate,
 		PrivateKey:  cfg.PrivateKey,
 	})
+}
+
+func StreamTLSConn(ctx context.Context, conn net.Conn, cfg *TLSConfig) (net.Conn, error) {
+	tlsConfig, err := cfg.ToStdConfig()
 	if err != nil {
 		return nil, err
 	}

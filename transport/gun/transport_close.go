@@ -44,7 +44,7 @@ func closeClientConn(cc *http.Http2ClientConn) { // like forceCloseConn() in htt
 	_ = cc.Close()
 }
 
-func closeTransport(tr *http.Http2Transport) {
+func CloseTransport(tr *http.Http2Transport) {
 	connPool := transportConnPool(tr)
 	p := (*clientConnPool)((*efaceWords)(unsafe.Pointer(&connPool)).data)
 	p.mu.Lock()

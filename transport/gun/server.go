@@ -9,7 +9,6 @@ import (
 
 	"github.com/metacubex/mihomo/common/buf"
 	N "github.com/metacubex/mihomo/common/net"
-	C "github.com/metacubex/mihomo/constant"
 
 	"github.com/metacubex/http"
 	"github.com/metacubex/http/h2c"
@@ -42,17 +41,9 @@ func NewServerHandler(options ServerOption) http.Handler {
 			writer.WriteHeader(http.StatusOK)
 
 			conn := &Conn{
-				initFn: func() (io.ReadCloser, netAddr, error) {
-					nAddr := netAddr{}
-					if request.RemoteAddr != "" {
-						metadata := C.Metadata{}
-						if err := metadata.SetRemoteAddress(request.RemoteAddr); err == nil {
-							nAddr.remoteAddr = net.TCPAddrFromAddrPort(metadata.AddrPort())
-						}
-					}
-					if addr, ok := request.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
-						nAddr.localAddr = addr
-					}
+				initFn: func() (io.ReadCloser, NetAddr, error) {
+					nAddr := NetAddr{}
+					nAddr.SetAddrFromRequest(request)
 					return request.Body, nAddr, nil
 				},
 				writer: writer,

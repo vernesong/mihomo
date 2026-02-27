@@ -40,10 +40,10 @@ var defaultHeader = http.Header{
 type DialFn = func(ctx context.Context, network, addr string) (net.Conn, error)
 
 type Conn struct {
-	initFn func() (io.ReadCloser, netAddr, error)
+	initFn func() (io.ReadCloser, NetAddr, error)
 	writer io.Writer // writer must not nil
 	closer io.Closer
-	netAddr
+	NetAddr
 
 	initOnce sync.Once
 	initErr  error
@@ -73,7 +73,7 @@ func (g *Conn) initReader() {
 		}
 		return
 	}
-	g.netAddr = addr
+	g.NetAddr = addr
 
 	g.closeMutex.Lock()
 	defer g.closeMutex.Unlock()
@@ -339,12 +339,12 @@ func StreamGunWithTransport(transport *TransportWrap, cfg *Config) (net.Conn, er
 	request = request.WithContext(transport.ctx)
 
 	conn := &Conn{
-		initFn: func() (io.ReadCloser, netAddr, error) {
-			nAddr := netAddr{}
+		initFn: func() (io.ReadCloser, NetAddr, error) {
+			nAddr := NetAddr{}
 			trace := &httptrace.ClientTrace{
 				GotConn: func(connInfo httptrace.GotConnInfo) {
-					nAddr.localAddr = connInfo.Conn.LocalAddr()
-					nAddr.remoteAddr = connInfo.Conn.RemoteAddr()
+					nAddr.SetLocalAddr(connInfo.Conn.LocalAddr())
+					nAddr.SetRemoteAddr(connInfo.Conn.RemoteAddr())
 				},
 			}
 			request = request.WithContext(httptrace.WithClientTrace(request.Context(), trace))
