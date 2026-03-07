@@ -13,6 +13,7 @@ import (
 	"github.com/metacubex/tls"
 	utls "github.com/metacubex/utls"
 	"github.com/mroth/weightedrand/v2"
+	"golang.org/x/exp/slices"
 )
 
 type Conn = utls.Conn
@@ -77,9 +78,6 @@ var randomFingerprint = once.OnceValue(func() UClientHelloID {
 	return fingerprint
 })
 
-var HelloChrome_Auto = utls.HelloChrome_Auto
-var HelloChrome_120 = utls.HelloChrome_120 // special fingerprint for some old protocols doesn't work with HelloChrome_Auto
-
 var fingerprints = map[string]UClientHelloID{
 	"chrome":  utls.HelloChrome_Auto,
 	"firefox": utls.HelloFirefox_Auto,
@@ -90,6 +88,11 @@ var fingerprints = map[string]UClientHelloID{
 	"360":     utls.Hello360_Auto,
 	"qq":      utls.HelloQQ_Auto,
 	"random":  {},
+
+	// classical fingerprints without X25519MLKEM768
+	"chrome120":  utls.HelloChrome_120,
+	"firefox120": utls.HelloFirefox_120,
+	"safari16":   utls.HelloSafari_16_0,
 
 	// deprecated fingerprints should not be used
 	"chrome_psk":                 utls.HelloChrome_100_PSK,
@@ -271,6 +274,32 @@ func BuildWebsocketHandshakeState(c *UConn) error {
 	}
 	if !hasALPNExtension { // Append extension if doesn't exists
 		c.Extensions = append(c.Extensions, &utls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}})
+	}
+	// Rebuild the client hello
+	if err := c.BuildHandshakeState(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func BuildRemovedX25519MLKEM768HandshakeState(c *UConn) error {
+	// Build the handshake state. This will apply every variable of the TLS of the
+	// fingerprint in the UConn
+	if err := c.BuildHandshakeState(); err != nil {
+		return err
+	}
+	// Iterate over extensions and check
+	for _, extension := range c.Extensions {
+		if ce, ok := extension.(*utls.SupportedCurvesExtension); ok {
+			ce.Curves = slices.DeleteFunc(ce.Curves, func(curveID utls.CurveID) bool {
+				return curveID == utls.X25519MLKEM768
+			})
+		}
+		if ks, ok := extension.(*utls.KeyShareExtension); ok {
+			ks.KeyShares = slices.DeleteFunc(ks.KeyShares, func(share utls.KeyShare) bool {
+				return share.Group == utls.X25519MLKEM768
+			})
+		}
 	}
 	// Rebuild the client hello
 	if err := c.BuildHandshakeState(); err != nil {

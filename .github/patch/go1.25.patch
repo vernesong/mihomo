@@ -11,8 +11,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/crypto/internal/sysrand/rand_windows.go b/src/crypto/internal/sysrand/rand_windows.go
---- a/src/crypto/internal/sysrand/rand_windows.go	(revision 6e676ab2b809d46623acb5988248d95d1eb7939c)
-+++ b/src/crypto/internal/sysrand/rand_windows.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
+--- a/src/crypto/internal/sysrand/rand_windows.go	(revision 439ff996f0ee506fc2eb84b7f11ffc360a6299f2)
++++ b/src/crypto/internal/sysrand/rand_windows.go	(revision 466f6c7a29bc098b0d4c987b803c779222894a11)
 @@ -7,5 +7,26 @@
  import "internal/syscall/windows"
  
@@ -47,8 +47,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/crypto/rand/rand.go b/src/crypto/rand/rand.go
---- a/src/crypto/rand/rand.go	(revision 6e676ab2b809d46623acb5988248d95d1eb7939c)
-+++ b/src/crypto/rand/rand.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
+--- a/src/crypto/rand/rand.go	(revision 439ff996f0ee506fc2eb84b7f11ffc360a6299f2)
++++ b/src/crypto/rand/rand.go	(revision 466f6c7a29bc098b0d4c987b803c779222894a11)
 @@ -22,7 +22,7 @@
  //   - On legacy Linux (< 3.17), Reader opens /dev/urandom on first use.
  //   - On macOS, iOS, and OpenBSD Reader, uses arc4random_buf(3).
@@ -64,8 +64,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/internal/syscall/windows/syscall_windows.go b/src/internal/syscall/windows/syscall_windows.go
---- a/src/internal/syscall/windows/syscall_windows.go	(revision 6e676ab2b809d46623acb5988248d95d1eb7939c)
-+++ b/src/internal/syscall/windows/syscall_windows.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
+--- a/src/internal/syscall/windows/syscall_windows.go	(revision 439ff996f0ee506fc2eb84b7f11ffc360a6299f2)
++++ b/src/internal/syscall/windows/syscall_windows.go	(revision 466f6c7a29bc098b0d4c987b803c779222894a11)
 @@ -419,7 +419,7 @@
  //sys	DestroyEnvironmentBlock(block *uint16) (err error) = userenv.DestroyEnvironmentBlock
  //sys	CreateEvent(eventAttrs *SecurityAttributes, manualReset uint32, initialState uint32, name *uint16) (handle syscall.Handle, err error) = kernel32.CreateEventW
@@ -81,8 +81,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/internal/syscall/windows/zsyscall_windows.go b/src/internal/syscall/windows/zsyscall_windows.go
---- a/src/internal/syscall/windows/zsyscall_windows.go	(revision 6e676ab2b809d46623acb5988248d95d1eb7939c)
-+++ b/src/internal/syscall/windows/zsyscall_windows.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
+--- a/src/internal/syscall/windows/zsyscall_windows.go	(revision 439ff996f0ee506fc2eb84b7f11ffc360a6299f2)
++++ b/src/internal/syscall/windows/zsyscall_windows.go	(revision 466f6c7a29bc098b0d4c987b803c779222894a11)
 @@ -38,7 +38,6 @@
  
  var (
@@ -91,16 +91,16 @@ diff --git a/src/internal/syscall/windows/zsyscall_windows.go b/src/internal/sys
  	modiphlpapi         = syscall.NewLazyDLL(sysdll.Add("iphlpapi.dll"))
  	modkernel32         = syscall.NewLazyDLL(sysdll.Add("kernel32.dll"))
  	modnetapi32         = syscall.NewLazyDLL(sysdll.Add("netapi32.dll"))
-@@ -63,7 +62,7 @@
- 	procQueryServiceStatus                = modadvapi32.NewProc("QueryServiceStatus")
- 	procRevertToSelf                      = modadvapi32.NewProc("RevertToSelf")
+@@ -65,7 +64,7 @@
+ 	procSetEntriesInAclW                  = modadvapi32.NewProc("SetEntriesInAclW")
+ 	procSetNamedSecurityInfoW             = modadvapi32.NewProc("SetNamedSecurityInfoW")
  	procSetTokenInformation               = modadvapi32.NewProc("SetTokenInformation")
 -	procProcessPrng                       = modbcryptprimitives.NewProc("ProcessPrng")
 +	procSystemFunction036                 = modadvapi32.NewProc("SystemFunction036")
  	procGetAdaptersAddresses              = modiphlpapi.NewProc("GetAdaptersAddresses")
  	procCreateEventW                      = modkernel32.NewProc("CreateEventW")
  	procCreateIoCompletionPort            = modkernel32.NewProc("CreateIoCompletionPort")
-@@ -242,12 +241,12 @@
+@@ -270,12 +269,12 @@
  	return
  }
  
@@ -110,8 +110,8 @@ diff --git a/src/internal/syscall/windows/zsyscall_windows.go b/src/internal/sys
  	if len(buf) > 0 {
  		_p0 = &buf[0]
  	}
--	r1, _, e1 := syscall.Syscall(procProcessPrng.Addr(), 2, uintptr(unsafe.Pointer(_p0)), uintptr(len(buf)), 0)
-+	r1, _, e1 := syscall.Syscall(procSystemFunction036.Addr(), 2, uintptr(unsafe.Pointer(_p0)), uintptr(len(buf)), 0)
+-	r1, _, e1 := syscall.SyscallN(procProcessPrng.Addr(), uintptr(unsafe.Pointer(_p0)), uintptr(len(buf)))
++	r1, _, e1 := syscall.SyscallN(procSystemFunction036.Addr(), uintptr(unsafe.Pointer(_p0)), uintptr(len(buf)))
  	if r1 == 0 {
  		err = errnoErr(e1)
  	}
@@ -121,8 +121,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/runtime/os_windows.go b/src/runtime/os_windows.go
---- a/src/runtime/os_windows.go	(revision 6e676ab2b809d46623acb5988248d95d1eb7939c)
-+++ b/src/runtime/os_windows.go	(revision f56f1e23507e646c85243a71bde7b9629b2f970c)
+--- a/src/runtime/os_windows.go	(revision 439ff996f0ee506fc2eb84b7f11ffc360a6299f2)
++++ b/src/runtime/os_windows.go	(revision f6bddda4e8ff58a957462a1a09562924d5f3d05c)
 @@ -39,8 +39,8 @@
  //go:cgo_import_dynamic runtime._GetSystemInfo GetSystemInfo%1 "kernel32.dll"
  //go:cgo_import_dynamic runtime._GetThreadContext GetThreadContext%2 "kernel32.dll"
@@ -342,8 +342,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/net/hook_windows.go b/src/net/hook_windows.go
---- a/src/net/hook_windows.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
-+++ b/src/net/hook_windows.go	(revision 6788c4c6f9fafb56729bad6b660f7ee2272d699f)
+--- a/src/net/hook_windows.go	(revision 466f6c7a29bc098b0d4c987b803c779222894a11)
++++ b/src/net/hook_windows.go	(revision 1bdabae205052afe1dadb2ad6f1ba612cdbc532a)
 @@ -13,6 +13,7 @@
  	hostsFilePath = windows.GetSystemDirectory() + "/Drivers/etc/hosts"
  
@@ -358,8 +358,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/net/internal/socktest/main_test.go b/src/net/internal/socktest/main_test.go
---- a/src/net/internal/socktest/main_test.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
-+++ b/src/net/internal/socktest/main_test.go	(revision 6788c4c6f9fafb56729bad6b660f7ee2272d699f)
+--- a/src/net/internal/socktest/main_test.go	(revision 466f6c7a29bc098b0d4c987b803c779222894a11)
++++ b/src/net/internal/socktest/main_test.go	(revision 1bdabae205052afe1dadb2ad6f1ba612cdbc532a)
 @@ -2,7 +2,7 @@
  // Use of this source code is governed by a BSD-style
  // license that can be found in the LICENSE file.
@@ -376,8 +376,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 ===================================================================
 diff --git a/src/net/internal/socktest/main_windows_test.go b/src/net/internal/socktest/main_windows_test.go
 new file mode 100644
---- /dev/null	(revision 6788c4c6f9fafb56729bad6b660f7ee2272d699f)
-+++ b/src/net/internal/socktest/main_windows_test.go	(revision 6788c4c6f9fafb56729bad6b660f7ee2272d699f)
+--- /dev/null	(revision 1bdabae205052afe1dadb2ad6f1ba612cdbc532a)
++++ b/src/net/internal/socktest/main_windows_test.go	(revision 1bdabae205052afe1dadb2ad6f1ba612cdbc532a)
 @@ -0,0 +1,22 @@
 +// Copyright 2015 The Go Authors. All rights reserved.
 +// Use of this source code is governed by a BSD-style
@@ -407,8 +407,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/net/internal/socktest/sys_windows.go b/src/net/internal/socktest/sys_windows.go
---- a/src/net/internal/socktest/sys_windows.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
-+++ b/src/net/internal/socktest/sys_windows.go	(revision 6788c4c6f9fafb56729bad6b660f7ee2272d699f)
+--- a/src/net/internal/socktest/sys_windows.go	(revision 466f6c7a29bc098b0d4c987b803c779222894a11)
++++ b/src/net/internal/socktest/sys_windows.go	(revision 1bdabae205052afe1dadb2ad6f1ba612cdbc532a)
 @@ -9,6 +9,38 @@
  	"syscall"
  )
@@ -454,8 +454,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/net/main_windows_test.go b/src/net/main_windows_test.go
---- a/src/net/main_windows_test.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
-+++ b/src/net/main_windows_test.go	(revision 6788c4c6f9fafb56729bad6b660f7ee2272d699f)
+--- a/src/net/main_windows_test.go	(revision 466f6c7a29bc098b0d4c987b803c779222894a11)
++++ b/src/net/main_windows_test.go	(revision 1bdabae205052afe1dadb2ad6f1ba612cdbc532a)
 @@ -12,6 +12,7 @@
  
  var (
@@ -486,8 +486,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/net/sock_windows.go b/src/net/sock_windows.go
---- a/src/net/sock_windows.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
-+++ b/src/net/sock_windows.go	(revision 6788c4c6f9fafb56729bad6b660f7ee2272d699f)
+--- a/src/net/sock_windows.go	(revision 466f6c7a29bc098b0d4c987b803c779222894a11)
++++ b/src/net/sock_windows.go	(revision 1bdabae205052afe1dadb2ad6f1ba612cdbc532a)
 @@ -20,6 +20,21 @@
  func sysSocket(family, sotype, proto int) (syscall.Handle, error) {
  	s, err := wsaSocketFunc(int32(family), int32(sotype), int32(proto),
@@ -516,8 +516,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/syscall/exec_windows.go b/src/syscall/exec_windows.go
---- a/src/syscall/exec_windows.go	(revision 8cb5472d94c34b88733a81091bd328e70ee565a4)
-+++ b/src/syscall/exec_windows.go	(revision a5b2168bb836ed9d6601c626f95e56c07923f906)
+--- a/src/syscall/exec_windows.go	(revision 466f6c7a29bc098b0d4c987b803c779222894a11)
++++ b/src/syscall/exec_windows.go	(revision a90777dcf692dd2168577853ba743b4338721b06)
 @@ -14,7 +14,6 @@
  	"unsafe"
  )
@@ -592,8 +592,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/runtime/syscall_windows.go b/src/runtime/syscall_windows.go
---- a/src/runtime/syscall_windows.go	(revision a5b2168bb836ed9d6601c626f95e56c07923f906)
-+++ b/src/runtime/syscall_windows.go	(revision f56f1e23507e646c85243a71bde7b9629b2f970c)
+--- a/src/runtime/syscall_windows.go	(revision a90777dcf692dd2168577853ba743b4338721b06)
++++ b/src/runtime/syscall_windows.go	(revision f6bddda4e8ff58a957462a1a09562924d5f3d05c)
 @@ -413,10 +413,20 @@
  
  const _LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800
@@ -623,8 +623,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/syscall/dll_windows.go b/src/syscall/dll_windows.go
---- a/src/syscall/dll_windows.go	(revision a5b2168bb836ed9d6601c626f95e56c07923f906)
-+++ b/src/syscall/dll_windows.go	(revision f56f1e23507e646c85243a71bde7b9629b2f970c)
+--- a/src/syscall/dll_windows.go	(revision a90777dcf692dd2168577853ba743b4338721b06)
++++ b/src/syscall/dll_windows.go	(revision f6bddda4e8ff58a957462a1a09562924d5f3d05c)
 @@ -45,7 +45,7 @@
  //go:noescape
  func SyscallN(trap uintptr, args ...uintptr) (r1, r2 uintptr, err Errno)
@@ -663,8 +663,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/os/removeall_at.go b/src/os/removeall_at.go
---- a/src/os/removeall_at.go	(revision f56f1e23507e646c85243a71bde7b9629b2f970c)
-+++ b/src/os/removeall_at.go	(revision 0a52622d2331ff975fb0442617ec19bc352bb2ed)
+--- a/src/os/removeall_at.go	(revision f6bddda4e8ff58a957462a1a09562924d5f3d05c)
++++ b/src/os/removeall_at.go	(revision bed309eff415bcb3c77dd4bc3277b682b89a388d)
 @@ -2,7 +2,7 @@
  // Use of this source code is governed by a BSD-style
  // license that can be found in the LICENSE file.
@@ -706,8 +706,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/os/removeall_noat.go b/src/os/removeall_noat.go
---- a/src/os/removeall_noat.go	(revision f56f1e23507e646c85243a71bde7b9629b2f970c)
-+++ b/src/os/removeall_noat.go	(revision 0a52622d2331ff975fb0442617ec19bc352bb2ed)
+--- a/src/os/removeall_noat.go	(revision f6bddda4e8ff58a957462a1a09562924d5f3d05c)
++++ b/src/os/removeall_noat.go	(revision bed309eff415bcb3c77dd4bc3277b682b89a388d)
 @@ -2,7 +2,7 @@
  // Use of this source code is governed by a BSD-style
  // license that can be found in the LICENSE file.
@@ -746,8 +746,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/os/root_noopenat.go b/src/os/root_noopenat.go
---- a/src/os/root_noopenat.go	(revision f56f1e23507e646c85243a71bde7b9629b2f970c)
-+++ b/src/os/root_noopenat.go	(revision 0a52622d2331ff975fb0442617ec19bc352bb2ed)
+--- a/src/os/root_noopenat.go	(revision f6bddda4e8ff58a957462a1a09562924d5f3d05c)
++++ b/src/os/root_noopenat.go	(revision bed309eff415bcb3c77dd4bc3277b682b89a388d)
 @@ -11,7 +11,6 @@
  	"internal/filepathlite"
  	"internal/stringslite"
@@ -788,9 +788,9 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/os/root_openat.go b/src/os/root_openat.go
---- a/src/os/root_openat.go	(revision f56f1e23507e646c85243a71bde7b9629b2f970c)
-+++ b/src/os/root_openat.go	(revision 0a52622d2331ff975fb0442617ec19bc352bb2ed)
-@@ -194,28 +194,6 @@
+--- a/src/os/root_openat.go	(revision f6bddda4e8ff58a957462a1a09562924d5f3d05c)
++++ b/src/os/root_openat.go	(revision bed309eff415bcb3c77dd4bc3277b682b89a388d)
+@@ -196,28 +196,6 @@
  	return nil
  }
  
@@ -825,8 +825,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/os/root_windows.go b/src/os/root_windows.go
---- a/src/os/root_windows.go	(revision f56f1e23507e646c85243a71bde7b9629b2f970c)
-+++ b/src/os/root_windows.go	(revision 0a52622d2331ff975fb0442617ec19bc352bb2ed)
+--- a/src/os/root_windows.go	(revision f6bddda4e8ff58a957462a1a09562924d5f3d05c)
++++ b/src/os/root_windows.go	(revision bed309eff415bcb3c77dd4bc3277b682b89a388d)
 @@ -402,3 +402,14 @@
  	}
  	return fi.Mode(), nil
@@ -848,8 +848,8 @@ Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
 <+>UTF-8
 ===================================================================
 diff --git a/src/os/exec_windows.go b/src/os/exec_windows.go
---- a/src/os/exec_windows.go	(revision 0a52622d2331ff975fb0442617ec19bc352bb2ed)
-+++ b/src/os/exec_windows.go	(revision fb3d09a67fe97008ad76fea97ae88170072cbdbb)
+--- a/src/os/exec_windows.go	(revision bed309eff415bcb3c77dd4bc3277b682b89a388d)
++++ b/src/os/exec_windows.go	(revision 34b899c2fb39b092db4fa67c4417e41dc046be4b)
 @@ -10,6 +10,7 @@
  	"runtime"
  	"syscall"

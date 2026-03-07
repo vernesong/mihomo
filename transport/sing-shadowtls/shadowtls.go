@@ -77,12 +77,15 @@ func uTLSHandshakeFunc(config *tls.Config, clientFingerprint string, version int
 			return tlsConn.HandshakeContext(ctx)
 		}
 		if clientFingerprint, ok := tlsC.GetFingerprint(clientFingerprint); ok {
-			if version == 2 && clientFingerprint == tlsC.HelloChrome_Auto {
-				clientFingerprint = tlsC.HelloChrome_120 // ShadowTLS v2 not work with X25519MLKEM768
-			}
 			tlsConn := tlsC.UClient(conn, tlsConfig, clientFingerprint)
 			if slices.Equal(tlsConfig.NextProtos, WsALPN) {
 				err := tlsC.BuildWebsocketHandshakeState(tlsConn)
+				if err != nil {
+					return err
+				}
+			}
+			if version == 2 { // ShadowTLS v2 not work with X25519MLKEM768
+				err := tlsC.BuildRemovedX25519MLKEM768HandshakeState(tlsConn)
 				if err != nil {
 					return err
 				}
