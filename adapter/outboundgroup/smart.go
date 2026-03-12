@@ -1188,11 +1188,17 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 		if proxy.Type() == C.Reject || proxy.Type() == C.Pass || proxy.Type() == C.RejectDrop {
 			return
 		}
-		atomicRecord.Add("failure", int64(1))
 		s.onDialFailed(proxy.Type(), err, s.healthCheck)
+		if ! proxy.AliveForTestUrl(s.testUrl) {
+			return
+		}
+		atomicRecord.Add("failure", int64(1))
 	case "closed":
-		atomicRecord.Add("success", int64(1))
 		s.onDialSuccess()
+		if ! proxy.AliveForTestUrl(s.testUrl) {
+			return
+		}
+		atomicRecord.Add("success", int64(1))
 	}
 
 	if connectTime > 0 {
