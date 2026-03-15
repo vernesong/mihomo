@@ -121,7 +121,7 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 
 	strict := false
 	switch keyType {
-	case KeyTypeNode, KeyTypePrefetch, KeyTypeTargetFailures:
+	case KeyTypeNode, KeyTypePrefetch, KeyTypeHostFailures:
 		if len(pathParts) == 5 {
 			strict = true
 		}
@@ -170,12 +170,12 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 				key = FormatDBKey(KeyTypeRanking, op.Config, op.Group)
 				result[key] = op.Data
 			}
-		case KeyTypeTargetFailures:
-			if op.Type == OpSaveTargetFailures && op.Target != "" {
+		case KeyTypeHostFailures:
+			if op.Type == OpSaveHostFailures && op.Target != "" {
 				if len(pathParts) >= 5 && pathParts[4] != op.Target {
 					continue
 				}
-				key = FormatDBKey(KeyTypeTargetFailures, op.Config, op.Group, op.Target)
+				key = FormatDBKey(KeyTypeHostFailures, op.Config, op.Group, op.Target)
 				result[key] = op.Data
 			}
 		}

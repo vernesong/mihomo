@@ -39,6 +39,12 @@ type AtomicStatsRecord struct {
 	weights         *lru.LruCache[string, float64]
 }
 
+type HostStatus struct {
+	FailureCount int    `json:"failure_count"`
+	LastFailure  int64  `json:"last_failure"`
+	LastUsed     int64  `json:"last_used"`
+}
+
 type ActiveTarget struct {
 	Target   string
 	ASN      string
@@ -145,8 +151,6 @@ func (r *AtomicStatsRecord) Get(field string) interface{} {
 		return r.latency.Load()
 	case "lastUsed":
 		return r.lastUsed.Load()
-	case "weights":
-    	return r.weights.FilterByKeyPrefix("")
 	case "uploadTotal":
 		return r.uploadTotal.Load()
 	case "downloadTotal":
@@ -203,12 +207,6 @@ func (r *AtomicStatsRecord) Set(field string, value interface{}) {
 	case "duration":
 		if v, ok := value.(float64); ok {
 			r.duration.Store(v)
-		}
-	case "weights":
-		if v, ok := value.(map[string]float64); ok {
-			for k, val := range v {
-				r.weights.Set(k, val)
-			}
 		}
 	}
 }
@@ -1093,33 +1091,33 @@ func (s *Store) GetAllNodesForGroup(group, config string) ([]string, error) {
 	return result, nil
 }
 
-// 目标失败屏蔽
-func (s *Store) TargetBlocked(group, config, target string) (bool, int64) {
-	pathPrefix := FormatDBKey(KeyTypeTargetFailures, config, group, target)
+// 域名失败屏蔽
+func (s *Store) GetHostStatus(group, config, host string) (int, int64) {
+	pathPrefix := FormatDBKey(KeyTypeHostFailures, config, group, host)
 	rawResult, err := s.GetSubBytesByPath(pathPrefix)
 	if err != nil {
-		return false, 0
+		return 0, 0
 	}
 
 	for _, data := range rawResult {
-		var stats TargetStatus
+		var stats HostStatus
 		if err := json.Unmarshal(data, &stats); err != nil {
-			return false, 0
+			return 0, 0
 		}
-		return stats.Blocked, stats.LastFailure
+		return stats.FailureCount, stats.LastUsed
 	}
 
-	return false, 0
+	return 0, 0
 }
 
-func (s *Store) UpdateTargetStatus(group, config, target string, failureCount int, maxFailedTimes int) {
-	pathPrefix := FormatDBKey(KeyTypeTargetFailures, config, group, target)
+func (s *Store) UpdateHostStatus(group, config, host string, failure, needLastUsedUpdate bool) {
+	pathPrefix := FormatDBKey(KeyTypeHostFailures, config, group, host)
 	rawResult, err := s.GetSubBytesByPath(pathPrefix)
 	if err != nil {
 		return
 	}
 
-	var stats TargetStatus
+	var stats HostStatus
 
 	for _, data := range rawResult {
 		if err := json.Unmarshal(data, &stats); err != nil {
@@ -1127,22 +1125,20 @@ func (s *Store) UpdateTargetStatus(group, config, target string, failureCount in
 		}
 	}
 
-	if failureCount <= 0 && stats.FailureCount <= 0 {
+	if !failure && stats.FailureCount <= 0 && !needLastUsedUpdate {
 		return
 	}
 
-	stats.FailureCount += failureCount
-	if failureCount > 0 {
+	if failure {
+		stats.FailureCount++
 		stats.LastFailure = time.Now().Unix()
+	} else {
+		if stats.FailureCount > 0 {
+			stats.FailureCount--
+		}
 	}
 
-	if stats.FailureCount >= maxFailedTimes {
-		stats.Blocked = true
-	}
-
-	if stats.FailureCount <= 0 {
-		stats.Blocked = false
-	}
+	stats.LastUsed = time.Now().Unix()
 
 	data, err := json.Marshal(stats)
 	if err != nil {
@@ -1150,10 +1146,10 @@ func (s *Store) UpdateTargetStatus(group, config, target string, failureCount in
 	}
 
 	s.AppendToGlobalQueue(StoreOperation{
-		Type:   OpSaveTargetFailures,
+		Type:   OpSaveHostFailures,
 		Group:  group,
 		Config: config,
-		Target: target,
+		Target: host,
 		Data:   data,
 	})
 }
@@ -1318,7 +1314,7 @@ func (s *Store) RemoveNodesData(group, config string, nodes []string) error {
 
 // 清理旧的记录
 func (s *Store) CleanupOldRecords(group, config string) error {
-	keyTypes := []string{KeyTypeStats, KeyTypePrefetch, KeyTypeTargetFailures}
+	keyTypes := []string{KeyTypeStats, KeyTypePrefetch, KeyTypeHostFailures}
 
 	globalCacheParams.mutex.RLock()
 	maxTargets := globalCacheParams.MaxTargets
@@ -1336,7 +1332,6 @@ func (s *Store) CleanupOldRecords(group, config string) error {
 			time    time.Time
 			value   float64
 			target  string
-			blocked bool
 		}
 		targetMap := make(map[string]*targetInfo)
 
@@ -1350,7 +1345,6 @@ func (s *Store) CleanupOldRecords(group, config string) error {
 			// 优先保留使用频率高和最近使用的记录
 			var lastTime int64
 			var value float64
-			var blocked bool
 			switch keyType {
 			case KeyTypeStats:
 				if len(parts) < 6 {
@@ -1369,12 +1363,11 @@ func (s *Store) CleanupOldRecords(group, config string) error {
 				}
 				lastTime = pm.UpdatedTime
 				value = float64(len(pm.TCP.Nodes) + len(pm.UDP.Nodes))
-			case KeyTypeTargetFailures:
-				var stats TargetStatus
+			case KeyTypeHostFailures:
+				var stats HostStatus
 				if err := json.Unmarshal(data, &stats); err != nil {
 					continue
 				}
-				blocked = stats.Blocked
 				lastTime = stats.LastFailure
 				value = float64(stats.FailureCount)
 			default:
@@ -1385,7 +1378,6 @@ func (s *Store) CleanupOldRecords(group, config string) error {
 				time:    time.Unix(lastTime, 0),
 				value:   value,
 				target:  target,
-				blocked: blocked,
 			}
 		}
 
@@ -1424,9 +1416,6 @@ func (s *Store) CleanupOldRecords(group, config string) error {
 			sort.Slice(validTargets, func(i, j int) bool {
 				infoI := targetMap[validTargets[i]]
 				infoJ := targetMap[validTargets[j]]
-				if infoI.blocked != infoJ.blocked {
-					return !infoI.blocked && infoJ.blocked
-				}
 				if infoI.value != infoJ.value {
 					return infoI.value < infoJ.value
 				}

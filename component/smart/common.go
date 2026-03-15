@@ -23,7 +23,7 @@ const (
 	OpSaveStats
 	OpSavePrefetch
 	OpSaveRanking
-	OpSaveTargetFailures
+	OpSaveHostFailures
 )
 
 const (
@@ -31,7 +31,7 @@ const (
 	KeyTypeNode             = "node"
 	KeyTypeStats            = "stats"
 	KeyTypeRanking          = "ranking"
-	KeyTypeTargetFailures   = "failures"
+	KeyTypeHostFailures     = "failures"
 
 	WeightTypeTCP           = "tcp"
 	WeightTypeUDP           = "udp"
@@ -127,18 +127,17 @@ type (
 	}
 
 	StatsRecord struct {
-		Success            int64              `json:"success"`
-		Failure            int64              `json:"failure"`
-		ConnectTime        int64              `json:"connect_time"`
-		Latency            int64              `json:"latency"`
-		LastUsed           int64              `json:"last_used"`
-		Weights            map[string]float64 `json:"weights"`
-		UploadTotal        float64            `json:"upload_total"`
-		DownloadTotal      float64            `json:"download_total"`
-		MaxUploadRate      float64            `json:"max_upload_rate"`
-		MaxDownloadRate    float64            `json:"max_download_rate"`
-		ConnectionDuration float64            `json:"connection_duration"`
-		Degraded           bool               `json:"degraded"`
+		Success            int64                   `json:"success"`
+		Failure            int64                   `json:"failure"`
+		ConnectTime        int64                   `json:"connect_time"`
+		Latency            int64                   `json:"latency"`
+		LastUsed           int64                   `json:"last_used"`
+		Weights            map[string]float64      `json:"weights"`
+		UploadTotal        float64                 `json:"upload_total"`
+		DownloadTotal      float64                 `json:"download_total"`
+		MaxUploadRate      float64                 `json:"max_upload_rate"`
+		MaxDownloadRate    float64                 `json:"max_download_rate"`
+		ConnectionDuration float64                 `json:"connection_duration"`
 	}
 
 	ModelInput struct {
@@ -211,12 +210,6 @@ type (
 		RefTCP string    `json:"ref_tcp,omitempty"`
 		RefUDP string    `json:"ref_udp,omitempty"`
 	}
-
-	TargetStatus struct {
-		FailureCount int    `json:"failure_count"`
-		LastFailure  int64  `json:"last_failure"`
-		Blocked	     bool   `json:"blocked"`
-	}
 )
 
 func NewStore(newdb *bbolt.DB) *Store {
@@ -241,20 +234,20 @@ func FormatDBKey(parts ...string) string {
 }
 
 func formatOperationKey(op *StoreOperation) string {
-    switch op.Type {
-    case OpSaveNodeState:
-        return FormatDBKey(KeyTypeNode, op.Config, op.Group, op.Node)
-    case OpSaveStats:
-        return FormatDBKey(KeyTypeStats, op.Config, op.Group, op.Target, op.Node)
-    case OpSavePrefetch:
-        return FormatDBKey(KeyTypePrefetch, op.Config, op.Group, op.Target)
-    case OpSaveRanking:
-        return FormatDBKey(KeyTypeRanking, op.Config, op.Group)
-    case OpSaveTargetFailures:
-        return FormatDBKey(KeyTypeTargetFailures, op.Config, op.Group, op.Target)
-    default:
-        return ""
-    }
+	switch op.Type {
+	case OpSaveNodeState:
+		return FormatDBKey(KeyTypeNode, op.Config, op.Group, op.Node)
+	case OpSaveStats:
+		return FormatDBKey(KeyTypeStats, op.Config, op.Group, op.Target, op.Node)
+	case OpSavePrefetch:
+		return FormatDBKey(KeyTypePrefetch, op.Config, op.Group, op.Target)
+	case OpSaveRanking:
+		return FormatDBKey(KeyTypeRanking, op.Config, op.Group)
+	case OpSaveHostFailures:
+		return FormatDBKey(KeyTypeHostFailures, op.Config, op.Group, op.Target)
+	default:
+		return ""
+	}
 }
 
 // 获取有效顶级域名加一二级域名并使用通配符处理
@@ -614,13 +607,13 @@ func (s *Store) FlushByLevel(level string, config string, group string) error {
 		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeNode, config), false)
 		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeRanking, config), false)
 		s.DBBatchDeletePrefix(FormatDBKey(KeyTypePrefetch, config), false)
-		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeTargetFailures, config), false)
+		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeHostFailures, config), false)
 	} else if level == "group" {
 		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeStats, config, group), false)
 		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeNode, config, group), false)
 		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeRanking, config, group), false)
 		s.DBBatchDeletePrefix(FormatDBKey(KeyTypePrefetch, config, group), false)
-		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeTargetFailures, config, group), false)
+		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeHostFailures, config, group), false)
 	}
 
 	return nil

@@ -376,7 +376,7 @@ func (p *Proxy) StatusTest(ctx context.Context, rawURL string) (status uint16, o
 	}
 	defer client.CloseIdleConnections()
 
-	req, err := http.NewRequest(http.MethodHead, rawURL, nil)
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
 		return 1, false, err
 	}
