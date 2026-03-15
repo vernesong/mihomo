@@ -131,34 +131,45 @@ func (c *Client) resetHealthCheckTimer() {
 	c.healthCheckTimer.Reset(DefaultHealthCheckTimeout)
 }
 
-func (c *Client) dial(ctx context.Context, request *http.Request, conn *httpConn, pipeReader *io.PipeReader, pipeWriter *io.PipeWriter) {
+func (c *Client) roundTrip(request *http.Request, conn *httpConn) {
 	c.startOnce.Do(c.start)
-	trace := &httptrace.ClientTrace{
-		GotConn: func(connInfo httptrace.GotConnInfo) {
-			conn.SetLocalAddr(connInfo.Conn.LocalAddr())
-			conn.SetRemoteAddr(connInfo.Conn.RemoteAddr())
-		},
+	pipeReader, pipeWriter := io.Pipe()
+	request.Body = pipeReader
+	*conn = httpConn{
+		writer:  pipeWriter,
+		created: make(chan struct{}),
 	}
-	request = request.WithContext(httptrace.WithClientTrace(ctx, trace))
-	response, err := c.roundTripper.RoundTrip(request)
-	if err != nil {
-		_ = pipeWriter.CloseWithError(err)
-		_ = pipeReader.CloseWithError(err)
-		conn.setUp(nil, err)
-	} else if response.StatusCode != http.StatusOK {
-		_ = response.Body.Close()
-		err = fmt.Errorf("unexpected status code: %d", response.StatusCode)
-		_ = pipeWriter.CloseWithError(err)
-		_ = pipeReader.CloseWithError(err)
-		conn.setUp(nil, err)
-	} else {
-		c.resetHealthCheckTimer()
-		conn.setUp(response.Body, nil)
-	}
+	ctx, cancel := context.WithCancel(c.ctx) // requestCtx must alive during conn not closed
+	conn.cancelFn = cancel                   // cancel ctx when conn closed
+	go func() {
+		timeout := time.AfterFunc(C.DefaultTCPTimeout, cancel) // only cancel when RoundTrip timeout
+		defer timeout.Stop()                                   // RoundTrip already returned, stop the timer
+		trace := &httptrace.ClientTrace{
+			GotConn: func(connInfo httptrace.GotConnInfo) {
+				conn.SetLocalAddr(connInfo.Conn.LocalAddr())
+				conn.SetRemoteAddr(connInfo.Conn.RemoteAddr())
+			},
+		}
+		request = request.WithContext(httptrace.WithClientTrace(ctx, trace))
+		response, err := c.roundTripper.RoundTrip(request)
+		if err != nil {
+			_ = pipeWriter.CloseWithError(err)
+			_ = pipeReader.CloseWithError(err)
+			conn.setUp(nil, err)
+		} else if response.StatusCode != http.StatusOK {
+			_ = response.Body.Close()
+			err = fmt.Errorf("unexpected status code: %d", response.StatusCode)
+			_ = pipeWriter.CloseWithError(err)
+			_ = pipeReader.CloseWithError(err)
+			conn.setUp(nil, err)
+		} else {
+			c.resetHealthCheckTimer()
+			conn.setUp(response.Body, nil)
+		}
+	}()
 }
 
 func (c *Client) Dial(ctx context.Context, host string) (net.Conn, error) {
-	pipeReader, pipeWriter := io.Pipe()
 	request := &http.Request{
 		Method: http.MethodConnect,
 		URL: &url.URL{
@@ -166,23 +177,16 @@ func (c *Client) Dial(ctx context.Context, host string) (net.Conn, error) {
 			Host:   host,
 		},
 		Header: make(http.Header),
-		Body:   pipeReader,
 		Host:   host,
 	}
 	request.Header.Add("User-Agent", TCPUserAgent)
 	request.Header.Add("Proxy-Authorization", c.auth)
-	conn := &tcpConn{
-		httpConn: httpConn{
-			writer:  pipeWriter,
-			created: make(chan struct{}),
-		},
-	}
-	go c.dial(ctx, request, &conn.httpConn, pipeReader, pipeWriter)
+	conn := &tcpConn{}
+	c.roundTrip(request, &conn.httpConn)
 	return conn, nil
 }
 
 func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
-	pipeReader, pipeWriter := io.Pipe()
 	request := &http.Request{
 		Method: http.MethodConnect,
 		URL: &url.URL{
@@ -190,25 +194,16 @@ func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 			Host:   UDPMagicAddress,
 		},
 		Header: make(http.Header),
-		Body:   pipeReader,
 		Host:   UDPMagicAddress,
 	}
 	request.Header.Add("User-Agent", UDPUserAgent)
 	request.Header.Add("Proxy-Authorization", c.auth)
-	conn := &clientPacketConn{
-		packetConn: packetConn{
-			httpConn: httpConn{
-				writer:  pipeWriter,
-				created: make(chan struct{}),
-			},
-		},
-	}
-	go c.dial(ctx, request, &conn.httpConn, pipeReader, pipeWriter)
+	conn := &clientPacketConn{}
+	c.roundTrip(request, &conn.httpConn)
 	return conn, nil
 }
 
 func (c *Client) ListenICMP(ctx context.Context) (*IcmpConn, error) {
-	pipeReader, pipeWriter := io.Pipe()
 	request := &http.Request{
 		Method: http.MethodConnect,
 		URL: &url.URL{
@@ -216,18 +211,12 @@ func (c *Client) ListenICMP(ctx context.Context) (*IcmpConn, error) {
 			Host:   ICMPMagicAddress,
 		},
 		Header: make(http.Header),
-		Body:   pipeReader,
 		Host:   ICMPMagicAddress,
 	}
 	request.Header.Add("User-Agent", ICMPUserAgent)
 	request.Header.Add("Proxy-Authorization", c.auth)
-	conn := &IcmpConn{
-		httpConn{
-			writer:  pipeWriter,
-			created: make(chan struct{}),
-		},
-	}
-	go c.dial(ctx, request, &conn.httpConn, pipeReader, pipeWriter)
+	conn := &IcmpConn{}
+	c.roundTrip(request, &conn.httpConn)
 	return conn, nil
 }
 

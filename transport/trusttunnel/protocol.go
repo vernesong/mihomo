@@ -97,6 +97,7 @@ type httpConn struct {
 	body      io.ReadCloser
 	created   chan struct{}
 	createErr error
+	cancelFn  func()
 	gun.NetAddr
 
 	// deadlines
@@ -124,6 +125,9 @@ func (h *httpConn) Close() error {
 	}
 	if h.body != nil {
 		errorArr = append(errorArr, h.body.Close())
+	}
+	if h.cancelFn != nil {
+		h.cancelFn()
 	}
 	return errors.Join(errorArr...)
 }
