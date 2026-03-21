@@ -23,12 +23,10 @@ type strategyFn = func(proxies []C.Proxy, metadata *C.Metadata, touch bool) C.Pr
 
 type LoadBalance struct {
 	*GroupBase
-	disableUDP          bool
-	strategyFn          strategyFn
-	testUrl             string
-	expectedStatus      string
-	Hidden              bool
-	Icon                string
+	disableUDP     bool
+	strategyFn     strategyFn
+	testUrl        string
+	expectedStatus string
 }
 
 var errStrategy = errors.New("unsupported strategy")
@@ -234,8 +232,8 @@ func (lb *LoadBalance) MarshalJSON() ([]byte, error) {
 		"all":            all,
 		"testUrl":        lb.testUrl,
 		"expectedStatus": lb.expectedStatus,
-		"hidden":         lb.Hidden,
-		"icon":           lb.Icon,
+		"hidden":         lb.Hidden(),
+		"icon":           lb.Icon(),
 	})
 }
 
@@ -267,6 +265,8 @@ func NewLoadBalance(option *GroupCommonOption, providers []P.ProxyProvider, stra
 		GroupBase: NewGroupBase(GroupBaseOption{
 			Name:           option.Name,
 			Type:           C.LoadBalance,
+			Hidden:         option.Hidden,
+			Icon:           option.Icon,
 			Filter:         option.Filter,
 			ExcludeFilter:  option.ExcludeFilter,
 			ExcludeType:    option.ExcludeType,
@@ -274,11 +274,9 @@ func NewLoadBalance(option *GroupCommonOption, providers []P.ProxyProvider, stra
 			MaxFailedTimes: option.MaxFailedTimes,
 			Providers:      providers,
 		}),
-		strategyFn:          strategyFn,
-		disableUDP:          option.DisableUDP,
-		testUrl:             option.URL,
-		expectedStatus:      option.ExpectedStatus,
-		Hidden:              option.Hidden,
-		Icon:                option.Icon,
+		strategyFn:     strategyFn,
+		disableUDP:     option.DisableUDP,
+		testUrl:        option.URL,
+		expectedStatus: option.ExpectedStatus,
 	}, nil
 }

@@ -506,8 +506,6 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
 		}
 	}
 
-	//l.openAndroidHotspot(tunOptions)
-
 	if !l.options.AutoDetectInterface {
 		resolver.ResetConnection()
 	}
