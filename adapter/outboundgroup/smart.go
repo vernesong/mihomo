@@ -118,6 +118,8 @@ func NewSmart(option *GroupCommonOption, providers []provider.ProxyProvider, opt
 		GroupBase: NewGroupBase(GroupBaseOption{
 			Name:            option.Name,
 			Type:            C.Smart,
+			Hidden:          option.Hidden,
+			Icon:            option.Icon,
 			Filter:          option.Filter,
 			ExcludeFilter:   option.ExcludeFilter,
 			ExcludeType:     option.ExcludeType,
