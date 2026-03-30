@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/common/buf"
+	"github.com/metacubex/mihomo/common/httputils"
 	N "github.com/metacubex/mihomo/common/net"
 
 	"github.com/metacubex/http"
@@ -41,10 +42,9 @@ func NewServerHandler(options ServerOption) http.Handler {
 			writer.WriteHeader(http.StatusOK)
 
 			conn := &Conn{
-				initFn: func() (io.ReadCloser, NetAddr, error) {
-					nAddr := NetAddr{}
-					nAddr.SetAddrFromRequest(request)
-					return request.Body, nAddr, nil
+				initFn: func(addr *httputils.NetAddr) (io.ReadCloser, error) {
+					httputils.SetAddrFromRequest(addr, request)
+					return request.Body, nil
 				},
 				writer: writer,
 			}
