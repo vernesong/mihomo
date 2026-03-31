@@ -1,6 +1,7 @@
 package xhttp
 
 import (
+	"errors"
 	"io"
 	"time"
 
@@ -26,19 +27,12 @@ func (c *Conn) Read(b []byte) (int, error) {
 }
 
 func (c *Conn) Close() error {
+	err := c.writer.Close()
+	err2 := c.reader.Close()
 	if c.onClose != nil {
 		c.onClose()
 	}
-
-	err := c.writer.Close()
-	err2 := c.reader.Close()
-	if err != nil {
-		return err
-	}
-	if err2 != nil {
-		return err2
-	}
-	return nil
+	return errors.Join(err, err2)
 }
 
 func (c *Conn) SetReadDeadline(t time.Time) error  { return c.SetDeadline(t) }

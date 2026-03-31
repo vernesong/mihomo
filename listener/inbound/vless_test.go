@@ -391,3 +391,56 @@ func TestInboundVless_Reality_XHTTP(t *testing.T) {
 	}
 	testInboundVless(t, inboundOptions, outboundOptions)
 }
+
+func TestInboundVless_XHTTP_DownloadSettings(t *testing.T) {
+	for _, mode := range []string{"stream-up", "packet-up"} {
+		t.Run(mode, func(t *testing.T) {
+			inboundOptions := inbound.VlessOption{
+				Certificate: tlsCertificate,
+				PrivateKey:  tlsPrivateKey,
+				XHTTPConfig: inbound.XHTTPConfig{
+					Path: "/vless-xhttp",
+					Host: "example.com",
+					Mode: mode,
+				},
+			}
+			outboundOptions := outbound.VlessOption{
+				TLS:               true,
+				Fingerprint:       tlsFingerprint,
+				ServerName:        "example.org",
+				ClientFingerprint: "chrome",
+				Network:           "xhttp",
+				XHTTPOpts: outbound.XHTTPOptions{
+					Path:             "/vless-xhttp",
+					Host:             "example.com",
+					Mode:             mode,
+					DownloadSettings: &outbound.XHTTPDownloadSettings{},
+				},
+			}
+			testInboundVlessTLS(t, inboundOptions, outboundOptions, false)
+		})
+	}
+}
+
+func TestInboundVless_XHTTP_StreamUp(t *testing.T) {
+	inboundOptions := inbound.VlessOption{
+		Certificate: tlsCertificate,
+		PrivateKey:  tlsPrivateKey,
+		XHTTPConfig: inbound.XHTTPConfig{
+			Path: "/vless-xhttp",
+			Host: "example.com",
+			Mode: "stream-up",
+		},
+	}
+	outboundOptions := outbound.VlessOption{
+		TLS:         true,
+		Fingerprint: tlsFingerprint,
+		Network:     "xhttp",
+		XHTTPOpts: outbound.XHTTPOptions{
+			Path: "/vless-xhttp",
+			Host: "example.com",
+			Mode: "stream-up",
+		},
+	}
+	testInboundVlessTLS(t, inboundOptions, outboundOptions, false)
+}
