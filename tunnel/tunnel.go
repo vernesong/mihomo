@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -65,6 +66,8 @@ var (
 	sniffingEnable    = false
 
 	ruleUpdateCallback = utils.NewCallback[P.RuleProvider]()
+
+	countryCodeRegex = regexp.MustCompile(`(?i)^[A-Z]{2}$`)
 )
 
 type tunnel struct{}
@@ -643,7 +646,9 @@ func match(metadata *C.Metadata, helper C.RuleMatchHelper) (C.Proxy, C.Rule, err
 
 			// set target for Smart gorup nodes selected
 			if smartRuleType(rule.RuleType()) {
-				metadata.SmartTarget = fmt.Sprintf("%s [%s]", rule.RuleType().String(), rule.Payload())
+				if rule.RuleType().String() != "GEOIP" || !countryCodeRegex.MatchString(rule.Payload()) {
+					metadata.SmartTarget = fmt.Sprintf("%s [%s]", rule.RuleType().String(), rule.Payload())
+				}
 			}
 
 			// parse multi-layer nesting
