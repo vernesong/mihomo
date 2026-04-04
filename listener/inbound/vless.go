@@ -32,16 +32,20 @@ type VlessUser struct {
 }
 
 type XHTTPConfig struct {
-	Path string `inbound:"path,omitempty"`
-	Host string `inbound:"host,omitempty"`
-	Mode string `inbound:"mode,omitempty"`
+	Path                 string `inbound:"path,omitempty"`
+	Host                 string `inbound:"host,omitempty"`
+	Mode                 string `inbound:"mode,omitempty"`
+	NoSSEHeader          bool   `inbound:"no-sse-header,omitempty"`
+	ScStreamUpServerSecs string `inbound:"sc-stream-up-server-secs,omitempty"`
 }
 
 func (o XHTTPConfig) Build() LC.XHTTPConfig {
 	return LC.XHTTPConfig{
-		Path: o.Path,
-		Host: o.Host,
-		Mode: o.Mode,
+		Path:                 o.Path,
+		Host:                 o.Host,
+		Mode:                 o.Mode,
+		NoSSEHeader:          o.NoSSEHeader,
+		ScStreamUpServerSecs: o.ScStreamUpServerSecs,
 	}
 }
 

@@ -1,6 +1,7 @@
 package xhttp
 
 import (
+	"errors"
 	"io"
 	"sync"
 )
@@ -8,6 +9,7 @@ import (
 type Packet struct {
 	Seq     uint64
 	Payload []byte
+	Reader  io.ReadCloser
 }
 
 type uploadQueue struct {
@@ -17,6 +19,7 @@ type uploadQueue struct {
 	nextSeq uint64
 	buf     []byte
 	closed  bool
+	reader  io.ReadCloser
 }
 
 func NewUploadQueue() *uploadQueue {
@@ -35,6 +38,16 @@ func (q *uploadQueue) Push(p Packet) error {
 		return io.ErrClosedPipe
 	}
 
+	if q.reader != nil {
+		return errors.New("uploadQueue.reader already exists")
+	}
+
+	if p.Reader != nil {
+		q.reader = p.Reader
+		q.cond.Broadcast()
+		return nil
+	}
+
 	cp := make([]byte, len(p.Payload))
 	copy(cp, p.Payload)
 	q.packets[p.Seq] = cp
@@ -44,12 +57,12 @@ func (q *uploadQueue) Push(p Packet) error {
 
 func (q *uploadQueue) Read(b []byte) (int, error) {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 
 	for {
 		if len(q.buf) > 0 {
 			n := copy(b, q.buf)
 			q.buf = q.buf[n:]
+			q.mu.Unlock()
 			return n, nil
 		}
 
@@ -60,7 +73,13 @@ func (q *uploadQueue) Read(b []byte) (int, error) {
 			continue
 		}
 
+		if reader := q.reader; reader != nil {
+			q.mu.Unlock() // unlock before calling q.reader.Read
+			return reader.Read(b)
+		}
+
 		if q.closed {
+			q.mu.Unlock()
 			return 0, io.EOF
 		}
 
@@ -72,7 +91,11 @@ func (q *uploadQueue) Close() error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
+	var err error
+	if q.reader != nil {
+		err = q.reader.Close()
+	}
 	q.closed = true
 	q.cond.Broadcast()
-	return nil
+	return err
 }

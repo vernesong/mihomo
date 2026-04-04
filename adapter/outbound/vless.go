@@ -82,16 +82,26 @@ type XHTTPOptions struct {
 	Headers          map[string]string      `proxy:"headers,omitempty"`
 	NoGRPCHeader     bool                   `proxy:"no-grpc-header,omitempty"`
 	XPaddingBytes    string                 `proxy:"x-padding-bytes,omitempty"`
+	ReuseSettings    *XHTTPReuseSettings    `proxy:"reuse-settings,omitempty"` // aka XMUX
 	DownloadSettings *XHTTPDownloadSettings `proxy:"download-settings,omitempty"`
+}
+
+type XHTTPReuseSettings struct {
+	MaxConnections   string `proxy:"max-connections,omitempty"`
+	MaxConcurrency   string `proxy:"max-concurrency,omitempty"`
+	CMaxReuseTimes   string `proxy:"c-max-reuse-times,omitempty"`
+	HMaxRequestTimes string `proxy:"h-max-request-times,omitempty"`
+	HMaxReusableSecs string `proxy:"h-max-reusable-secs,omitempty"`
 }
 
 type XHTTPDownloadSettings struct {
 	// xhttp part
-	Path          *string            `proxy:"path,omitempty"`
-	Host          *string            `proxy:"host,omitempty"`
-	Headers       *map[string]string `proxy:"headers,omitempty"`
-	NoGRPCHeader  *bool              `proxy:"no-grpc-header,omitempty"`
-	XPaddingBytes *string            `proxy:"x-padding-bytes,omitempty"`
+	Path          *string             `proxy:"path,omitempty"`
+	Host          *string             `proxy:"host,omitempty"`
+	Headers       *map[string]string  `proxy:"headers,omitempty"`
+	NoGRPCHeader  *bool               `proxy:"no-grpc-header,omitempty"`
+	XPaddingBytes *string             `proxy:"x-padding-bytes,omitempty"`
+	ReuseSettings *XHTTPReuseSettings `proxy:"reuse-settings,omitempty"` // aka XMUX
 	// proxy part
 	Server            *string         `proxy:"server,omitempty"`
 	Port              *int            `proxy:"port,omitempty"`
@@ -506,6 +516,17 @@ func NewVless(option VlessOption) (*Vless, error) {
 			}
 		}
 
+		var reuseCfg *xhttp.ReuseConfig
+		if option.XHTTPOpts.ReuseSettings != nil {
+			reuseCfg = &xhttp.ReuseConfig{
+				MaxConnections:   option.XHTTPOpts.ReuseSettings.MaxConnections,
+				MaxConcurrency:   option.XHTTPOpts.ReuseSettings.MaxConcurrency,
+				CMaxReuseTimes:   option.XHTTPOpts.ReuseSettings.CMaxReuseTimes,
+				HMaxRequestTimes: option.XHTTPOpts.ReuseSettings.HMaxRequestTimes,
+				HMaxReusableSecs: option.XHTTPOpts.ReuseSettings.HMaxReusableSecs,
+			}
+		}
+
 		cfg := &xhttp.Config{
 			Host:          requestHost,
 			Path:          v.option.XHTTPOpts.Path,
@@ -513,6 +534,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 			Headers:       v.option.XHTTPOpts.Headers,
 			NoGRPCHeader:  v.option.XHTTPOpts.NoGRPCHeader,
 			XPaddingBytes: v.option.XHTTPOpts.XPaddingBytes,
+			ReuseConfig:   reuseCfg,
 		}
 
 		makeTransport := func() http.RoundTripper {
@@ -568,6 +590,17 @@ func NewVless(option VlessOption) (*Vless, error) {
 				}
 			}
 
+			downloadReuseCfg := reuseCfg
+			if ds.ReuseSettings != nil {
+				downloadReuseCfg = &xhttp.ReuseConfig{
+					MaxConnections:   ds.ReuseSettings.MaxConnections,
+					MaxConcurrency:   ds.ReuseSettings.MaxConcurrency,
+					CMaxReuseTimes:   ds.ReuseSettings.CMaxReuseTimes,
+					HMaxRequestTimes: ds.ReuseSettings.HMaxRequestTimes,
+					HMaxReusableSecs: ds.ReuseSettings.HMaxReusableSecs,
+				}
+			}
+
 			cfg.DownloadConfig = &xhttp.Config{
 				Host:          downloadHost,
 				Path:          lo.FromPtrOr(ds.Path, v.option.XHTTPOpts.Path),
@@ -575,6 +608,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 				Headers:       lo.FromPtrOr(ds.Headers, v.option.XHTTPOpts.Headers),
 				NoGRPCHeader:  lo.FromPtrOr(ds.NoGRPCHeader, v.option.XHTTPOpts.NoGRPCHeader),
 				XPaddingBytes: lo.FromPtrOr(ds.XPaddingBytes, v.option.XHTTPOpts.XPaddingBytes),
+				ReuseConfig:   downloadReuseCfg,
 			}
 
 			makeDownloadTransport = func() http.RoundTripper {

@@ -12,22 +12,24 @@ import (
 )
 
 type Config struct {
-	Host           string
-	Path           string
-	Mode           string
-	Headers        map[string]string
-	NoGRPCHeader   bool
-	XPaddingBytes  string
-	DownloadConfig *Config
+	Host                 string
+	Path                 string
+	Mode                 string
+	Headers              map[string]string
+	NoGRPCHeader         bool
+	XPaddingBytes        string
+	NoSSEHeader          bool   // server only
+	ScStreamUpServerSecs string // server only
+	ReuseConfig          *ReuseConfig
+	DownloadConfig       *Config
 }
 
-type DownloadConfig struct {
-	Host              string
-	Path              string
-	Mode              string
-	ServerName        string
-	ClientFingerprint string
-	SkipCertVerify    bool
+type ReuseConfig struct {
+	MaxConnections   string
+	MaxConcurrency   string
+	CMaxReuseTimes   string
+	HMaxRequestTimes string
+	HMaxReusableSecs string
 }
 
 func (c *Config) NormalizedMode() string {
@@ -115,6 +117,31 @@ func (c *Config) RandomPadding() (string, error) {
 	return strings.Repeat("X", n), nil
 }
 
+func (c *Config) GetNormalizedScStreamUpServerSecs() (int, error) {
+	scStreamUpServerSecs := c.ScStreamUpServerSecs
+	if scStreamUpServerSecs == "" {
+		scStreamUpServerSecs = "20-80"
+	}
+
+	minVal, maxVal, err := parseRange(scStreamUpServerSecs)
+	if err != nil {
+		return 0, err
+	}
+	if minVal < 0 || maxVal < minVal {
+		return 0, fmt.Errorf("invalid sc-stream-up-server-secs range: %s", scStreamUpServerSecs)
+	}
+	if maxVal == 0 {
+		return 0, nil
+	}
+
+	n := minVal
+	if maxVal > minVal {
+		n = minVal + rand.Intn(maxVal-minVal+1)
+	}
+
+	return n, nil
+}
+
 func parseRange(s string) (int, int, error) {
 	parts := strings.Split(strings.TrimSpace(s), "-")
 	if len(parts) == 1 {
@@ -137,6 +164,75 @@ func parseRange(s string) (int, int, error) {
 		return 0, 0, err
 	}
 	return minVal, maxVal, nil
+}
+
+func resolveRangeValue(s string, fallback int) (int, error) {
+	if strings.TrimSpace(s) == "" {
+		return fallback, nil
+	}
+
+	minVal, maxVal, err := parseRange(s)
+	if err != nil {
+		return 0, err
+	}
+	if minVal < 0 || maxVal < minVal {
+		return 0, fmt.Errorf("invalid range: %s", s)
+	}
+
+	if minVal == maxVal {
+		return minVal, nil
+	}
+
+	return minVal + rand.Intn(maxVal-minVal+1), nil
+}
+
+func (c *ReuseConfig) ResolveManagerConfig() (int, int, error) {
+	if c == nil {
+		return 0, 0, nil
+	}
+
+	maxConnections, err := resolveRangeValue(c.MaxConnections, 0)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid max-connections: %w", err)
+	}
+
+	maxConcurrency, err := resolveRangeValue(c.MaxConcurrency, 0)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid max-concurrency: %w", err)
+	}
+
+	return maxConnections, maxConcurrency, nil
+}
+
+func (c *ReuseConfig) ResolveConnReuseConfig() (int, error) {
+	if c == nil {
+		return 0, nil
+	}
+
+	cMaxReuseTimes, err := resolveRangeValue(c.CMaxReuseTimes, 0)
+	if err != nil {
+		return 0, fmt.Errorf("invalid c-max-reuse-times: %w", err)
+	}
+
+	return cMaxReuseTimes, nil
+}
+
+func (c *ReuseConfig) ResolveEntryConfig() (int, int, error) {
+	if c == nil {
+		return 0, 0, nil
+	}
+
+	hMaxRequestTimes, err := resolveRangeValue(c.HMaxRequestTimes, 0)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid h-max-request-times: %w", err)
+	}
+
+	hMaxReusableSecs, err := resolveRangeValue(c.HMaxReusableSecs, 0)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid h-max-reusable-secs: %w", err)
+	}
+
+	return hMaxRequestTimes, hMaxReusableSecs, nil
 }
 
 func (c *Config) FillStreamRequest(req *http.Request, sessionID string) error {

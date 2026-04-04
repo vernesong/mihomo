@@ -816,6 +816,12 @@ proxies: # socks5
       #   X-Forwarded-For: ""
       # no-grpc-header: false
       # x-padding-bytes: "100-1000"
+      # reuse-settings: # aka XMUX
+      #   max-connections: "16-32"
+      #   max-concurrency: "0"
+      #   c-max-reuse-times: "0"
+      #   h-max-request-times: "600-900"
+      #   h-max-reusable-secs: "1800-3000"
       # download-settings:
       #   ## xhttp part
       #   path: "/"
@@ -824,6 +830,12 @@ proxies: # socks5
       #     X-Forwarded-For: ""
       #   no-grpc-header: false
       #   x-padding-bytes: "100-1000"
+      #   reuse-settings: # aka XMUX
+      #     max-connections: "16-32"
+      #     max-concurrency: "0"
+      #     c-max-reuse-times: "0"
+      #     h-max-request-times: "600-900"
+      #     h-max-reusable-secs: "1800-3000"
       #   ## proxy part
       #   server: server
       #   port: 443
@@ -1631,6 +1643,8 @@ listeners:
     #   path: "/"
     #   host: ""
     #   mode: auto # Available: "stream-one", "stream-up" or "packet-up"
+    #   no-sse-header: false
+    #   sc-stream-up-server-secs: "20-80"
     # -------------------------
     # vless encryption服务端配置：
     # （原生外观 / 只 XOR 公钥 / 全随机数。1-RTT 每次下发随机 300 到 600 秒的 ticket 以便 0-RTT 复用 / 只允许 1-RTT）
