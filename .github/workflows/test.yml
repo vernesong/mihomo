@@ -22,6 +22,7 @@ jobs:
           - 'windows-latest' # amd64 windows
           - 'macos-latest' # arm64 macos
           - 'ubuntu-24.04-arm' # arm64 linux
+          - 'windows-11-arm' # arm64 windows
           - 'macos-15-intel' # amd64 macos
         go-version:
           - '1.26'

@@ -112,11 +112,6 @@ func (w *h2ConnWrapper) CloseWrapper() {
 	w.closed = true
 }
 
-func (w *h2ConnWrapper) Close() error {
-	w.CloseWrapper()
-	return w.ExtendedConn.Close()
-}
-
 func (w *h2ConnWrapper) Upstream() any {
 	return w.ExtendedConn
 }

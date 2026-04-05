@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/common/buf"
@@ -51,6 +52,7 @@ type Conn struct {
 
 	closeMutex sync.Mutex
 	closed     bool
+	onClose    func()
 
 	// deadlines
 	deadline *time.Timer
@@ -103,7 +105,7 @@ func (g *Conn) read(b []byte) (n int, err error) {
 			size = len(b)
 		}
 
-		n, err = io.ReadFull(g.reader, b[:size])
+		n, err = g.reader.Read(b[:size])
 		g.remain -= n
 		return
 	}
@@ -112,6 +114,9 @@ func (g *Conn) read(b []byte) (n int, err error) {
 	var discard [6]byte
 	_, err = io.ReadFull(g.reader, discard[:])
 	if err != nil {
+		if err == io.ErrUnexpectedEOF {
+			err = io.EOF
+		}
 		return 0, err
 	}
 
@@ -206,6 +211,10 @@ func (g *Conn) Close() error {
 		}
 	}
 
+	if g.onClose != nil {
+		g.onClose()
+	}
+
 	return errors.Join(errorArr...)
 }
 
@@ -237,6 +246,7 @@ type Transport struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	closeOnce sync.Once
+	count     atomic.Int64
 }
 
 func (t *Transport) Close() error {
@@ -346,6 +356,9 @@ func (t *Transport) Dial() (net.Conn, error) {
 		writer: writer,
 	}
 
+	t.count.Add(1)
+	conn.onClose = func() { t.count.Add(-1) }
+
 	go conn.Init()
 
 	// ensure conn.initOnce.Do has been called before return
@@ -353,6 +366,78 @@ func (t *Transport) Dial() (net.Conn, error) {
 	<-initStarted
 
 	return conn, nil
+}
+
+type Client struct {
+	mutex          sync.Mutex
+	maxConnections int
+	minStreams     int
+	maxStreams     int
+	transports     []*Transport
+	maker          func() *Transport
+}
+
+func NewClient(maker func() *Transport, maxConnections, minStreams, maxStreams int) *Client {
+	if maxConnections == 0 && minStreams == 0 && maxStreams == 0 {
+		maxConnections = 1
+	}
+	return &Client{
+		maxConnections: maxConnections,
+		minStreams:     minStreams,
+		maxStreams:     maxStreams,
+		maker:          maker,
+	}
+}
+
+func (c *Client) Dial() (net.Conn, error) {
+	return c.getTransport().Dial()
+}
+
+func (c *Client) Close() error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	var errs []error
+	for _, t := range c.transports {
+		if err := t.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	c.transports = nil
+	return errors.Join(errs...)
+}
+
+func (c *Client) getTransport() *Transport {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	var transport *Transport
+	for _, t := range c.transports {
+		if transport == nil || t.count.Load() < transport.count.Load() {
+			transport = t
+		}
+	}
+	if transport == nil {
+		return c.newTransportLocked()
+	}
+	numStreams := int(transport.count.Load())
+	if numStreams == 0 {
+		return transport
+	}
+	if c.maxConnections > 0 {
+		if len(c.transports) >= c.maxConnections || numStreams < c.minStreams {
+			return transport
+		}
+	} else {
+		if c.maxStreams > 0 && numStreams < c.maxStreams {
+			return transport
+		}
+	}
+	return c.newTransportLocked()
+}
+
+func (c *Client) newTransportLocked() *Transport {
+	transport := c.maker()
+	c.transports = append(c.transports, transport)
+	return transport
 }
 
 func StreamGunWithConn(conn net.Conn, tlsConfig *vmess.TLSConfig, gunCfg *Config) (net.Conn, error) {

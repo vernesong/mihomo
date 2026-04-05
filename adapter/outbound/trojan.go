@@ -27,7 +27,7 @@ type Trojan struct {
 	hexPassword [trojan.KeyLength]byte
 
 	// for gun mux
-	gunTransport *gun.Transport
+	gunClient *gun.Client
 
 	realityConfig *tlsC.RealityConfig
 	echConfig     *ech.Config
@@ -115,7 +115,7 @@ func (t *Trojan) StreamConnContext(ctx context.Context, c net.Conn, metadata *C.
 
 		c, err = vmess.StreamWebsocketConn(ctx, c, wsOpts)
 	case "grpc":
-		break // already handle in gun transport
+		break // already handle in dialContext
 	default:
 		// default tcp network
 		// handle TLS
@@ -175,7 +175,7 @@ func (t *Trojan) writeHeaderContext(ctx context.Context, c net.Conn, metadata *C
 func (t *Trojan) dialContext(ctx context.Context) (c net.Conn, err error) {
 	switch t.option.Network {
 	case "grpc": // gun transport
-		return t.gunTransport.Dial()
+		return t.gunClient.Dial()
 	default:
 	}
 	return t.dialer.DialContext(ctx, "tcp", t.addr)
@@ -236,10 +236,13 @@ func (t *Trojan) ProxyInfo() C.ProxyInfo {
 
 // Close implements C.ProxyAdapter
 func (t *Trojan) Close() error {
-	if t.gunTransport != nil {
-		return t.gunTransport.Close()
+	var errs []error
+	if t.gunClient != nil {
+		if err := t.gunClient.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func NewTrojan(option TrojanOption) (*Trojan, error) {
@@ -320,7 +323,14 @@ func NewTrojan(option TrojanOption) (*Trojan, error) {
 			PingInterval: option.GrpcOpts.PingInterval,
 		}
 
-		t.gunTransport = gun.NewTransport(dialFn, tlsConfig, gunConfig)
+		t.gunClient = gun.NewClient(
+			func() *gun.Transport {
+				return gun.NewTransport(dialFn, tlsConfig, gunConfig)
+			},
+			option.GrpcOpts.MaxConnections,
+			option.GrpcOpts.MinStreams,
+			option.GrpcOpts.MaxStreams,
+		)
 	}
 
 	return t, nil

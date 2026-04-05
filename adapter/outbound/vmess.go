@@ -34,7 +34,7 @@ type Vmess struct {
 	option *VmessOption
 
 	// for gun mux
-	gunTransport *gun.Transport
+	gunClient *gun.Client
 
 	realityConfig *tlsC.RealityConfig
 	echConfig     *ech.Config
@@ -86,6 +86,9 @@ type GrpcOptions struct {
 	GrpcServiceName string `proxy:"grpc-service-name,omitempty"`
 	GrpcUserAgent   string `proxy:"grpc-user-agent,omitempty"`
 	PingInterval    int    `proxy:"ping-interval,omitempty"`
+	MaxConnections  int    `proxy:"max-connections,omitempty"`
+	MinStreams      int    `proxy:"min-streams,omitempty"`
+	MaxStreams      int    `proxy:"max-streams,omitempty"`
 }
 
 type WSOptions struct {
@@ -172,7 +175,7 @@ func (v *Vmess) StreamConnContext(ctx context.Context, c net.Conn, metadata *C.M
 
 		c, err = mihomoVMess.StreamH2Conn(ctx, c, h2Opts)
 	case "grpc":
-		break // already handle in gun transport
+		break // already handle in dialContext
 	default:
 		// default tcp network
 		// handle TLS
@@ -274,7 +277,7 @@ func (v *Vmess) streamTLSConn(ctx context.Context, conn net.Conn, isH2 bool) (ne
 func (v *Vmess) dialContext(ctx context.Context) (c net.Conn, err error) {
 	switch v.option.Network {
 	case "grpc": // gun transport
-		return v.gunTransport.Dial()
+		return v.gunClient.Dial()
 	default:
 	}
 	return v.dialer.DialContext(ctx, "tcp", v.addr)
@@ -331,10 +334,13 @@ func (v *Vmess) ProxyInfo() C.ProxyInfo {
 
 // Close implements C.ProxyAdapter
 func (v *Vmess) Close() error {
-	if v.gunTransport != nil {
-		return v.gunTransport.Close()
+	var errs []error
+	if v.gunClient != nil {
+		if err := v.gunClient.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // SupportUOT implements C.ProxyAdapter
@@ -438,7 +444,14 @@ func NewVmess(option VmessOption) (*Vmess, error) {
 			}
 		}
 
-		v.gunTransport = gun.NewTransport(dialFn, tlsConfig, gunConfig)
+		v.gunClient = gun.NewClient(
+			func() *gun.Transport {
+				return gun.NewTransport(dialFn, tlsConfig, gunConfig)
+			},
+			option.GrpcOpts.MaxConnections,
+			option.GrpcOpts.MinStreams,
+			option.GrpcOpts.MaxStreams,
+		)
 	}
 
 	return v, nil

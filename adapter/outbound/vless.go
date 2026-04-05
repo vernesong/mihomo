@@ -36,7 +36,7 @@ type Vless struct {
 	encryption *encryption.ClientInstance
 
 	// for gun mux
-	gunTransport *gun.Transport
+	gunClient *gun.Client
 	// for xhttp
 	xhttpClient *xhttp.Client
 
@@ -196,9 +196,9 @@ func (v *Vless) StreamConnContext(ctx context.Context, c net.Conn, metadata *C.M
 
 		c, err = vmess.StreamH2Conn(ctx, c, h2Opts)
 	case "grpc":
-		break // already handle in gun transport
+		break // already handle in dialContext
 	case "xhttp":
-		break // already handle in xhttp client
+		break // already handle in dialContext
 	default:
 		// default tcp network
 		// handle TLS
@@ -280,7 +280,7 @@ func (v *Vless) streamTLSConn(ctx context.Context, conn net.Conn, isH2 bool) (ne
 func (v *Vless) dialContext(ctx context.Context) (c net.Conn, err error) {
 	switch v.option.Network {
 	case "grpc": // gun transport
-		return v.gunTransport.Dial()
+		return v.gunClient.Dial()
 	case "xhttp":
 		return v.xhttpClient.Dial()
 	default:
@@ -358,8 +358,8 @@ func (v *Vless) ProxyInfo() C.ProxyInfo {
 // Close implements C.ProxyAdapter
 func (v *Vless) Close() error {
 	var errs []error
-	if v.gunTransport != nil {
-		if err := v.gunTransport.Close(); err != nil {
+	if v.gunClient != nil {
+		if err := v.gunClient.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -505,7 +505,14 @@ func NewVless(option VlessOption) (*Vless, error) {
 			}
 		}
 
-		v.gunTransport = gun.NewTransport(dialFn, tlsConfig, gunConfig)
+		v.gunClient = gun.NewClient(
+			func() *gun.Transport {
+				return gun.NewTransport(dialFn, tlsConfig, gunConfig)
+			},
+			option.GrpcOpts.MaxConnections,
+			option.GrpcOpts.MinStreams,
+			option.GrpcOpts.MaxStreams,
+		)
 	case "xhttp":
 		requestHost := v.option.XHTTPOpts.Host
 		if requestHost == "" {
