@@ -98,6 +98,7 @@ type httpConn struct {
 	created   chan struct{}
 	createErr error
 	cancelFn  func()
+	closeFn   func()
 	httputils.NetAddr
 
 	// deadlines
@@ -128,6 +129,9 @@ func (h *httpConn) Close() error {
 	}
 	if h.cancelFn != nil {
 		h.cancelFn()
+	}
+	if h.closeFn != nil {
+		h.closeFn()
 	}
 	return errors.Join(errorArr...)
 }

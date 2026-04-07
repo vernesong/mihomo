@@ -14,7 +14,7 @@ import (
 
 type TrustTunnel struct {
 	*Base
-	client *trusttunnel.Client
+	client *trusttunnel.PoolClient
 	option *TrustTunnelOption
 }
 
@@ -35,10 +35,14 @@ type TrustTunnelOption struct {
 	PrivateKey        string     `proxy:"private-key,omitempty"`
 	UDP               bool       `proxy:"udp,omitempty"`
 	HealthCheck       bool       `proxy:"health-check,omitempty"`
-
+	// quic options
 	Quic                 bool   `proxy:"quic,omitempty"`
 	CongestionController string `proxy:"congestion-controller,omitempty"`
 	CWND                 int    `proxy:"cwnd,omitempty"`
+	// reuse options
+	MaxConnections int `proxy:"max-connections,omitempty"`
+	MinStreams     int `proxy:"min-streams,omitempty"`
+	MaxStreams     int `proxy:"max-streams,omitempty"`
 }
 
 func (t *TrustTunnel) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, err error) {
@@ -114,6 +118,9 @@ func NewTrustTunnel(option TrustTunnelOption) (*TrustTunnel, error) {
 		QUICCongestionControl: option.CongestionController,
 		QUICCwnd:              option.CWND,
 		HealthCheck:           option.HealthCheck,
+		MaxConnections:        option.MaxConnections,
+		MinStreams:            option.MinStreams,
+		MaxStreams:            option.MaxStreams,
 	}
 	echConfig, err := option.ECHOpts.Parse()
 	if err != nil {
@@ -134,7 +141,7 @@ func NewTrustTunnel(option TrustTunnelOption) (*TrustTunnel, error) {
 	}
 	tOption.TLSConfig = tlsConfig
 
-	client, err := trusttunnel.NewClient(context.TODO(), tOption)
+	client, err := trusttunnel.NewPoolClient(context.TODO(), tOption)
 	if err != nil {
 		return nil, err
 	}

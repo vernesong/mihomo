@@ -19,9 +19,6 @@ import (
 )
 
 func (h *ListenerHandler) ShouldHijackDns(targetAddr netip.AddrPort) bool {
-	if targetAddr.Addr().IsLoopback() && targetAddr.Port() == 53 { // cause by system stack
-		return true
-	}
 	for _, addrPort := range h.DnsAddrPorts {
 		if addrPort == targetAddr || (addrPort.Addr().IsUnspecified() && targetAddr.Port() == 53) {
 			return true

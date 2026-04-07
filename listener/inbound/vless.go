@@ -37,6 +37,7 @@ type XHTTPConfig struct {
 	Mode                 string `inbound:"mode,omitempty"`
 	NoSSEHeader          bool   `inbound:"no-sse-header,omitempty"`
 	ScStreamUpServerSecs string `inbound:"sc-stream-up-server-secs,omitempty"`
+	ScMaxEachPostBytes   int    `inbound:"sc-max-each-post-bytes,omitempty"`
 }
 
 func (o XHTTPConfig) Build() LC.XHTTPConfig {
@@ -46,6 +47,7 @@ func (o XHTTPConfig) Build() LC.XHTTPConfig {
 		Mode:                 o.Mode,
 		NoSSEHeader:          o.NoSSEHeader,
 		ScStreamUpServerSecs: o.ScStreamUpServerSecs,
+		ScMaxEachPostBytes:   o.ScMaxEachPostBytes,
 	}
 }
 

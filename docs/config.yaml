@@ -171,6 +171,10 @@ tun:
   #- 1000
   # exclude-uid-range: # 排除路由的的用户范围
   # - 1000:9999
+  # include-mac-address:
+  # - 00:11:22:33:44:55
+  # exclude-mac-address:
+  # - 00:11:22:33:44:55
 
   # Android 用户和应用规则仅在 Android 下被支持
   # 并且需要 auto-route
@@ -822,6 +826,7 @@ proxies: # socks5
       #   X-Forwarded-For: ""
       # no-grpc-header: false
       # x-padding-bytes: "100-1000"
+      # sc-max-each-post-bytes: 1000000
       # reuse-settings: # aka XMUX
       #   max-connections: "16-32"
       #   max-concurrency: "0"
@@ -836,6 +841,7 @@ proxies: # socks5
       #     X-Forwarded-For: ""
       #   no-grpc-header: false
       #   x-padding-bytes: "100-1000"
+      #   sc-max-each-post-bytes: 1000000
       #   reuse-settings: # aka XMUX
       #     max-connections: "16-32"
       #     max-concurrency: "0"
@@ -1208,8 +1214,13 @@ proxies: # socks5
     # alpn:
     #   - h2
     # skip-cert-verify: true
+    ### quic options
     # quic: true # 默认为false
     # congestion-controller: bbr
+    ### reuse options
+    # max-connections: 1 # Maximum connections. Conflict with max-streams.
+    # min-streams: 0 # Minimum multiplexed streams in a connection before opening a new connection. Conflict with max-streams.
+    # max-streams: 0 # Maximum multiplexed streams in a connection before opening a new connection. Conflict with max-connections and min-streams.
 
 # dns 出站会将请求劫持到内部 dns 模块，所有请求均在内部处理
   - name: "dns-out"
@@ -1654,6 +1665,7 @@ listeners:
     #   mode: auto # Available: "stream-one", "stream-up" or "packet-up"
     #   no-sse-header: false
     #   sc-stream-up-server-secs: "20-80"
+    #   sc-max-each-post-bytes: 1000000
     # -------------------------
     # vless encryption服务端配置：
     # （原生外观 / 只 XOR 公钥 / 全随机数。1-RTT 每次下发随机 300 到 600 秒的 ticket 以便 0-RTT 复用 / 只允许 1-RTT）
@@ -1894,6 +1906,10 @@ listeners:
     # - 1000
     # exclude-uid-range: # 排除路由的的用户范围
     # - 1000:99999
+    # include-mac-address:
+    # - 00:11:22:33:44:55
+    # exclude-mac-address:
+    # - 00:11:22:33:44:55
 
     # Android 用户和应用规则仅在 Android 下被支持
     # 并且需要 auto-route

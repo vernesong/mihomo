@@ -307,6 +307,8 @@ type RawTun struct {
 	IncludeAndroidUser                    []int          `yaml:"include-android-user" json:"include-android-user,omitempty"`
 	IncludePackage                        []string       `yaml:"include-package" json:"include-package,omitempty"`
 	ExcludePackage                        []string       `yaml:"exclude-package" json:"exclude-package,omitempty"`
+	IncludeMACAddress                     []string       `yaml:"include-mac-address" json:"include-mac-address,omitempty"`
+	ExcludeMACAddress                     []string       `yaml:"exclude-mac-address" json:"exclude-mac-address,omitempty"`
 	EndpointIndependentNat                bool           `yaml:"endpoint-independent-nat" json:"endpoint-independent-nat,omitempty"`
 	UDPTimeout                            int64          `yaml:"udp-timeout" json:"udp-timeout,omitempty"`
 	DisableICMPForwarding                 bool           `yaml:"disable-icmp-forwarding" json:"disable-icmp-forwarding,omitempty"`
@@ -1697,6 +1699,8 @@ func parseTun(rawTun RawTun, dns *DNS, general *General) error {
 		IncludeAndroidUser:                    rawTun.IncludeAndroidUser,
 		IncludePackage:                        rawTun.IncludePackage,
 		ExcludePackage:                        rawTun.ExcludePackage,
+		IncludeMACAddress:                     rawTun.IncludeMACAddress,
+		ExcludeMACAddress:                     rawTun.ExcludeMACAddress,
 		EndpointIndependentNat:                rawTun.EndpointIndependentNat,
 		UDPTimeout:                            rawTun.UDPTimeout,
 		DisableICMPForwarding:                 rawTun.DisableICMPForwarding,

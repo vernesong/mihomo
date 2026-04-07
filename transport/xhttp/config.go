@@ -20,6 +20,7 @@ type Config struct {
 	XPaddingBytes        string
 	NoSSEHeader          bool   // server only
 	ScStreamUpServerSecs string // server only
+	ScMaxEachPostBytes   int
 	ReuseConfig          *ReuseConfig
 	DownloadConfig       *Config
 }
@@ -140,6 +141,13 @@ func (c *Config) GetNormalizedScStreamUpServerSecs() (int, error) {
 	}
 
 	return n, nil
+}
+
+func (c *Config) GetNormalizedScMaxEachPostBytes() int {
+	if c.ScMaxEachPostBytes == 0 {
+		return 1000000
+	}
+	return c.ScMaxEachPostBytes
 }
 
 func parseRange(s string) (int, int, error) {

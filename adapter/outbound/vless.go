@@ -76,14 +76,15 @@ type VlessOption struct {
 }
 
 type XHTTPOptions struct {
-	Path             string                 `proxy:"path,omitempty"`
-	Host             string                 `proxy:"host,omitempty"`
-	Mode             string                 `proxy:"mode,omitempty"`
-	Headers          map[string]string      `proxy:"headers,omitempty"`
-	NoGRPCHeader     bool                   `proxy:"no-grpc-header,omitempty"`
-	XPaddingBytes    string                 `proxy:"x-padding-bytes,omitempty"`
-	ReuseSettings    *XHTTPReuseSettings    `proxy:"reuse-settings,omitempty"` // aka XMUX
-	DownloadSettings *XHTTPDownloadSettings `proxy:"download-settings,omitempty"`
+	Path               string                 `proxy:"path,omitempty"`
+	Host               string                 `proxy:"host,omitempty"`
+	Mode               string                 `proxy:"mode,omitempty"`
+	Headers            map[string]string      `proxy:"headers,omitempty"`
+	NoGRPCHeader       bool                   `proxy:"no-grpc-header,omitempty"`
+	XPaddingBytes      string                 `proxy:"x-padding-bytes,omitempty"`
+	ScMaxEachPostBytes int                    `proxy:"sc-max-each-post-bytes,omitempty"`
+	ReuseSettings      *XHTTPReuseSettings    `proxy:"reuse-settings,omitempty"` // aka XMUX
+	DownloadSettings   *XHTTPDownloadSettings `proxy:"download-settings,omitempty"`
 }
 
 type XHTTPReuseSettings struct {
@@ -96,12 +97,13 @@ type XHTTPReuseSettings struct {
 
 type XHTTPDownloadSettings struct {
 	// xhttp part
-	Path          *string             `proxy:"path,omitempty"`
-	Host          *string             `proxy:"host,omitempty"`
-	Headers       *map[string]string  `proxy:"headers,omitempty"`
-	NoGRPCHeader  *bool               `proxy:"no-grpc-header,omitempty"`
-	XPaddingBytes *string             `proxy:"x-padding-bytes,omitempty"`
-	ReuseSettings *XHTTPReuseSettings `proxy:"reuse-settings,omitempty"` // aka XMUX
+	Path               *string             `proxy:"path,omitempty"`
+	Host               *string             `proxy:"host,omitempty"`
+	Headers            *map[string]string  `proxy:"headers,omitempty"`
+	NoGRPCHeader       *bool               `proxy:"no-grpc-header,omitempty"`
+	XPaddingBytes      *string             `proxy:"x-padding-bytes,omitempty"`
+	ScMaxEachPostBytes *int                `proxy:"sc-max-each-post-bytes,omitempty"`
+	ReuseSettings      *XHTTPReuseSettings `proxy:"reuse-settings,omitempty"` // aka XMUX
 	// proxy part
 	Server            *string         `proxy:"server,omitempty"`
 	Port              *int            `proxy:"port,omitempty"`
@@ -535,13 +537,14 @@ func NewVless(option VlessOption) (*Vless, error) {
 		}
 
 		cfg := &xhttp.Config{
-			Host:          requestHost,
-			Path:          v.option.XHTTPOpts.Path,
-			Mode:          v.option.XHTTPOpts.Mode,
-			Headers:       v.option.XHTTPOpts.Headers,
-			NoGRPCHeader:  v.option.XHTTPOpts.NoGRPCHeader,
-			XPaddingBytes: v.option.XHTTPOpts.XPaddingBytes,
-			ReuseConfig:   reuseCfg,
+			Host:               requestHost,
+			Path:               v.option.XHTTPOpts.Path,
+			Mode:               v.option.XHTTPOpts.Mode,
+			Headers:            v.option.XHTTPOpts.Headers,
+			NoGRPCHeader:       v.option.XHTTPOpts.NoGRPCHeader,
+			XPaddingBytes:      v.option.XHTTPOpts.XPaddingBytes,
+			ScMaxEachPostBytes: v.option.XHTTPOpts.ScMaxEachPostBytes,
+			ReuseConfig:        reuseCfg,
 		}
 
 		makeTransport := func() http.RoundTripper {
@@ -552,6 +555,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 				func(ctx context.Context, raw net.Conn, isH2 bool) (net.Conn, error) {
 					return v.streamTLSConn(ctx, raw, isH2)
 				},
+				v.option.ALPN,
 			)
 		}
 		var makeDownloadTransport func() http.RoundTripper
@@ -609,13 +613,14 @@ func NewVless(option VlessOption) (*Vless, error) {
 			}
 
 			cfg.DownloadConfig = &xhttp.Config{
-				Host:          downloadHost,
-				Path:          lo.FromPtrOr(ds.Path, v.option.XHTTPOpts.Path),
-				Mode:          v.option.XHTTPOpts.Mode,
-				Headers:       lo.FromPtrOr(ds.Headers, v.option.XHTTPOpts.Headers),
-				NoGRPCHeader:  lo.FromPtrOr(ds.NoGRPCHeader, v.option.XHTTPOpts.NoGRPCHeader),
-				XPaddingBytes: lo.FromPtrOr(ds.XPaddingBytes, v.option.XHTTPOpts.XPaddingBytes),
-				ReuseConfig:   downloadReuseCfg,
+				Host:               downloadHost,
+				Path:               lo.FromPtrOr(ds.Path, v.option.XHTTPOpts.Path),
+				Mode:               v.option.XHTTPOpts.Mode,
+				Headers:            lo.FromPtrOr(ds.Headers, v.option.XHTTPOpts.Headers),
+				NoGRPCHeader:       lo.FromPtrOr(ds.NoGRPCHeader, v.option.XHTTPOpts.NoGRPCHeader),
+				XPaddingBytes:      lo.FromPtrOr(ds.XPaddingBytes, v.option.XHTTPOpts.XPaddingBytes),
+				ScMaxEachPostBytes: lo.FromPtrOr(ds.ScMaxEachPostBytes, v.option.XHTTPOpts.ScMaxEachPostBytes),
+				ReuseConfig:        downloadReuseCfg,
 			}
 
 			makeDownloadTransport = func() http.RoundTripper {
@@ -652,6 +657,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 
 						return conn, nil
 					},
+					downloadALPN,
 				)
 			}
 		}

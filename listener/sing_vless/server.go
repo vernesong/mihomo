@@ -161,12 +161,16 @@ func New(config LC.VlessServer, tunnel C.Tunnel, additions ...inbound.Addition) 
 				Mode:                 config.XHTTPConfig.Mode,
 				NoSSEHeader:          config.XHTTPConfig.NoSSEHeader,
 				ScStreamUpServerSecs: config.XHTTPConfig.ScStreamUpServerSecs,
+				ScMaxEachPostBytes:   config.XHTTPConfig.ScMaxEachPostBytes,
 			},
 			ConnHandler: func(conn net.Conn) {
 				sl.HandleConn(conn, tunnel, additions...)
 			},
 			HttpHandler: httpServer.Handler,
 		})
+		if !slices.Contains(tlsConfig.NextProtos, "http/1.1") {
+			tlsConfig.NextProtos = append([]string{"http/1.1"}, tlsConfig.NextProtos...)
+		}
 		if !slices.Contains(tlsConfig.NextProtos, "h2") {
 			tlsConfig.NextProtos = append([]string{"h2"}, tlsConfig.NextProtos...)
 		}

@@ -36,7 +36,26 @@ type PacketUpWriter struct {
 func (c *PacketUpWriter) Write(b []byte) (int, error) {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	scMaxEachPostBytes := c.cfg.GetNormalizedScMaxEachPostBytes()
+	if len(b) < scMaxEachPostBytes {
+		return c.write(b)
+	}
+	var n int
+	for start := 0; start < len(b); start += scMaxEachPostBytes {
+		end := start + scMaxEachPostBytes
+		if end > len(b) {
+			end = len(b)
+		}
+		_n, err := c.write(b[start:end])
+		n += _n
+		if err != nil {
+			return n, err
+		}
+	}
+	return n, nil
+}
 
+func (c *PacketUpWriter) write(b []byte) (int, error) {
 	u := url.URL{
 		Scheme: "https",
 		Host:   c.cfg.Host,
@@ -76,7 +95,7 @@ func (c *PacketUpWriter) Close() error {
 	return nil
 }
 
-func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc) http.RoundTripper {
+func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, alpn []string) http.RoundTripper {
 	return &http.Http2Transport{
 		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
 			raw, err := dialRaw(ctx)

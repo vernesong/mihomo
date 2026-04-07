@@ -145,6 +145,49 @@ func (h *requestHandler) getSession(sessionID string) *httpSession {
 	return h.sessions[sessionID]
 }
 
+func (h *requestHandler) normalizedMode() string {
+	if h.config.Mode == "" {
+		return "auto"
+	}
+	return h.config.Mode
+}
+
+func (h *requestHandler) allowStreamOne() bool {
+	switch h.normalizedMode() {
+	case "auto", "stream-one", "stream-up":
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *requestHandler) allowSessionDownload() bool {
+	switch h.normalizedMode() {
+	case "auto", "stream-up", "packet-up":
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *requestHandler) allowStreamUpUpload() bool {
+	switch h.normalizedMode() {
+	case "auto", "stream-up":
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *requestHandler) allowPacketUpUpload() bool {
+	switch h.normalizedMode() {
+	case "auto", "packet-up":
+		return true
+	default:
+		return false
+	}
+}
+
 func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := h.config.NormalizedPath()
 	if h.httpHandler != nil && !strings.HasPrefix(r.URL.Path, path) {
@@ -167,6 +210,11 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// stream-one: POST /path
 	if r.Method == http.MethodPost && len(parts) == 0 {
+		if !h.allowStreamOne() {
+			http.NotFound(w, r)
+			return
+		}
+
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusOK)
@@ -192,8 +240,13 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// packet-up download: GET /path/{session}
+	// stream-up/packet-up download: GET /path/{session}
 	if r.Method == http.MethodGet && len(parts) == 1 {
+		if !h.allowSessionDownload() {
+			http.NotFound(w, r)
+			return
+		}
+
 		sessionID := parts[0]
 		session := h.getOrCreateSession(sessionID)
 		session.markConnected()
@@ -236,6 +289,11 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// stream-up upload: POST /path/{session}
 	if r.Method == http.MethodPost && len(parts) == 1 {
+		if !h.allowStreamUpUpload() {
+			http.NotFound(w, r)
+			return
+		}
+
 		sessionID := parts[0]
 		session := h.getSession(sessionID)
 		if session == nil {
@@ -295,6 +353,11 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// packet-up upload: POST /path/{session}/{seq}
 	if r.Method == http.MethodPost && len(parts) == 2 {
+		if !h.allowPacketUpUpload() {
+			http.NotFound(w, r)
+			return
+		}
+
 		sessionID := parts[0]
 		seq, err := strconv.ParseUint(parts[1], 10, 64)
 		if err != nil {
@@ -308,7 +371,13 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		body, err := io.ReadAll(r.Body)
+		scMaxEachPostBytes := int64(h.config.GetNormalizedScMaxEachPostBytes())
+		if r.ContentLength > scMaxEachPostBytes {
+			http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+
+		body, err := io.ReadAll(io.LimitReader(r.Body, scMaxEachPostBytes+1))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

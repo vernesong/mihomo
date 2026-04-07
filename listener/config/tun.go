@@ -47,6 +47,8 @@ type Tun struct {
 	IncludeAndroidUser                    []int          `yaml:"include-android-user" json:"include-android-user,omitempty"`
 	IncludePackage                        []string       `yaml:"include-package" json:"include-package,omitempty"`
 	ExcludePackage                        []string       `yaml:"exclude-package" json:"exclude-package,omitempty"`
+	IncludeMACAddress                     []string       `yaml:"include-mac-address" json:"include-mac-address,omitempty"`
+	ExcludeMACAddress                     []string       `yaml:"exclude-mac-address" json:"exclude-mac-address,omitempty"`
 	EndpointIndependentNat                bool           `yaml:"endpoint-independent-nat" json:"endpoint-independent-nat,omitempty"`
 	UDPTimeout                            int64          `yaml:"udp-timeout" json:"udp-timeout,omitempty"`
 	DisableICMPForwarding                 bool           `yaml:"disable-icmp-forwarding" json:"disable-icmp-forwarding,omitempty"`
@@ -80,6 +82,8 @@ func (t *Tun) Sort() {
 	slices.Sort(t.IncludeAndroidUser)
 	slices.Sort(t.IncludePackage)
 	slices.Sort(t.ExcludePackage)
+	slices.Sort(t.IncludeMACAddress)
+	slices.Sort(t.ExcludeMACAddress)
 
 	slices.SortFunc(t.Inet4RouteAddress, netipx.ComparePrefix)
 	slices.SortFunc(t.Inet6RouteAddress, netipx.ComparePrefix)
@@ -183,6 +187,12 @@ func (t *Tun) Equal(other Tun) bool {
 		return false
 	}
 	if !slices.Equal(t.ExcludePackage, other.ExcludePackage) {
+		return false
+	}
+	if !slices.Equal(t.IncludeMACAddress, other.IncludeMACAddress) {
+		return false
+	}
+	if !slices.Equal(t.ExcludeMACAddress, other.ExcludeMACAddress) {
 		return false
 	}
 	if t.EndpointIndependentNat != other.EndpointIndependentNat {

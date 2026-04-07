@@ -93,6 +93,8 @@ type tunSchema struct {
 	IncludeAndroidUser                    *[]int          `yaml:"include-android-user" json:"include-android-user,omitempty"`
 	IncludePackage                        *[]string       `yaml:"include-package" json:"include-package,omitempty"`
 	ExcludePackage                        *[]string       `yaml:"exclude-package" json:"exclude-package,omitempty"`
+	IncludeMACAddress                     *[]string       `yaml:"include-mac-address" json:"include-mac-address,omitempty"`
+	ExcludeMACAddress                     *[]string       `yaml:"exclude-mac-address" json:"exclude-mac-address,omitempty"`
 	EndpointIndependentNat                *bool           `yaml:"endpoint-independent-nat" json:"endpoint-independent-nat,omitempty"`
 	UDPTimeout                            *int64          `yaml:"udp-timeout" json:"udp-timeout,omitempty"`
 	FileDescriptor                        *int            `yaml:"file-descriptor" json:"file-descriptor"`
@@ -241,6 +243,12 @@ func pointerOrDefaultTun(p *tunSchema, def LC.Tun) LC.Tun {
 		}
 		if p.ExcludePackage != nil {
 			def.ExcludePackage = *p.ExcludePackage
+		}
+		if p.IncludeMACAddress != nil {
+			def.IncludeMACAddress = *p.IncludeMACAddress
+		}
+		if p.ExcludeMACAddress != nil {
+			def.ExcludeMACAddress = *p.ExcludeMACAddress
 		}
 		if p.EndpointIndependentNat != nil {
 			def.EndpointIndependentNat = *p.EndpointIndependentNat
