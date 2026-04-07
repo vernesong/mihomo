@@ -583,7 +583,7 @@ func (s *Smart) fillProxies(metadata *C.Metadata, names []string, weights []floa
 	for _, idx := range indexes {
 		p := filteredAll[idx]
 		if !blockedNodes[p.Name()] && p.AliveForTestUrl(s.testUrl) && (!isUDP || p.SupportUDP()) {
-			if !firstAppended {
+			if !firstAppended && len(names) < minCount {
 				selected = append([]C.Proxy{p}, selected...)
 				firstAppended = true
 			} else {
