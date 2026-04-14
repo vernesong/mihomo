@@ -1,7 +1,6 @@
 package xhttp
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,20 +22,19 @@ type reuseEntry struct {
 	closed atomic.Bool
 }
 
-func (e *reuseEntry) isClosed() bool {
-	return e.closed.Load()
+func (entry *reuseEntry) isClosed() bool {
+	return entry.closed.Load()
 }
 
-func (e *reuseEntry) close() {
-	if !e.closed.CompareAndSwap(false, true) {
+func (entry *reuseEntry) close() {
+	if !entry.closed.CompareAndSwap(false, true) {
 		return
 	}
-	httputils.CloseTransport(e.transport)
+	httputils.CloseTransport(entry.transport)
 }
 
 type ReuseTransport struct {
 	entry   *reuseEntry
-	manager *ReuseManager
 	removed atomic.Bool
 }
 
@@ -48,7 +46,7 @@ func (rt *ReuseTransport) Close() error {
 	if !rt.removed.CompareAndSwap(false, true) {
 		return nil
 	}
-	rt.manager.release(rt.entry)
+	rt.entry.release()
 	return nil
 }
 
@@ -121,7 +119,7 @@ func (m *ReuseManager) cleanupLocked(now time.Time) {
 	m.entries = kept
 }
 
-func (m *ReuseManager) release(entry *reuseEntry) {
+func (entry *reuseEntry) release() {
 	if entry == nil {
 		return
 	}
@@ -163,11 +161,14 @@ func (m *ReuseManager) pickLocked() *reuseEntry {
 	return best
 }
 
-func (m *ReuseManager) canCreateLocked() bool {
-	if m.maxConnections <= 0 {
+func (m *ReuseManager) shouldCreateLocked() bool {
+	if len(m.entries) == 0 {
 		return true
 	}
-	return len(m.entries) < m.maxConnections
+	if m.maxConnections > 0 {
+		return len(m.entries) < m.maxConnections
+	}
+	return false
 }
 
 func (m *ReuseManager) newEntryLocked(transport http.RoundTripper, now time.Time) *reuseEntry {
@@ -189,7 +190,7 @@ func (m *ReuseManager) newEntryLocked(transport http.RoundTripper, now time.Time
 	return entry
 }
 
-func (m *ReuseManager) GetTransport() (*ReuseTransport, error) {
+func (m *ReuseManager) GetTransport() http.RoundTripper {
 	now := time.Now()
 
 	m.mu.Lock()
@@ -197,13 +198,13 @@ func (m *ReuseManager) GetTransport() (*ReuseTransport, error) {
 
 	m.cleanupLocked(now)
 
-	entry := m.pickLocked()
+	var entry *reuseEntry
+	if !m.shouldCreateLocked() {
+		entry = m.pickLocked()
+	}
 	reused := entry != nil
 
 	if entry == nil {
-		if !m.canCreateLocked() {
-			return nil, fmt.Errorf("manager: no available connection")
-		}
 		transport := m.maker()
 		entry = m.newEntryLocked(transport, now)
 	}
@@ -217,5 +218,5 @@ func (m *ReuseManager) GetTransport() (*ReuseTransport, error) {
 		entry.leftRequests.Add(-1)
 	}
 
-	return &ReuseTransport{entry: entry, manager: m}, nil
+	return &ReuseTransport{entry: entry}
 }

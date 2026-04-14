@@ -25,12 +25,12 @@ require (
 	github.com/metacubex/kcp-go v0.0.0-20260105040817-550693377604
 	github.com/metacubex/mhurl v0.1.0
 	github.com/metacubex/mlkem v0.1.0
-	github.com/metacubex/quic-go v0.59.1-0.20260213014310-4df8f0de5b56
+	github.com/metacubex/quic-go v0.59.1-0.20260413153657-53bb22f2c306
 	github.com/metacubex/randv2 v0.2.0
 	github.com/metacubex/restls-client-go v0.1.7
 	github.com/metacubex/sing v0.5.7
-	github.com/metacubex/sing-mux v0.3.5
-	github.com/metacubex/sing-quic v0.0.0-20260411121336-043f0078bb1c
+	github.com/metacubex/sing-mux v0.3.6
+	github.com/metacubex/sing-quic v0.0.0-20260414034501-3ea3410d197a
 	github.com/metacubex/sing-shadowsocks v0.2.12
 	github.com/metacubex/sing-shadowsocks2 v0.2.7
 	github.com/metacubex/sing-shadowtls v0.0.0-20250503063515-5d9f966d17a2

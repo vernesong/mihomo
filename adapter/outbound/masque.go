@@ -69,6 +69,7 @@ type MasqueOption struct {
 
 	CongestionController string `proxy:"congestion-controller,omitempty"`
 	CWND                 int    `proxy:"cwnd,omitempty"`
+	BBRProfile           string `proxy:"bbr-profile,omitempty"`
 
 	RemoteDnsResolve bool     `proxy:"remote-dns-resolve,omitempty"`
 	Dns              []string `proxy:"dns,omitempty"`
@@ -104,16 +105,16 @@ func (option MasqueOption) Prefixes() ([]netip.Prefix, error) {
 
 func NewMasque(option MasqueOption) (*Masque, error) {
 	outbound := &Masque{
-		Base: &Base{
-			name:   option.Name,
-			addr:   net.JoinHostPort(option.Server, strconv.Itoa(option.Port)),
-			tp:     C.Masque,
-			pdName: option.ProviderName,
-			udp:    option.UDP,
-			iface:  option.Interface,
-			rmark:  option.RoutingMark,
-			prefer: option.IPVersion,
-		},
+		Base: NewBase(BaseOption{
+			Name:         option.Name,
+			Addr:         net.JoinHostPort(option.Server, strconv.Itoa(option.Port)),
+			Type:         C.Masque,
+			ProviderName: option.ProviderName,
+			UDP:          option.UDP,
+			Interface:    option.Interface,
+			RoutingMark:  option.RoutingMark,
+			Prefer:       option.IPVersion,
+		}),
 	}
 	outbound.dialer = option.NewDialer(outbound.DialOptions())
 
@@ -262,7 +263,7 @@ func (w *Masque) run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		common.SetCongestionController(quicConn, w.option.CongestionController, w.option.CWND)
+		common.SetCongestionController(quicConn, w.option.CongestionController, w.option.CWND, w.option.BBRProfile)
 
 		closer, ipConn, err = masque.ConnectTunnel(ctx, quicConn, w.uri)
 		if err != nil {

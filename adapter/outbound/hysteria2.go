@@ -13,7 +13,7 @@ import (
 	"github.com/metacubex/mihomo/component/ca"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
-	tuicCommon "github.com/metacubex/mihomo/transport/tuic/common"
+	"github.com/metacubex/mihomo/transport/tuic/common"
 
 	"github.com/metacubex/quic-go"
 	qtls "github.com/metacubex/sing-quic"
@@ -21,10 +21,6 @@ import (
 	M "github.com/metacubex/sing/common/metadata"
 	"github.com/metacubex/tls"
 )
-
-func init() {
-	hysteria2.SetCongestionController = tuicCommon.SetCongestionController
-}
 
 const minHopInterval = 5
 const defaultHopInterval = 30
@@ -56,6 +52,7 @@ type Hysteria2Option struct {
 	PrivateKey     string     `proxy:"private-key,omitempty"`
 	ALPN           []string   `proxy:"alpn,omitempty"`
 	CWND           int        `proxy:"cwnd,omitempty"`
+	BBRProfile     string     `proxy:"bbr-profile,omitempty"`
 	UdpMTU         int        `proxy:"udp-mtu,omitempty"`
 
 	// quic-go special config
@@ -105,16 +102,16 @@ func (h *Hysteria2) ProxyInfo() C.ProxyInfo {
 func NewHysteria2(option Hysteria2Option) (*Hysteria2, error) {
 	addr := net.JoinHostPort(option.Server, strconv.Itoa(option.Port))
 	outbound := &Hysteria2{
-		Base: &Base{
-			name:   option.Name,
-			addr:   addr,
-			tp:     C.Hysteria2,
-			pdName: option.ProviderName,
-			udp:    true,
-			iface:  option.Interface,
-			rmark:  option.RoutingMark,
-			prefer: option.IPVersion,
-		},
+		Base: NewBase(BaseOption{
+			Name:         option.Name,
+			Addr:         addr,
+			Type:         C.Hysteria2,
+			ProviderName: option.ProviderName,
+			UDP:          true,
+			Interface:    option.Interface,
+			RoutingMark:  option.RoutingMark,
+			Prefer:       option.IPVersion,
+		}),
 		option: &option,
 	}
 	outbound.dialer = option.NewDialer(outbound.DialOptions())
@@ -184,7 +181,6 @@ func NewHysteria2(option Hysteria2Option) (*Hysteria2, error) {
 		TLSConfig:          tlsClientConfig,
 		QUICConfig:         quicConfig,
 		UDPDisabled:        false,
-		CWND:               option.CWND,
 		UdpMTU:             option.UdpMTU,
 		ServerAddress:      M.ParseSocksaddr(addr),
 		PacketListener:     outbound.dialer,
@@ -193,8 +189,11 @@ func NewHysteria2(option Hysteria2Option) (*Hysteria2, error) {
 			if err != nil {
 				return nil, nil, err
 			}
-			return tuicCommon.DialQuic(ctx, addr, outbound.DialOptions(), dialer, tlsCfg, cfg, early)
+			return common.DialQuic(ctx, addr, outbound.DialOptions(), dialer, tlsCfg, cfg, early)
 		}),
+		SetBBRCongestion: func(quicConn *quic.Conn) {
+			common.SetCongestionController(quicConn, "bbr", option.CWND, option.BBRProfile)
+		},
 	}
 
 	var serverPorts []uint16

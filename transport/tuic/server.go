@@ -33,6 +33,7 @@ type ServerOption struct {
 	AuthenticationTimeout time.Duration
 	MaxUdpRelayPacketSize int
 	CWND                  int
+	BBRProfile            string
 }
 
 type Server struct {
@@ -48,7 +49,7 @@ func (s *Server) Serve() error {
 		if err != nil {
 			return err
 		}
-		common.SetCongestionController(conn, s.CongestionController, s.CWND)
+		common.SetCongestionController(conn, s.CongestionController, s.CWND, s.BBRProfile)
 		h := &serverHandler{
 			Server:   s,
 			quicConn: conn,

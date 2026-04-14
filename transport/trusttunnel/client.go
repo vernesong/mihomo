@@ -34,6 +34,7 @@ type ClientOptions struct {
 	QUIC                  bool
 	QUICCongestionControl string
 	QUICCwnd              int
+	QUICBBRProfile        string
 	HealthCheck           bool
 	MaxConnections        int
 	MinStreams            int
@@ -67,7 +68,7 @@ func NewClient(ctx context.Context, options ClientOptions) (client *Client, err 
 		} else if !slices.Contains(options.TLSConfig.NextProtos, "h3") {
 			return nil, errors.New("require alpn h3")
 		}
-		err = client.quicRoundTripper(options.TLSConfig, options.QUICCongestionControl, options.QUICCwnd)
+		err = client.quicRoundTripper(options.TLSConfig, options.QUICCongestionControl, options.QUICCwnd, options.QUICBBRProfile)
 		if err != nil {
 			return nil, err
 		}

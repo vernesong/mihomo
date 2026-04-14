@@ -15,7 +15,7 @@ import (
 	"github.com/metacubex/tls"
 )
 
-func (c *Client) quicRoundTripper(tlsConfig *vmess.TLSConfig, congestionControlName string, cwnd int) error {
+func (c *Client) quicRoundTripper(tlsConfig *vmess.TLSConfig, congestionControlName string, cwnd int, bbrProfile string) error {
 	stdConfig, err := tlsConfig.ToStdConfig()
 	if err != nil {
 		return err
@@ -38,7 +38,7 @@ func (c *Client) quicRoundTripper(tlsConfig *vmess.TLSConfig, congestionControlN
 			if err != nil {
 				return nil, err
 			}
-			common.SetCongestionController(quicConn, congestionControlName, cwnd)
+			common.SetCongestionController(quicConn, congestionControlName, cwnd, bbrProfile)
 			return quicConn, nil
 		},
 	}
@@ -60,7 +60,7 @@ func (s *Service) configHTTP3Server(tlsConfig *tls.Config, udpConn net.PacketCon
 		Handler:     s,
 		IdleTimeout: DefaultSessionTimeout,
 		ConnContext: func(ctx context.Context, conn *quic.Conn) context.Context {
-			common.SetCongestionController(conn, s.quicCongestionControl, s.quicCwnd)
+			common.SetCongestionController(conn, s.quicCongestionControl, s.quicCwnd, s.quicBBRProfile)
 			return ctx
 		},
 	}
