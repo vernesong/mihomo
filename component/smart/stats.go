@@ -373,7 +373,10 @@ func (s *Store) GetNodeWeightRanking(group, config, testUrl string, proxies []C.
 		if ai != aj {
 			return ai
 		}
-		return result[i].Weight > result[j].Weight
+		if result[i].Weight != result[j].Weight {
+			return result[i].Weight > result[j].Weight
+		}
+		return result[i].Name < result[j].Name
 	})
 
 	if len(result) > 0 {
@@ -384,39 +387,37 @@ func (s *Store) GetNodeWeightRanking(group, config, testUrl string, proxies []C.
 			}
 		}
 		if aliveCount > 0 {
-			result[0].Rank = RankMostUsed
-			if aliveCount == 2 {
-				if result[1].Weight > 0 {
-					result[1].Rank = RankOccasional
-				} else {
-					result[1].Rank = RankRarelyUsed
+			positiveAliveCount := 0
+			for i := 0; i < aliveCount; i++ {
+				if result[i].Weight > 0 {
+					positiveAliveCount++
 				}
-			} else if aliveCount >= 3 {
-				mostUsedBound := int(float64(aliveCount) * 0.2)
+			}
+
+			if positiveAliveCount > 0 {
+				mostUsedBound := int(float64(positiveAliveCount) * 0.2)
 				if mostUsedBound < 1 {
 					mostUsedBound = 1
 				}
-				occasionalBound := mostUsedBound + int(float64(aliveCount)*0.5)
-				for i := 1; i < mostUsedBound && i < aliveCount; i++ {
-					if result[i].Weight > 0 {
-						result[i].Rank = RankMostUsed
-					} else {
-						result[i].Rank = RankRarelyUsed
-					}
+				if mostUsedBound > positiveAliveCount {
+					mostUsedBound = positiveAliveCount
 				}
-				for i := mostUsedBound; i < occasionalBound && i < aliveCount; i++ {
-					if result[i].Weight > 0 {
-						result[i].Rank = RankOccasional
-					} else {
-						result[i].Rank = RankRarelyUsed
-					}
+
+				occasionalBound := mostUsedBound + int(float64(positiveAliveCount)*0.5)
+				if occasionalBound > positiveAliveCount {
+					occasionalBound = positiveAliveCount
 				}
-				for i := occasionalBound; i < aliveCount; i++ {
+
+				for i := 0; i < mostUsedBound; i++ {
+					result[i].Rank = RankMostUsed
+				}
+				for i := mostUsedBound; i < occasionalBound; i++ {
+					result[i].Rank = RankOccasional
+				}
+				for i := occasionalBound; i < positiveAliveCount; i++ {
 					result[i].Rank = RankRarelyUsed
 				}
-			}
-			for i := 0; i < aliveCount; i++ {
-				if result[i].Rank == "" {
+				for i := positiveAliveCount; i < aliveCount; i++ {
 					result[i].Rank = RankRarelyUsed
 				}
 			}
