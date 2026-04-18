@@ -514,8 +514,6 @@ func (s *Smart) fillProxies(metadata *C.Metadata, names []string, weights []floa
 		return selected[:minCount], false
 	}
 
-	var indexes []int
-	var weightsMap map[string]float64
 	var firstAppended bool
 	checkWeightsMap := make(map[string]float64)
 	for i, name := range names {
@@ -545,13 +543,8 @@ func (s *Smart) fillProxies(metadata *C.Metadata, names []string, weights []floa
 			}
 			return factorI > factorJ
 		})
-
-		indexes = make([]int, len(filteredAll))
-		for i := range indexes {
-			indexes[i] = i
-		}
 	} else if ranking, err := s.store.GetNodeWeightRankingCache(s.Name(), s.configName); err == nil && len(ranking) > 0 {
-		weightsMap = make(map[string]float64)
+		weightsMap := make(map[string]float64)
 		for _, r := range ranking {
 			weightsMap[r.Name] = float64(r.Weight)
 		}
@@ -572,12 +565,20 @@ func (s *Smart) fillProxies(metadata *C.Metadata, names []string, weights []floa
 			}
 			return filteredAll[i].Name() < filteredAll[j].Name()
 		})
-		indexes = make([]int, len(filteredAll))
-		for i := range indexes {
-			indexes[i] = i
-		}
 	} else {
-		indexes = rand.Perm(len(filteredAll))
+		sort.Slice(filteredAll, func(i, j int) bool {
+			di := filteredAll[i].LastDelayForTestUrl(s.testUrl)
+			dj := filteredAll[j].LastDelayForTestUrl(s.testUrl)
+			if di == dj {
+				return filteredAll[i].Name() < filteredAll[j].Name()
+			}
+			return di < dj
+		})
+	}
+
+	indexes := make([]int, len(filteredAll))
+	for i := range indexes {
+		indexes[i] = i
 	}
 
 	for _, idx := range indexes {
