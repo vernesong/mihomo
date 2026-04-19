@@ -85,6 +85,7 @@ func testInboundShadowSocks0(t *testing.T, inboundOptions inbound.ShadowSocksOpt
 	outboundOptions.Server = addrPort.Addr().String()
 	outboundOptions.Port = int(addrPort.Port())
 	outboundOptions.Password = password
+	outboundOptions.DialerForAPI = tunnel.NewDialer()
 
 	out, err := outbound.NewShadowSocks(outboundOptions)
 	if !assert.NoError(t, err) {

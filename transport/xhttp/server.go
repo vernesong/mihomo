@@ -28,13 +28,13 @@ type httpServerConn struct {
 	mu      sync.Mutex
 	w       http.ResponseWriter
 	flusher http.Flusher
-	reader  io.Reader
+	reader  io.ReadCloser
 	closed  bool
 	done    chan struct{}
 	once    sync.Once
 }
 
-func newHTTPServerConn(w http.ResponseWriter, r io.Reader) *httpServerConn {
+func newHTTPServerConn(w http.ResponseWriter, r io.ReadCloser) *httpServerConn {
 	flusher, _ := w.(http.Flusher)
 	return &httpServerConn{
 		w:       w,
@@ -70,7 +70,7 @@ func (c *httpServerConn) Close() error {
 		c.mu.Unlock()
 		close(c.done)
 	})
-	return nil
+	return c.reader.Close()
 }
 
 func (c *httpServerConn) Wait() <-chan struct{} {
@@ -305,6 +305,11 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
 		}
 		w.WriteHeader(http.StatusOK)
+
+		rc := http.NewResponseController(w)
+		_ = rc.EnableFullDuplex() // http1 need to enable full duplex manually
+		_ = rc.Flush()            // force flush the response header
+
 		referrer := r.Header.Get("Referer")
 		if referrer != "" && h.scStreamUpServerSecs.Max > 0 {
 			go func() {
@@ -440,9 +445,10 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
 		}
 		w.WriteHeader(http.StatusOK)
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
+
+		rc := http.NewResponseController(w)
+		_ = rc.EnableFullDuplex() // http1 need to enable full duplex manually
+		_ = rc.Flush()            // force flush the response header
 
 		httpSC := newHTTPServerConn(w, r.Body)
 		conn := &Conn{
@@ -470,9 +476,10 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusOK)
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
+
+		rc := http.NewResponseController(w)
+		_ = rc.EnableFullDuplex() // http1 need to enable full duplex manually
+		_ = rc.Flush()            // force flush the response header
 
 		httpSC := newHTTPServerConn(w, r.Body)
 		conn := &Conn{

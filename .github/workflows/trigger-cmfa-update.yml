@@ -10,7 +10,7 @@ jobs:
       - uses: actions/create-github-app-token@v3
         id: generate-token
         with:
-          app-id: ${{ secrets.MAINTAINER_APPID }}
+          client-id: ${{ secrets.MAINTAINER_APPID }}
           private-key: ${{ secrets.MAINTAINER_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
       

@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os/exec"
+	"runtime"
 	"strings"
 )
 
@@ -33,4 +34,20 @@ func splitArgs(cmd string) []string {
 		args = append(args[:2], suffix)
 	}
 	return args
+}
+
+func ExecShell(shellStr string) (string, error) {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("cmd.exe", "/C", shellStr)
+	} else {
+		cmd = exec.Command("sh", "-c", shellStr)
+	}
+
+	prepareBackgroundCommand(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%v, %s", err, string(out))
+	}
+	return string(out), nil
 }

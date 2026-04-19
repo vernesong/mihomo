@@ -21,7 +21,6 @@ import (
 	"github.com/metacubex/quic-go"
 	"github.com/metacubex/quic-go/http3"
 	"github.com/metacubex/tls"
-	"golang.org/x/sync/semaphore"
 )
 
 // ConnIdleTimeout defines the maximum time an idle TCP session can survive in the tunnel,
@@ -177,12 +176,7 @@ func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFun
 		}
 	}
 	if len(alpn) == 1 && alpn[0] == "http/1.1" { // `alpn: [http/1.1]` means using http/1.1 mode
-		w := semaphore.NewWeighted(20) // limit concurrent dialing to avoid WSAECONNREFUSED on Windows
 		dialContext := func(ctx context.Context, network, addr string) (net.Conn, error) {
-			if err := w.Acquire(ctx, 1); err != nil {
-				return nil, err
-			}
-			defer w.Release(1)
 			raw, err := dialRaw(ctx)
 			if err != nil {
 				return nil, err
