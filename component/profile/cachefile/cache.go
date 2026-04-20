@@ -23,6 +23,7 @@ var (
 	bucketETag             = []byte("etag")
 	bucketSubscriptionInfo = []byte("subscriptioninfo")
 	bucketSmartStats       = []byte("smart_stats")
+	bucketStorage          = []byte("storage")
 )
 
 // CacheFile store and update the cache file

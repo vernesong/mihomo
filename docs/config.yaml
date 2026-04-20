@@ -1908,6 +1908,7 @@ listeners:
     #  down: "200 Mbps" # 若不写单位，默认为 Mbps
     #  obfs: salamander # 默认为空，如果填写则开启 obfs，目前仅支持 salamander
     #  obfs-password: yourpassword
+    #  bbr-profile: "" # Available: "standard", "conservative", "aggressive". Default: "standard"
     #  max-idle-time: 15000
     #  alpn:
     #    - h3

@@ -35,12 +35,12 @@ type XHTTPConfig struct {
 	Path                 string `inbound:"path,omitempty"`
 	Host                 string `inbound:"host,omitempty"`
 	Mode                 string `inbound:"mode,omitempty"`
-	XPaddingBytes        string `inbound:"xpadding-bytes,omitempty"`
-	XPaddingObfsMode     bool   `inbound:"xpadding-obfs-mode,omitempty"`
-	XPaddingKey          string `inbound:"xpadding-key,omitempty"`
-	XPaddingHeader       string `inbound:"xpadding-header,omitempty"`
-	XPaddingPlacement    string `inbound:"xpadding-placement,omitempty"`
-	XPaddingMethod       string `inbound:"xpadding-method,omitempty"`
+	XPaddingBytes        string `inbound:"x-padding-bytes,omitempty"`
+	XPaddingObfsMode     bool   `inbound:"x-padding-obfs-mode,omitempty"`
+	XPaddingKey          string `inbound:"x-padding-key,omitempty"`
+	XPaddingHeader       string `inbound:"x-padding-header,omitempty"`
+	XPaddingPlacement    string `inbound:"x-padding-placement,omitempty"`
+	XPaddingMethod       string `inbound:"x-padding-method,omitempty"`
 	UplinkHTTPMethod     string `inbound:"uplink-http-method,omitempty"`
 	SessionPlacement     string `inbound:"session-placement,omitempty"`
 	SessionKey           string `inbound:"session-key,omitempty"`
