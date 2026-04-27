@@ -57,10 +57,7 @@ func (c *Client) PacketConn(conn net.Conn, rAddr net.Addr) net.PacketConn {
 
 // NewClient return Client instance
 func NewClient(uuidStr string, addons *Addons) (*Client, error) {
-	uid, err := utils.UUIDMap(uuidStr)
-	if err != nil {
-		return nil, err
-	}
+	uid := utils.UUIDMap(uuidStr)
 
 	return &Client{
 		uuid:   uid,
