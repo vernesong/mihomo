@@ -852,10 +852,11 @@ func (s *Smart) startTimedTask(initialDelay, interval time.Duration, taskName st
 
 func (s *Smart) runPrefetch() {
 	proxies := s.GetProxies(true)
-	proxyMap := make(map[string]string)
+	proxyMap := make(map[string]bool)
+	blockedNodes, _ := s.store.GetBlockedNodes(s.Name(), s.configName)
 	for _, p := range proxies {
-		if p.AliveForTestUrl(s.testUrl) {
-			proxyMap[p.Name()] = p.Name()
+		if p.AliveForTestUrl(s.testUrl) && !blockedNodes[p.Name()] {
+			proxyMap[p.Name()] = true
 		}
 	}
 	s.store.RunPrefetch(s.Name(), s.configName, proxyMap)

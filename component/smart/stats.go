@@ -703,19 +703,10 @@ func (s *Store) GetActiveTargets(group, config string, limit int) []ActiveTarget
 }
 
 // RunPrefetch 最佳节点预计算
-func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) int {
+func (s *Store) RunPrefetch(group, config string, proxyMap map[string]bool) int {
 	log.Debugln("[SmartStore] Executing target and ASN pre-calculation for policy group [%s]", group)
 
-	blockedNodes, _ := s.GetBlockedNodes(group, config)
-
-	availableProxyMap := make(map[string]string)
-	for name, value := range proxyMap {
-		if !blockedNodes[name] {
-			availableProxyMap[name] = value
-		}
-	}
-
-	if len(availableProxyMap) == 0 {
+	if len(proxyMap) == 0 {
 		log.Debugln("[SmartStore] No available nodes for prefetch calculation in group [%s]", group)
 		return 0
 	}
@@ -775,10 +766,11 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
 		nodes := make([]string, 0, len(bestNodes))
 		weights := make([]float64, 0, len(bestWeights))
 		for i := 0; i < len(bestNodes); i++ {
-			if _, exists := availableProxyMap[bestNodes[i]]; exists {
-				nodes = append(nodes, bestNodes[i])
-				weights = append(weights, bestWeights[i])
+			if !proxyMap[bestNodes[i]] {
+				continue
 			}
+			nodes = append(nodes, bestNodes[i])
+			weights = append(weights, bestWeights[i])
 		}
 
 		if len(nodes) > 0 {
@@ -845,6 +837,19 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]string) in
 					} else {
 						finalNodeMap[newNode] = newW
 						needUpdate = true
+					}
+				}
+
+				// Clean up prefetch results if node stats expired, otherwise they may stay in prefetch results even if they are recovered.
+				for node := range finalNodeMap {
+					if !proxyMap[node] {
+						delete(finalNodeMap, node)
+						continue
+					}
+					if nodeStats, err := s.GetStatsForTarget(group, config, item.target, node); err == nil {
+						if len(nodeStats) == 0 {
+							delete(finalNodeMap, node)
+						}
 					}
 				}
 
