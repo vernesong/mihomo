@@ -28,7 +28,7 @@ const (
 	ipv6HeaderLen = 40
 )
 
-func ConnectTunnelH2(ctx context.Context, h2Transport *http.Http2Transport, connectUri string) (*http.Http2ClientConn, IpConn, error) {
+func ConnectTunnelH2(ctx context.Context, h2Transport *http.Transport, connectUri string) (*http.ClientConn, IpConn, error) {
 	additionalHeaders := http.Header{
 		"User-Agent": []string{""},
 	}
@@ -39,17 +39,12 @@ func ConnectTunnelH2(ctx context.Context, h2Transport *http.Http2Transport, conn
 	// TODO: support PQC
 	h2Headers.Set("pq-enabled", "false")
 
-	conn, err := h2Transport.DialTLSContext(ctx, "tcp", ":0", nil)
-	if err != nil {
-		return nil, nil, fmt.Errorf("connect-ip: failed to dial: %w", err)
-	}
-
-	cc, err := h2Transport.NewClientConn(conn)
+	cc, err := h2Transport.NewClientConn(ctx, "https", ":0")
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect-ip: failed to create client connection: %w", err)
 	}
 
-	if !cc.ReserveNewRequest() {
+	if err = cc.Reserve(); err != nil {
 		_ = cc.Close()
 		return nil, nil, fmt.Errorf("connect-ip: failed to reserve client connection: %w", err)
 	}

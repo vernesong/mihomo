@@ -40,7 +40,7 @@ type Masque struct {
 	tunDevice   wireguard.Device
 	resolver    resolver.Resolver
 	uri         string
-	h2Transport *http.Http2Transport
+	h2Transport *http.Transport
 
 	runCtx    context.Context
 	runCancel context.CancelFunc
@@ -163,15 +163,25 @@ func NewMasque(option MasqueOption) (*Masque, error) {
 
 	if option.Network == "h2" {
 		tlsConfig.NextProtos = []string{"h2"}
-		outbound.h2Transport = &http.Http2Transport{
-			DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
+		// use h2c mode to disallow the net/http fallback to http1.1 when server returns a not h2 ALPN
+		protocols := new(http.Protocols)
+		protocols.SetUnencryptedHTTP2(true)
+		outbound.h2Transport = &http.Transport{
+			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				c, err := outbound.dialer.DialContext(ctx, "tcp", outbound.addr)
 				if err != nil {
 					return nil, err
 				}
-				return tls.Client(c, tlsConfig), nil
+				tlsConn := tls.Client(c, tlsConfig)
+				err = tlsConn.HandshakeContext(ctx)
+				if err != nil {
+					return nil, err
+				}
+				type netConn struct{ net.Conn } // hide tls-type to skip ALPN check and force enter h2 mode
+				return netConn{tlsConn}, nil
 			},
-			ReadIdleTimeout: 30 * time.Second,
+			Protocols:       protocols,
+			IdleConnTimeout: 30 * time.Second,
 		}
 	}
 
