@@ -318,7 +318,7 @@ func (s *Store) GetNodeWeightRankingCache(group, config string) (NodeRank, error
 }
 
 // 获取节点权重排名
-func (s *Store) GetNodeWeightRanking(group, config, testUrl string, proxies []C.Proxy) (NodeRank, error) {
+func (s *Store) GetNodeWeightRanking(group, config, testUrl string, proxies []C.Proxy, stableNodes map[string]bool) (NodeRank, error) {
 	var resultItems []NodeRankItem
 	if len(proxies) == 0 {
 		return NodeRank{}, fmt.Errorf("no proxies provided")
@@ -327,7 +327,7 @@ func (s *Store) GetNodeWeightRanking(group, config, testUrl string, proxies []C.
 	allNodes := make(map[string]bool, len(proxies))
 	aliveNodes := make(map[string]bool, len(proxies))
 	for _, p := range proxies {
-		if p.AliveForTestUrl(testUrl) {
+		if p.AliveForTestUrl(testUrl) && (len(stableNodes) == 0 || stableNodes[p.Name()]) {
 			aliveNodes[p.Name()] = true
 		}
 		allNodes[p.Name()] = true
