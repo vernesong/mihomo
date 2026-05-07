@@ -939,24 +939,40 @@ func (s *Smart) calcMADMetrics(delays []float64) (currentAnomaly bool, unstable 
 	const defaultK = 2.5
 	const smallK = 3.5
 	const cvThreshold = 0.6
-	const minSamplesForCV = 5
+	const minSamples = 5
+	const SentinelThreshold = 0.5
 	const sentinel = float64(0xffff)
 
+	recentCount := minSamples
+	if n < recentCount {
+		recentCount = n
+	}
+	recentStart := n - recentCount
+	recentSentinels := 0
+
 	filtered := make([]float64, 0, n)
-	for _, v := range delays {
+	for i, v := range delays {
 		if v >= sentinel {
+			if i >= recentStart {
+				recentSentinels++
+			}
 			continue
 		}
 		filtered = append(filtered, v)
 	}
 
-	if float64(n - len(filtered)) / float64(n) > 0.5 {
+	m := len(filtered)
+	if m == 0 {
+		return true, true
+	}
+
+	if float64(recentSentinels) / float64(recentCount) > SentinelThreshold {
 		unstable = true
 	}
 
-	m := len(filtered)
-	if m == 0 {
-		currentAnomaly = true
+	if m < minSamples {
+		last := delays[n - 1]
+		currentAnomaly = last >= sentinel
 		return currentAnomaly, unstable
 	}
 
@@ -1023,11 +1039,7 @@ func (s *Smart) calcMADMetrics(delays []float64) (currentAnomaly bool, unstable 
 	}
 
 	if !unstable {
-		if m >= minSamplesForCV {
-			unstable = robustCV >= cvThreshold
-		} else {
-			unstable = false
-		}
+		unstable = robustCV >= cvThreshold
 	}
 
 	return currentAnomaly, unstable
