@@ -15,7 +15,7 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 
 	"github.com/metacubex/randv2"
-	"golang.org/x/crypto/ssh"
+	"github.com/metacubex/ssh"
 )
 
 type Ssh struct {

@@ -354,7 +354,10 @@ func (c *Client) DialStreamOne(ctx context.Context) (net.Conn, error) {
 	addrCtx := httputils.NewAddrContext(&conn.NetAddr, reqCtx)
 	streamCtx := httptrace.WithClientTrace(addrCtx, &httptrace.ClientTrace{
 		GotConn: func(info httptrace.GotConnInfo) {
-			gotConn <- true
+			select {
+			case gotConn <- true:
+			default: // GotConn maybe called multiple times, ignore the second and later calls
+			}
 		},
 	})
 
@@ -452,7 +455,10 @@ func (c *Client) DialStreamUp(ctx context.Context) (net.Conn, error) {
 	addrCtx := httputils.NewAddrContext(&conn.NetAddr, reqCtx)
 	downloadCtx := httptrace.WithClientTrace(addrCtx, &httptrace.ClientTrace{
 		GotConn: func(info httptrace.GotConnInfo) {
-			gotConn <- true
+			select {
+			case gotConn <- true:
+			default: // GotConn maybe called multiple times, ignore the second and later calls
+			}
 		},
 	})
 
@@ -596,7 +602,10 @@ func (c *Client) DialPacketUp(ctx context.Context) (net.Conn, error) {
 	addrCtx := httputils.NewAddrContext(&conn.NetAddr, reqCtx)
 	downloadCtx := httptrace.WithClientTrace(addrCtx, &httptrace.ClientTrace{
 		GotConn: func(info httptrace.GotConnInfo) {
-			gotConn <- true
+			select {
+			case gotConn <- true:
+			default: // GotConn maybe called multiple times, ignore the second and later calls
+			}
 		},
 	})
 
