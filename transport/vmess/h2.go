@@ -14,7 +14,7 @@ import (
 
 type h2Conn struct {
 	net.Conn
-	*http.Http2ClientConn
+	*http.ClientConn
 	pwriter *io.PipeWriter
 	res     *http.Response
 	cfg     *H2Config
@@ -49,7 +49,7 @@ func (hc *h2Conn) establishConn() error {
 	}
 
 	// it will be close at :  `func (hc *h2Conn) Close() error`
-	res, err := hc.Http2ClientConn.RoundTrip(&req)
+	res, err := hc.ClientConn.RoundTrip(&req)
 	if err != nil {
 		return err
 	}
@@ -91,13 +91,6 @@ func (hc *h2Conn) Close() error {
 			return err
 		}
 	}
-	ctx := context.Background()
-	if hc.res != nil {
-		ctx = hc.res.Request.Context()
-	}
-	if err := hc.Http2ClientConn.Shutdown(ctx); err != nil {
-		return err
-	}
 	return hc.Conn.Close()
 }
 
@@ -107,16 +100,25 @@ func StreamH2Conn(ctx context.Context, conn net.Conn, cfg *H2Config) (_ net.Conn
 		defer done(&err)
 	}
 
-	transport := &http.Http2Transport{}
+	// use h2c mode to disallow the net/http fallback to http1.1
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	transport := &http.Transport{
+		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			type netConn struct{ net.Conn } // hide tls-type to skip ALPN check and force enter h2 mode
+			return netConn{conn}, nil
+		},
+		Protocols: protocols,
+	}
 
-	cconn, err := transport.NewClientConn(conn)
+	clientConn, err := transport.NewClientConn(ctx, "https", ":0")
 	if err != nil {
 		return nil, err
 	}
 
 	return &h2Conn{
-		Conn:            conn,
-		Http2ClientConn: cconn,
-		cfg:             cfg,
+		Conn:       conn,
+		ClientConn: clientConn,
+		cfg:        cfg,
 	}, nil
 }

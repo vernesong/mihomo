@@ -36,7 +36,7 @@ require (
 	github.com/metacubex/sing-shadowtls v0.0.0-20250503063515-5d9f966d17a2
 	github.com/metacubex/sing-tun v0.4.18
 	github.com/metacubex/sing-vmess v0.2.5
-	github.com/metacubex/sing-wireguard v0.0.0-20250503063753-2dc62acc626f
+	github.com/metacubex/sing-wireguard v0.0.0-20260507084707-690d479ec947
 	github.com/metacubex/smux v0.0.0-20260105030934-d0c8756d3141
 	github.com/metacubex/ssh v0.1.0
 	github.com/metacubex/tfo-go v0.0.0-20251130171125-413e892ac443

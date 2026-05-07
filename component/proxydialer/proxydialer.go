@@ -33,6 +33,7 @@ func (p proxyDialer) DialContext(ctx context.Context, network, address string) (
 		if !currentMeta.Resolved() { // should not happen, maybe by a wrongly implemented proxy, but we can handle this (:
 			err = pc.ResolveUDP(ctx, currentMeta)
 			if err != nil {
+				_ = pc.Close()
 				return nil, err
 			}
 		}

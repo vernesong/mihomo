@@ -180,8 +180,10 @@ func NewMasque(option MasqueOption) (*Masque, error) {
 				type netConn struct{ net.Conn } // hide tls-type to skip ALPN check and force enter h2 mode
 				return netConn{tlsConn}, nil
 			},
-			Protocols:       protocols,
-			IdleConnTimeout: 30 * time.Second,
+			Protocols: protocols,
+			HTTP2: &http.HTTP2Config{
+				SendPingTimeout: 30 * time.Second,
+			},
 		}
 	}
 

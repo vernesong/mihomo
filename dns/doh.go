@@ -27,9 +27,9 @@ import (
 
 // Values to configure HTTP and HTTP/2 transport.
 const (
-	// transportDefaultReadIdleTimeout is the default timeout for pinging
+	// transportDefaultSendPingTimeout is the default timeout for pinging
 	// idle connections in HTTP/2 transport.
-	transportDefaultReadIdleTimeout = 30 * time.Second
+	transportDefaultSendPingTimeout = 30 * time.Second
 
 	// transportDefaultIdleConnTimeout is the default timeout for idle
 	// connections in HTTP transport.
@@ -434,17 +434,10 @@ func (doh *dnsOverHTTPS) createTransport(ctx context.Context) (t http.RoundTripp
 	// only be used when negotiated on the TLS level.
 	transport.ForceAttemptHTTP2 = true
 
-	// Explicitly configure transport to use HTTP/2.
-	//
-	// See https://github.com/AdguardTeam/dnsproxy/issues/11.
-	var transportH2 *http.Http2Transport
-	transportH2, err = http.Http2ConfigureTransports(transport)
-	if err != nil {
-		return nil, err
-	}
-
 	// Enable HTTP/2 pings on idle connections.
-	transportH2.ReadIdleTimeout = transportDefaultReadIdleTimeout
+	transport.HTTP2 = &http.HTTP2Config{
+		SendPingTimeout: transportDefaultSendPingTimeout,
+	}
 
 	return transport, nil
 }
