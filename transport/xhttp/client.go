@@ -202,8 +202,11 @@ func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFun
 	if keepAlivePeriod < 0 {
 		keepAlivePeriod = 0
 	}
-	return &http.Http2Transport{
-		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+	// use h2c mode to disallow the net/http fallback to http1.1
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	return &http.Transport{
+		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			raw, err := dialRaw(ctx)
 			if err != nil {
 				return nil, err
@@ -213,10 +216,14 @@ func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFun
 				_ = raw.Close()
 				return nil, err
 			}
-			return wrapped, nil
+			type netConn struct{ net.Conn } // hide tls-type to skip ALPN check and force enter h2 mode
+			return netConn{wrapped}, nil
 		},
 		IdleConnTimeout: ConnIdleTimeout,
-		ReadIdleTimeout: keepAlivePeriod,
+		Protocols:       protocols,
+		HTTP2: &http.HTTP2Config{
+			SendPingTimeout: keepAlivePeriod,
+		},
 	}
 }
 

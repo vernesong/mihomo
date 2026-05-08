@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/component/ca"
@@ -78,9 +79,12 @@ func New(config LC.VlessServer, tunnel C.Tunnel, additions ...inbound.Addition) 
 		}()
 	}
 
+	httpServer := http.Server{
+		IdleTimeout: 30 * time.Second,
+		Protocols:   new(http.Protocols),
+	}
 	tlsConfig := &tls.Config{Time: ntp.Now}
 	var realityBuilder *reality.Builder
-	var httpServer http.Server
 
 	if config.Certificate != "" && config.PrivateKey != "" {
 		certLoader, err := ca.NewTLSKeyPairLoader(config.Certificate, config.PrivateKey)
@@ -134,6 +138,7 @@ func New(config LC.VlessServer, tunnel C.Tunnel, additions ...inbound.Addition) 
 			sl.HandleConn(conn, tunnel, additions...)
 		})
 		httpServer.Handler = httpMux
+		httpServer.Protocols.SetHTTP1(true)
 		tlsConfig.NextProtos = append(tlsConfig.NextProtos, "http/1.1")
 	}
 	if config.GrpcServiceName != "" {
@@ -144,6 +149,9 @@ func New(config LC.VlessServer, tunnel C.Tunnel, additions ...inbound.Addition) 
 			},
 			HttpHandler: httpServer.Handler,
 		})
+		httpServer.Protocols.SetHTTP2(true)
+		// SetUnencryptedHTTP2 to ensure we can work in plain http2 and some tls conn is not *tls.Conn (like *reality.Conn)
+		httpServer.Protocols.SetUnencryptedHTTP2(true)
 		tlsConfig.NextProtos = append([]string{"h2"}, tlsConfig.NextProtos...) // h2 must before http/1.1
 	}
 	if config.XHTTPConfig.Mode != "" {
@@ -186,6 +194,10 @@ func New(config LC.VlessServer, tunnel C.Tunnel, additions ...inbound.Addition) 
 		if err != nil {
 			return nil, err
 		}
+		httpServer.Protocols.SetHTTP1(true)
+		httpServer.Protocols.SetHTTP2(true)
+		// SetUnencryptedHTTP2 to ensure we can work in plain http2 and some tls conn is not *tls.Conn (like *reality.Conn)
+		httpServer.Protocols.SetUnencryptedHTTP2(true)
 		if !slices.Contains(tlsConfig.NextProtos, "http/1.1") {
 			tlsConfig.NextProtos = append([]string{"http/1.1"}, tlsConfig.NextProtos...)
 		}

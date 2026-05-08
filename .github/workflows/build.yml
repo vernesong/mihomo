@@ -190,13 +190,6 @@ jobs:
     - name: Verify Go env
       run: go env
 
-      # TODO: remove after issue77930 fixed, see: https://github.com/golang/go/issues/77930
-    - name: Fix issue77930 for Golang1.26
-      if: ${{ matrix.jobs.goversion == '' }}
-      run: |
-        cd $(go env GOROOT)
-        patch --verbose -p 1 < $GITHUB_WORKSPACE/.github/patch/issue77930.patch
-
     - name: Set variables
       run: |
         VERSION="${GITHUB_REF_NAME,,}-smart-$(git rev-parse --short HEAD)"

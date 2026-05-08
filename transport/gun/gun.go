@@ -24,7 +24,10 @@ import (
 	"github.com/metacubex/mihomo/transport/vmess"
 
 	"github.com/metacubex/http"
-	"github.com/metacubex/tls"
+)
+
+const (
+	Http2NextProtoTLS = "h2"
 )
 
 var (
@@ -241,7 +244,7 @@ func (g *Conn) SetDeadline(t time.Time) error {
 }
 
 type Transport struct {
-	transport *http.Http2Transport
+	transport *http.Transport
 	cfg       *Config
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -258,7 +261,7 @@ func (t *Transport) Close() error {
 }
 
 func NewTransport(dialFn DialFn, tlsConfig *vmess.TLSConfig, gunCfg *Config) *Transport {
-	dialFunc := func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
+	dialFunc := func(ctx context.Context, network, addr string) (net.Conn, error) {
 		ctx, cancel := context.WithTimeout(ctx, C.DefaultTLSTimeout)
 		defer cancel()
 		pconn, err := dialFn(ctx, network, addr)
@@ -278,20 +281,32 @@ func NewTransport(dialFn DialFn, tlsConfig *vmess.TLSConfig, gunCfg *Config) *Tr
 
 		if tlsConfig.Reality == nil { // reality doesn't return the negotiated ALPN
 			state := tlsC.GetTLSConnectionState(conn)
-			if p := state.NegotiatedProtocol; p != http.Http2NextProtoTLS {
+			if p := state.NegotiatedProtocol; p != Http2NextProtoTLS {
 				_ = conn.Close()
-				return nil, fmt.Errorf("http2: unexpected ALPN protocol %s, want %s", p, http.Http2NextProtoTLS)
+				return nil, fmt.Errorf("http2: unexpected ALPN protocol %s, want %s", p, Http2NextProtoTLS)
 			}
 		}
 		return conn, nil
 	}
 
-	transport := &http.Http2Transport{
-		DialTLSContext:     dialFunc,
-		AllowHTTP:          false,
+	// use h2c mode to disallow the net/http fallback to http1.1
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	transport := &http.Transport{
+		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			wrapped, err := dialFunc(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			type netConn struct{ net.Conn } // hide tls-type to skip ALPN check and force enter h2 mode
+			return netConn{wrapped}, nil
+		},
+		Protocols:          protocols,
 		DisableCompression: true,
-		ReadIdleTimeout:    time.Duration(gunCfg.PingInterval) * time.Second, // If zero, no health check is performed
-		PingTimeout:        0,
+		HTTP2: &http.HTTP2Config{
+			SendPingTimeout: time.Duration(gunCfg.PingInterval) * time.Second, // If zero, no health check is performed,
+			PingTimeout:     0,
+		},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

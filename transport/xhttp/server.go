@@ -15,7 +15,6 @@ import (
 	N "github.com/metacubex/mihomo/common/net"
 
 	"github.com/metacubex/http"
-	"github.com/metacubex/http/h2c"
 )
 
 type ServerOption struct {
@@ -127,9 +126,7 @@ func NewServerHandler(opt ServerOption) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	// using h2c.NewHandler to ensure we can work in plain http2
-	// and some tls conn is not *tls.Conn (like *reality.Conn)
-	return h2c.NewHandler(&requestHandler{
+	return &requestHandler{
 		config:               opt.Config,
 		connHandler:          opt.ConnHandler,
 		httpHandler:          opt.HttpHandler,
@@ -138,9 +135,7 @@ func NewServerHandler(opt ServerOption) (http.Handler, error) {
 		scStreamUpServerSecs: scStreamUpServerSecs,
 		scMaxBufferedPosts:   scMaxBufferedPosts,
 		sessions:             map[string]*httpSession{},
-	}, &http.Http2Server{
-		IdleTimeout: 30 * time.Second,
-	}), nil
+	}, nil
 }
 
 func (h *requestHandler) upsertSession(sessionID string) *httpSession {
