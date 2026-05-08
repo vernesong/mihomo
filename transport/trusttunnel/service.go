@@ -10,7 +10,6 @@ import (
 	N "github.com/metacubex/mihomo/common/net"
 
 	"github.com/metacubex/http"
-	"github.com/metacubex/http/h2c"
 	"github.com/metacubex/quic-go/http3"
 	"github.com/metacubex/sing/common"
 	"github.com/metacubex/sing/common/auth"
@@ -52,7 +51,6 @@ type Service struct {
 	quicCwnd              int
 	quicBBRProfile        string
 	httpServer            *http.Server
-	h2Server              *http.Http2Server
 	h3Server              *http3.Server
 	tcpListener           net.Listener
 	tlsListener           net.Listener
@@ -73,19 +71,18 @@ func NewService(options ServiceOptions) *Service {
 
 func (s *Service) Start(tcpListener net.Listener, udpConn net.PacketConn, tlsConfig *tls.Config) error {
 	if tcpListener != nil {
-		h2Server := &http.Http2Server{}
+		protocols := new(http.Protocols)
+		protocols.SetHTTP1(true)
+		protocols.SetHTTP2(true)
+		protocols.SetUnencryptedHTTP2(true)
 		s.httpServer = &http.Server{
-			Handler:     h2c.NewHandler(s, h2Server),
+			Handler:     s,
 			IdleTimeout: DefaultSessionTimeout,
 			BaseContext: func(net.Listener) context.Context {
 				return s.ctx
 			},
+			Protocols: protocols,
 		}
-		err := http.Http2ConfigureServer(s.httpServer, h2Server)
-		if err != nil {
-			return err
-		}
-		s.h2Server = h2Server
 		listener := tcpListener
 		s.tcpListener = tcpListener
 		if tlsConfig != nil {
