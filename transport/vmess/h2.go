@@ -105,8 +105,7 @@ func StreamH2Conn(ctx context.Context, conn net.Conn, cfg *H2Config) (_ net.Conn
 	protocols.SetUnencryptedHTTP2(true)
 	transport := &http.Transport{
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			type netConn struct{ net.Conn } // hide tls-type to skip ALPN check and force enter h2 mode
-			return netConn{conn}, nil
+			return conn, nil
 		},
 		Protocols: protocols,
 	}

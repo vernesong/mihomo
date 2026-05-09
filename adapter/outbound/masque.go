@@ -175,10 +175,10 @@ func NewMasque(option MasqueOption) (*Masque, error) {
 				tlsConn := tls.Client(c, tlsConfig)
 				err = tlsConn.HandshakeContext(ctx)
 				if err != nil {
+					_ = c.Close()
 					return nil, err
 				}
-				type netConn struct{ net.Conn } // hide tls-type to skip ALPN check and force enter h2 mode
-				return netConn{tlsConn}, nil
+				return tlsConn, nil
 			},
 			Protocols: protocols,
 			HTTP2: &http.HTTP2Config{

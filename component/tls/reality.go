@@ -139,8 +139,7 @@ func realityClientFallback(uConn net.Conn, serverName string, fingerprint utls.C
 	client := http.Client{
 		Transport: &http.Transport{
 			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				type netConn struct{ net.Conn } // hide tls-type to skip ALPN check and force enter h2 mode
-				return netConn{uConn}, nil
+				return uConn, nil
 			},
 			Protocols: protocols,
 		},

@@ -298,8 +298,7 @@ func NewTransport(dialFn DialFn, tlsConfig *vmess.TLSConfig, gunCfg *Config) *Tr
 			if err != nil {
 				return nil, err
 			}
-			type netConn struct{ net.Conn } // hide tls-type to skip ALPN check and force enter h2 mode
-			return netConn{wrapped}, nil
+			return wrapped, nil
 		},
 		Protocols:          protocols,
 		DisableCompression: true,

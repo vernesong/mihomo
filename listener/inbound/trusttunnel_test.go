@@ -102,7 +102,7 @@ func testInboundTrustTunnelTLS(t *testing.T, quic bool) {
 }
 
 func TestInboundTrustTunnel_H2(t *testing.T) {
-	testInboundTrustTunnelTLS(t, true)
+	testInboundTrustTunnelTLS(t, false)
 }
 
 func TestInboundTrustTunnel_QUIC(t *testing.T) {

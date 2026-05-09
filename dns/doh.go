@@ -728,7 +728,7 @@ func (doh *dnsOverHTTPS) tlsDial(ctx context.Context, network string, config *tl
 
 	err = conn.HandshakeContext(ctx)
 	if err != nil {
-		defer conn.Close()
+		_ = rawConn.Close()
 		return nil, err
 	}
 

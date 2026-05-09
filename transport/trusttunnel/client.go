@@ -100,8 +100,7 @@ func (c *Client) h2RoundTripper(tlsConfig *vmess.TLSConfig) {
 				_ = conn.Close()
 				return nil, err
 			}
-			type netConn struct{ net.Conn } // hide tls-type to skip ALPN check and force enter h2 mode
-			return netConn{tlsConn}, nil
+			return tlsConn, nil
 		},
 		Protocols:       protocols,
 		IdleConnTimeout: DefaultSessionTimeout,

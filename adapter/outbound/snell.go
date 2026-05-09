@@ -101,8 +101,7 @@ func (s *Snell) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn
 }
 
 // ListenPacketContext implements C.ProxyAdapter
-func (s *Snell) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (C.PacketConn, error) {
-	var err error
+func (s *Snell) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (_ C.PacketConn, err error) {
 	if err = s.ResolveUDP(ctx, metadata); err != nil {
 		return nil, err
 	}
@@ -110,6 +109,10 @@ func (s *Snell) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 	if err != nil {
 		return nil, err
 	}
+
+	defer func(c net.Conn) {
+		safeConnClose(c, err)
+	}(c)
 
 	c, err = s.StreamConnContext(ctx, c, metadata)
 

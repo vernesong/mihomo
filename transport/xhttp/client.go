@@ -216,8 +216,7 @@ func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFun
 				_ = raw.Close()
 				return nil, err
 			}
-			type netConn struct{ net.Conn } // hide tls-type to skip ALPN check and force enter h2 mode
-			return netConn{wrapped}, nil
+			return wrapped, nil
 		},
 		IdleConnTimeout: ConnIdleTimeout,
 		Protocols:       protocols,

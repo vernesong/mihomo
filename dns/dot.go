@@ -129,10 +129,12 @@ func (t *dnsOverTLS) dialContext(ctx context.Context) (net.Conn, error) {
 		},
 	})
 	if err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 	tlsConn := tls.Client(conn, tlsConfig)
 	if err = tlsConn.HandshakeContext(ctx); err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 	conn = tlsConn
