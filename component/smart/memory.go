@@ -11,6 +11,47 @@ import (
 	"github.com/metacubex/mihomo/log"
 )
 
+var (
+	targetCache *lru.LruCache[string, string]
+
+	unwrapCache *lru.LruCache[string, UnwrapMap]
+
+	recordCache *lru.LruCache[string, *AtomicStatsRecord]
+
+	dbResultCache *lru.LruCache[string, map[string][]byte]
+
+	blockedNodesCache *lru.LruCache[string, map[string]bool]
+
+	hostStatusCache *lru.LruCache[string, HostStatus]
+)
+
+type (
+	UnwrapMap struct {
+		TCP    []string  `json:"tcp,omitempty"`
+		UDP    []string  `json:"udp,omitempty"`
+		RefTCP string    `json:"ref_tcp,omitempty"`
+		RefUDP string    `json:"ref_udp,omitempty"`
+	}
+
+	NodesWithWeights struct {
+		Nodes   []string  `json:"nodes"`
+		Weights []float64 `json:"weights"`
+	}
+
+	NodeWithWeight struct {
+		Node   string
+		Weight float64
+	}
+
+	PrefetchMap struct {
+		TCP         NodesWithWeights `json:"tcp,omitempty"`
+		UDP         NodesWithWeights `json:"udp,omitempty"`
+		RefTCP      string           `json:"ref_tcp,omitempty"`
+		RefUDP      string           `json:"ref_udp,omitempty"`
+		UpdatedTime int64            `json:"updated_time,omitempty"`
+	}
+)
+
 func InitCache() {
 	globalCacheParams.mutex.Lock()
 	defer globalCacheParams.mutex.Unlock()
@@ -24,6 +65,7 @@ func InitCache() {
 
 	targetCache = lru.New[string, string](
 		lru.WithSize[string, string](globalCacheParams.MaxTargets / 4),
+		lru.WithAge[string, string](300),
 	)
 
 	unwrapCache = lru.New[string, UnwrapMap](
@@ -33,6 +75,7 @@ func InitCache() {
 
 	recordCache = lru.New[string, *AtomicStatsRecord](
 		lru.WithSize[string, *AtomicStatsRecord](globalCacheParams.MaxTargets / 4),
+		lru.WithAge[string, *AtomicStatsRecord](300),
 	)
 
 	dbResultCache = lru.New[string, map[string][]byte](
@@ -43,6 +86,11 @@ func InitCache() {
 	blockedNodesCache = lru.New[string, map[string]bool](
 		lru.WithSize[string, map[string]bool](globalCacheParams.MaxTargets / 4),
 		lru.WithAge[string, map[string]bool](300),
+	)
+
+	hostStatusCache = lru.New[string, HostStatus](
+		lru.WithSize[string, HostStatus](globalCacheParams.MaxTargets / 4),
+		lru.WithAge[string, HostStatus](300),
 	)
 }
 
@@ -358,7 +406,7 @@ func (s *Store) AdjustCacheParameters() {
 
 	if !isFirstRun {
 		memoryChanged := math.Abs(memoryUsage - globalCacheParams.LastMemoryUsage) > 0.05
-		needAdjust = memoryChanged || memoryUsage > 0.5
+		needAdjust = memoryChanged
 	}
 
 	globalCacheParams.LastMemoryUsage = memoryUsage
@@ -380,11 +428,12 @@ func (s *Store) AdjustCacheParameters() {
 		globalCacheParams.MaxTargets,
 		globalCacheParams.BatchSaveThreshold)
 
-	targetCache = lru.ResetLRU(targetCache, globalCacheParams.MaxTargets / 4)
+	targetCache = lru.ResetLRU(targetCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, string](300))
 	unwrapCache = lru.ResetLRU(unwrapCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, UnwrapMap](300))
-	recordCache = lru.ResetLRU(recordCache, globalCacheParams.MaxTargets / 4)
+	recordCache = lru.ResetLRU(recordCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, *AtomicStatsRecord](300))
 	dbResultCache = lru.ResetLRU(dbResultCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, map[string][]byte](300))
 	blockedNodesCache = lru.ResetLRU(blockedNodesCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, map[string]bool](300))
+	hostStatusCache = lru.ResetLRU(hostStatusCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, HostStatus](300))
 	go s.FlushQueue(true)
 }
 
@@ -399,6 +448,8 @@ func (s *Store) clearCache(level string, config string, group string) {
 	dbResultCache.Clear()
 
 	blockedNodesCache.Clear()
+
+	hostStatusCache.Clear()
 
 	s.FlushQueue(true)
 }

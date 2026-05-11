@@ -13,7 +13,6 @@ import (
 	"github.com/metacubex/bbolt"
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/cmd"
-	"github.com/metacubex/mihomo/common/lru"
 	"github.com/metacubex/mihomo/log"
 
 	"golang.org/x/net/publicsuffix"
@@ -69,16 +68,6 @@ var (
 		LastMemoryUsage    float64
 		mutex              sync.RWMutex
 	}
-
-	targetCache *lru.LruCache[string, string]
-
-	unwrapCache *lru.LruCache[string, UnwrapMap]
-
-	recordCache *lru.LruCache[string, *AtomicStatsRecord]
-
-	dbResultCache *lru.LruCache[string, map[string][]byte]
-
-	blockedNodesCache *lru.LruCache[string, map[string]bool]
 )
 
 var CdnASNs = map[string]bool{
@@ -127,92 +116,6 @@ type (
 		Target string
 		Node   string
 		Data   []byte
-	}
-
-	StatsRecord struct {
-		Success            int64                   `json:"success"`
-		Failure            int64                   `json:"failure"`
-		ConnectTime        int64                   `json:"connect_time"`
-		Latency            int64                   `json:"latency"`
-		LastUsed           int64                   `json:"last_used"`
-		Weights            map[string]float64      `json:"weights"`
-		UploadTotal        float64                 `json:"upload_total"`
-		DownloadTotal      float64                 `json:"download_total"`
-		MaxUploadRate      float64                 `json:"max_upload_rate"`
-		MaxDownloadRate    float64                 `json:"max_download_rate"`
-		ConnectionDuration float64                 `json:"connection_duration"`
-	}
-
-	ModelInput struct {
-		// 节点历史性能指标
-		Success                    int64 // 成功次数
-		Failure                    int64 // 失败次数
-		ConnectTime                int64 // 连接时间(毫秒)
-		Latency                    int64 // 延迟(毫秒)
-
-		// 上传相关特征
-		UploadTotal                float64 // 上传流量(字节)
-		HistoryUploadTotal         float64 // 历史上传流量(字节)
-		MaxuploadRate              float64 // 最大上传速率(字节/秒)
-		HistoryMaxUploadRate       float64 // 历史最大上传速率(字节/秒)
-
-		// 下载相关特征
-		DownloadTotal              float64 // 下载流量(字节)
-		HistoryDownloadTotal       float64 // 历史下载流量(字节)
-		MaxdownloadRate            float64 // 最大下载速率(字节/秒)
-		HistoryMaxDownloadRate     float64 // 历史最大下载速率(字节/秒)
-
-		ConnectionDuration         float64 // 连接持续时间(分钟)
-		HistoryConnectionDuration  float64 // 历史平均连接持续时间(分钟)
-		LastUsed                   int64   // 上次使用时间
-
-		// 连接特征
-		IsUDP                      bool // 是否UDP连接
-		IsTCP                      bool // 是否TCP连接
-
-		// 元数据特征
-		DestIPASN                  string   // 目标IP的ASN信息
-		Host                       string   // 域名信息
-		DestIP                     string   // 目标IP地址
-		DestPort                   uint16   // 目标端口
-		DestGeoIP                  []string // 目标IP的地理位置信息
-
-		GroupName                  string // 策略组名称
-		NodeName                   string // 节点名称
-	}
-
-	NodeState struct {
-		Name               string         `json:"name"`
-		FailureCount       int            `json:"failure_count"`
-		LastFailure        int64          `json:"last_failure"`
-		BlockedUntil       int64          `json:"blocked_until"`
-		Degraded           bool           `json:"degraded"`
-		DegradedFactor     float64        `json:"degraded_factor"`
-	}
-
-	NodesWithWeights struct {
-		Nodes   []string  `json:"nodes"`
-		Weights []float64 `json:"weights"`
-	}
-
-	NodeWithWeight struct {
-		Node   string
-		Weight float64
-	}
-
-	PrefetchMap struct {
-		TCP         NodesWithWeights `json:"tcp,omitempty"`
-		UDP         NodesWithWeights `json:"udp,omitempty"`
-		RefTCP      string           `json:"ref_tcp,omitempty"`
-		RefUDP      string           `json:"ref_udp,omitempty"`
-		UpdatedTime int64            `json:"updated_time,omitempty"`
-	}
-
-	UnwrapMap struct {
-		TCP    []string  `json:"tcp,omitempty"`
-		UDP    []string  `json:"udp,omitempty"`
-		RefTCP string    `json:"ref_tcp,omitempty"`
-		RefUDP string    `json:"ref_udp,omitempty"`
 	}
 )
 
@@ -355,6 +258,8 @@ func GetEffectiveTarget(host string, dstIP string) (string) {
 					}
 				}
 			}
+
+			targetCache.Set(h, result)
 		}
 	}
 

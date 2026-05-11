@@ -568,7 +568,7 @@ func (s *Smart) filterProxies(metadata *C.Metadata, names []string, weights []fl
 	filteredAll = defaultSort(filteredAll)
 
 	if len(s.policyPriority) == 0 {
-		if len(selected) > minCount / 2 {
+		if len(filteredAll) < len(all) / 3 {
 			rand.Shuffle(len(filteredAll), func(i, j int) {
 				filteredAll[i], filteredAll[j] = filteredAll[j], filteredAll[i]
 			})
@@ -577,8 +577,11 @@ func (s *Smart) filterProxies(metadata *C.Metadata, names []string, weights []fl
 
 	var firstAppended bool
 
+	wildcardTarget := smart.GetEffectiveTarget(metadata.Host, metadata.DstIP.String())
+	TargetFailureCount, _ := s.store.GetHostStatus(s.Name(), s.configName, wildcardTarget)
+
 	for _, p := range filteredAll {
-		if !firstAppended && len(names) < minCount {
+		if !firstAppended && (len(selected) < minCount / 2 || TargetFailureCount <= 0) {
 			selected = append([]C.Proxy{p}, selected...)
 			firstAppended = true
 		} else {
@@ -1449,8 +1452,6 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 	}
 
 	oldWeight := atomicRecord.GetWeight(weightType)
-	wildcardTargetCount, wildcardTargetLastUsed := s.store.GetHostStatus(s.Name(), s.configName, wildcardTarget)
-	wildcardTargetBlocked := wildcardTargetCount >= s.maxFailedTimes
 	uploadTotalMB := float64(uploadTotal) / (1024.0 * 1024.0)
 	downloadTotalMB := float64(downloadTotal) / (1024.0 * 1024.0)
 	maxUploadRateKB := float64(maxUploadRate) / 1024.0
@@ -1483,19 +1484,15 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 	// 额外检查和权重调整
 	// 平均权重(适应 target 调整为 rule based 和 asn based 的情况，避免频繁突变)
 	degradedWeight, isDegraded := s.checkNodeQualityDegradation(
-		status, metadata, proxy, wildcardTargetBlocked,
+		status, metadata, proxy, wildcardTarget,
 		addressDisplay, proxy.Name(), calculatedWeight, oldWeight,
 		connectionDuration, uploadTotalMB, downloadTotalMB,
-		metadata.NetWork.String(),
-		wildcardTargetLastUsed, wildcardTargetCount, asnInfo, metadata.NetWork == C.UDP)
+		metadata.NetWork.String(), asnInfo, metadata.NetWork == C.UDP)
 
 	if isDegraded {
 		s.updatePrefetchCache(metadata, target, addressDisplay, proxy.Name(), degradedWeight, asnInfo, metadata.NetWork == C.UDP)
 		s.findSameConnection(metadata, proxy.Name(), target, asnInfo, metadata.NetWork == C.UDP)
 	}
-
-	needLastUsedUpdate := downloadTotalMB < 0.03 && metadata.Host != "" && metadata.DstPort == 443 && metadata.NetWork == C.TCP
-	s.store.UpdateHostStatus(s.Name(), s.configName, wildcardTarget, isDegraded, needLastUsedUpdate)
 
 	baseWeight := degradedWeight / priorityFactor
 
@@ -1507,7 +1504,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 	// 更新记录
 	atomicRecord.Set("lastUsed", time.Now().Unix())
 	atomicRecord.SetWeight(weightType, degradedWeight, metadata.NetWork == C.UDP)
-	statsSnapshot := atomicRecord.CreateStatsSnapshot()
+	statsSnapshot := atomicRecord.CreateStatsSnapshot(cacheKey)
 
 	// 保存统计记录
 	s.saveStatsRecord(target, proxy, statsSnapshot)
@@ -1567,14 +1564,11 @@ func (s *Smart) registerPacketClosureMetricsCallback(pc C.PacketConn, proxy C.Pr
 }
 
 func (s *Smart) checkNodeQualityDegradation(
-	status string, metadata *C.Metadata, proxy C.Proxy, hostBlocked bool,
+	status string, metadata *C.Metadata, proxy C.Proxy, wildcardTarget string,
 	addressDisplay, proxyName string,
 	newWeight, oldWeight float64,
-	connectionDuration int64,
-	uploadTotal, downloadTotal float64,
-	networkType string,
-	wildcardTargetLastUsed int64, wildcardTargetCount int,
-	asnInfo string, isUDP bool) (float64, bool) {
+	connectionDuration int64, uploadTotal, downloadTotal float64,
+	networkType string, asnInfo string, isUDP bool) (float64, bool) {
 
 	newWeight = updateAverageValueFloat(oldWeight, newWeight, false)
 
@@ -1598,9 +1592,6 @@ func (s *Smart) checkNodeQualityDegradation(
 	if status == "failed" {
 		failedWeight, nodeBlock := s.handleFailedConnection(proxy.Name(), oldWeight, newWeight)
 		if nodeBlock {
-			if hostBlocked {
-				return newWeight, false
-			}
 			log.Debugln("[Smart] Connection Group: [%s] - Node: [%s] - Network: [%s] - Address: [%s] detected failure, degraded form [%.4f] to [%.4f] ...",
 				s.Name(), proxyName, networkType, addressDisplay, oldWeight, failedWeight)
 		}
@@ -1609,9 +1600,6 @@ func (s *Smart) checkNodeQualityDegradation(
 
 	// 零流量连接
 	if connectionDuration > 100 && downloadTotal == 0 && uploadTotal == 0 && metadata.DstPort == 443 && !isUDP {
-		if hostBlocked {
-			return newWeight, false
-		}
 		log.Debugln("[Smart] Connection Group: [%s] - Node: [%s] - Network: [%s] - Address: [%s] detected zero-traffic, degraded form [%.4f] to [%.4f] ...",
 			s.Name(), proxyName, networkType, addressDisplay, oldWeight, degradedWeight)
 		return degradedWeight, true
@@ -1619,14 +1607,16 @@ func (s *Smart) checkNodeQualityDegradation(
 
 	// 异常状态码检测
 	if downloadTotal < 0.03 && metadata.Host != "" && metadata.DstPort == 443 && !isUDP {
-		if now - wildcardTargetLastUsed > 300 || wildcardTargetCount > 0 {
+		TargetFailureCount, TargetLastUsed := s.store.GetHostStatus(s.Name(), s.configName, wildcardTarget)
+		if now - TargetLastUsed > 300 || TargetFailureCount > 0 {
 			ctx, cancel := context.WithTimeout(context.Background(), C.DefaultTCPTimeout)
 			defer cancel()
 			url := "https://" + metadata.Host + "/?z=" + strconv.FormatInt(rand.Int63(), 10)
 			status, ok, err := proxy.StatusTest(ctx, url)
 			if err == nil {
+				s.store.UpdateHostStatus(s.Name(), s.configName, wildcardTarget, !ok)
 				if !ok {
-					if hostBlocked {
+					if TargetFailureCount >= s.maxFailedTimes {
 						return newWeight, false
 					}
 					log.Debugln("[Smart] Connection Group: [%s] - Node: [%s] - Network: [%s] - Address: [%s] detected abnormal response [%d], degraded form [%.4f] to [%.4f] ...",

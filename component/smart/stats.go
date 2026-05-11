@@ -23,6 +23,29 @@ var (
 	shardedLocksOnce sync.Once
 )
 
+type StatsRecord struct {
+	Success            int64                   `json:"success"`
+	Failure            int64                   `json:"failure"`
+	ConnectTime        int64                   `json:"connect_time"`
+	Latency            int64                   `json:"latency"`
+	LastUsed           int64                   `json:"last_used"`
+	Weights            map[string]float64      `json:"weights"`
+	UploadTotal        float64                 `json:"upload_total"`
+	DownloadTotal      float64                 `json:"download_total"`
+	MaxUploadRate      float64                 `json:"max_upload_rate"`
+	MaxDownloadRate    float64                 `json:"max_download_rate"`
+	ConnectionDuration float64                 `json:"connection_duration"`
+}
+
+type NodeState struct {
+	Name               string         `json:"name"`
+	FailureCount       int            `json:"failure_count"`
+	LastFailure        int64          `json:"last_failure"`
+	BlockedUntil       int64          `json:"blocked_until"`
+	Degraded           bool           `json:"degraded"`
+	DegradedFactor     float64        `json:"degraded_factor"`
+}
+
 type AtomicStatsRecord struct {
 	success         atomic.Int64
 	failure         atomic.Int64
@@ -124,12 +147,12 @@ func (s *Store) GetOrCreateAtomicRecord(cacheKey string, group, config, target, 
 }
 
 // 创建统计快照
-func (record *AtomicStatsRecord) CreateStatsSnapshot() *StatsRecord {
+func (record *AtomicStatsRecord) CreateStatsSnapshot(cacheKey string) *StatsRecord {
 	if record == nil {
 		return &StatsRecord{}
 	}
 
-	return &StatsRecord{
+	snapshot := &StatsRecord{
 		Success:            record.success.Load(),
 		Failure:            record.failure.Load(),
 		ConnectTime:        record.connectTime.Load(),
@@ -142,6 +165,10 @@ func (record *AtomicStatsRecord) CreateStatsSnapshot() *StatsRecord {
 		ConnectionDuration: record.duration.Load(),
 		Weights:            record.weights.FilterByKeyPrefix(""),
 	}
+
+	recordCache.Set(cacheKey, record)
+
+	return snapshot
 }
 
 func (r *AtomicStatsRecord) Get(field string) interface{} {
@@ -1108,6 +1135,12 @@ func (s *Store) GetAllNodesForGroup(group, config string) ([]string, error) {
 // 域名失败屏蔽
 func (s *Store) GetHostStatus(group, config, host string) (int, int64) {
 	pathPrefix := FormatDBKey(KeyTypeHostFailures, config, group, host)
+
+	if stats, ok := hostStatusCache.Get(pathPrefix); ok {
+		hostStatusCache.Set(pathPrefix, stats)
+		return stats.FailureCount, stats.LastUsed
+	}
+
 	rawResult, err := s.GetSubBytesByPath(pathPrefix)
 	if err != nil {
 		return 0, 0
@@ -1116,30 +1149,36 @@ func (s *Store) GetHostStatus(group, config, host string) (int, int64) {
 	for _, data := range rawResult {
 		var stats HostStatus
 		if err := json.Unmarshal(data, &stats); err != nil {
-			return 0, 0
+			continue
 		}
+		hostStatusCache.Set(pathPrefix, stats)
 		return stats.FailureCount, stats.LastUsed
 	}
 
 	return 0, 0
 }
 
-func (s *Store) UpdateHostStatus(group, config, host string, failure, needLastUsedUpdate bool) {
+func (s *Store) UpdateHostStatus(group, config, host string, failure bool) {
 	pathPrefix := FormatDBKey(KeyTypeHostFailures, config, group, host)
-	rawResult, err := s.GetSubBytesByPath(pathPrefix)
-	if err != nil {
-		return
-	}
 
 	var stats HostStatus
 
-	for _, data := range rawResult {
-		if err := json.Unmarshal(data, &stats); err != nil {
-			break
+	if cached, ok := hostStatusCache.Get(pathPrefix); ok {
+		stats = cached
+	} else {
+		rawResult, err := s.GetSubBytesByPath(pathPrefix)
+		if err != nil {
+			return
+		}
+		for _, data := range rawResult {
+			if err := json.Unmarshal(data, &stats); err == nil {
+				hostStatusCache.Set(pathPrefix, stats)
+				break
+			}
 		}
 	}
 
-	if !failure && stats.FailureCount <= 0 && !needLastUsedUpdate {
+	if !failure && stats.FailureCount <= 0 {
 		return
 	}
 
@@ -1152,7 +1191,9 @@ func (s *Store) UpdateHostStatus(group, config, host string, failure, needLastUs
 		}
 	}
 
-	stats.LastUsed = time.Now().Unix()
+    stats.LastUsed = time.Now().Unix()
+
+	hostStatusCache.Set(pathPrefix, stats)
 
 	data, err := json.Marshal(stats)
 	if err != nil {

@@ -201,9 +201,11 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 		if err != nil {
 			return result, nil
 		}
-		// KeyTypeStats use other cache
-		if maxResults > 0 && !(keyType == KeyTypeStats && strict) {
-			dbResultCache.Set(prefix, dbResult)
+		// KeyTypeStats \ KeyTypeHostFailures use other cache
+		if maxResults > 0 && !strict {
+			if keyType != KeyTypeStats && keyType != KeyTypeHostFailures {
+				dbResultCache.Set(prefix, dbResult)
+			}
 		}
 		for k, v := range dbResult {
 			if _, exists := result[k]; !exists {
