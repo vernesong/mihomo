@@ -167,6 +167,34 @@ func TestInboundShadowSocks_ShadowTlsv3(t *testing.T) {
 	testInboundShadowSocksShadowTls(t, inboundOptions, outboundOptions)
 }
 
+func TestInboundShadowSocks_SimpleObfs_Http(t *testing.T) {
+	inboundOptions := inbound.ShadowSocksOption{
+		SimpleObfs: inbound.SimpleObfs{
+			Enable: true,
+			Mode:   "http",
+		},
+	}
+	outboundOptions := outbound.ShadowSocksOption{
+		Plugin:     "obfs",
+		PluginOpts: map[string]any{"mode": "http", "host": realityDest},
+	}
+	testInboundShadowSocks(t, inboundOptions, outboundOptions, shadowsocksCipherShortLists, false)
+}
+
+func TestInboundShadowSocks_SimpleObfs_Tls(t *testing.T) {
+	inboundOptions := inbound.ShadowSocksOption{
+		SimpleObfs: inbound.SimpleObfs{
+			Enable: true,
+			Mode:   "tls",
+		},
+	}
+	outboundOptions := outbound.ShadowSocksOption{
+		Plugin:     "obfs",
+		PluginOpts: map[string]any{"mode": "tls", "host": realityDest},
+	}
+	testInboundShadowSocks(t, inboundOptions, outboundOptions, shadowsocksCipherShortLists, false)
+}
+
 func TestInboundShadowSocks_KcpTun(t *testing.T) {
 	if runtime.GOOS == "windows" && strings.HasPrefix(runtime.Version(), "go1.20") {
 		t.Skip("skip kcptun test on windows go1.20")

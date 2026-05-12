@@ -7,14 +7,20 @@ import (
 )
 
 type ShadowsocksServer struct {
-	Enable    bool
-	Listen    string
-	Password  string
-	Cipher    string
-	Udp       bool
-	MuxOption sing.MuxOption `yaml:"mux-option" json:"mux-option,omitempty"`
-	ShadowTLS ShadowTLS      `yaml:"shadow-tls" json:"shadow-tls,omitempty"`
-	KcpTun    KcpTun         `yaml:"kcp-tun" json:"kcp-tun,omitempty"`
+	Enable     bool
+	Listen     string
+	Password   string
+	Cipher     string
+	Udp        bool
+	MuxOption  sing.MuxOption `yaml:"mux-option" json:"mux-option,omitempty"`
+	ShadowTLS  ShadowTLS      `yaml:"shadow-tls" json:"shadow-tls,omitempty"`
+	KcpTun     KcpTun         `yaml:"kcp-tun" json:"kcp-tun,omitempty"`
+	SimpleObfs SimpleObfs     `yaml:"simple-obfs" json:"simple-obfs,omitempty"`
+}
+
+type SimpleObfs struct {
+	Enable bool
+	Mode   string
 }
 
 func (t ShadowsocksServer) String() string {

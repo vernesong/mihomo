@@ -28,11 +28,29 @@ type Hysteria2Server struct {
 	UdpMTU                int               `yaml:"udp-mtu" json:"udp-mtu,omitempty"`
 	MuxOption             sing.MuxOption    `yaml:"mux-option" json:"mux-option,omitempty"`
 
+	RealmOpts Hysteria2RealmOption `yaml:"realm-opts" json:"realm-opts,omitempty"`
+
 	// quic-go special config
 	InitialStreamReceiveWindow     uint64 `yaml:"initial-stream-receive-window" json:"initial-stream-receive-window,omitempty"`
 	MaxStreamReceiveWindow         uint64 `yaml:"max-stream-receive-window" json:"max-stream-receive-window,omitempty"`
 	InitialConnectionReceiveWindow uint64 `yaml:"initial-connection-receive-window" json:"initial-connection-receive-window,omitempty"`
 	MaxConnectionReceiveWindow     uint64 `yaml:"max-connection-receive-window" json:"max-connection-receive-window,omitempty"`
+}
+
+type Hysteria2RealmOption struct {
+	Enable      bool     `yaml:"enable" json:"enable,omitempty"`
+	ServerURL   string   `yaml:"server-url" json:"server-url,omitempty"`
+	Token       string   `yaml:"token" json:"token,omitempty"`
+	RealmID     string   `yaml:"realm-id" json:"realm-id,omitempty"`
+	STUNServers []string `yaml:"stun-servers" json:"stun-servers,omitempty"`
+
+	// for ServerURL
+	SNI            string   `yaml:"sni" json:"sni,omitempty"`
+	SkipCertVerify bool     `yaml:"skip-cert-verify" json:"skip-cert-verify,omitempty"`
+	Fingerprint    string   `yaml:"fingerprint" json:"fingerprint,omitempty"`
+	Certificate    string   `yaml:"certificate" json:"certificate,omitempty"`
+	PrivateKey     string   `yaml:"private-key" json:"private-key,omitempty"`
+	ALPN           []string `yaml:"alpn" json:"alpn,omitempty"`
 }
 
 func (h Hysteria2Server) String() string {

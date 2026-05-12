@@ -70,7 +70,7 @@ func (ho *HTTPObfs) Write(b []byte) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		req.Header.Set("User-Agent", fmt.Sprintf("curl/7.%d.%d", randv2.Int()%54, randv2.Int()%2))
+		req.Header.Set("User-Agent", fmt.Sprintf("curl/7.%d.%d", randv2.IntN(54), randv2.IntN(2)))
 		req.Header.Set("Upgrade", "websocket")
 		req.Header.Set("Connection", "Upgrade")
 		req.Host = ho.host
@@ -83,7 +83,6 @@ func (ho *HTTPObfs) Write(b []byte) (int, error) {
 		ho.firstRequest = false
 		return len(b), err
 	}
-
 	return ho.Conn.Write(b)
 }
 

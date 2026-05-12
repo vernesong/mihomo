@@ -30,7 +30,7 @@ require (
 	github.com/metacubex/restls-client-go v0.1.7
 	github.com/metacubex/sing v0.5.7
 	github.com/metacubex/sing-mux v0.3.9
-	github.com/metacubex/sing-quic v0.0.0-20260414034501-3ea3410d197a
+	github.com/metacubex/sing-quic v0.0.0-20260512151354-8475655be853
 	github.com/metacubex/sing-shadowsocks v0.2.12
 	github.com/metacubex/sing-shadowsocks2 v0.2.7
 	github.com/metacubex/sing-shadowtls v0.0.0-20250503063515-5d9f966d17a2

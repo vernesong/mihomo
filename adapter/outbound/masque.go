@@ -163,7 +163,11 @@ func NewMasque(option MasqueOption) (*Masque, error) {
 
 	if option.Network == "h2" {
 		tlsConfig.NextProtos = []string{"h2"}
-		// use h2c mode to disallow the net/http fallback to http1.1 when server returns a not h2 ALPN
+		// use h2c mode to disallow the net/http fallback to http1.1 when the server returns a not h2 ALPN
+		//
+		// Note that this usage is only applicable to our own net/http fork.
+		// The standard library also needs to mask the tls.Conn type for the conn returned by DialTLSContext
+		// see: https://github.com/golang/go/issues/79293#issuecomment-4426393534
 		protocols := new(http.Protocols)
 		protocols.SetUnencryptedHTTP2(true)
 		outbound.h2Transport = &http.Transport{

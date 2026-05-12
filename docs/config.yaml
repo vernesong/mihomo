@@ -1014,6 +1014,18 @@ proxies: # socks5
     # private-key: ./client.key # 证书对应的私钥 PEM 格式，或者私钥路径
     # alpn:
     #   - h3
+    # realm-opts:
+    #   enable: true # 必须手动开启
+    #   server-url: https://realm.hy2.io
+    #   token: public
+    #   realm-id: my-cabin-1f3a8c2e9b
+    #   stun-servers:
+    #     - stun.nextcloud.com:3478
+    #     - stun.sip.us:3478
+    #     - global.stun.twilio.com:3478
+    #   # 下面支持填写针对server-url的TLS配置(sni, skip-cert-verify, fingerprint, certificate, private-key, alpn)
+    #   # skip-cert-verify： false
+    #   # ......
     ###quic-go特殊配置项，不要随意修改除非你知道你在干什么###
     # initial-stream-receive-window： 8388608
     # max-stream-receive-window： 8388608
@@ -1559,6 +1571,9 @@ listeners:
     # proxy: proxy # 如果不为空则直接将该入站流量交由指定 proxy 处理 (当 proxy 不为空时，这里的 proxy 名称必须合法，否则会出错)
     password: vlmpIPSyHH6f4S8WVPdRIHIlzmB+GIRfoH3aNJ/t9Gg=
     cipher: 2022-blake3-aes-256-gcm
+    # simple-obfs:
+    #   enable: false # 设置为true时开启
+    #   mode: http # Available: http, tls
     # shadow-tls:
     #   enable: false # 设置为true时开启
     #   version: 3 # 支持v1/v2/v3
@@ -1900,6 +1915,18 @@ listeners:
     #  masquerade: file:///var/www # 作为文件服务器
     #  masquerade: http://127.0.0.1:8080	#作为反向代理
     #  masquerade: https://127.0.0.1:8080	#作为反向代理
+    #  realm-opts:
+    #    enable: true # 必须手动开启
+    #    server-url: https://realm.hy2.io
+    #    token: public
+    #    realm-id: my-cabin-1f3a8c2e9b
+    #    stun-servers:
+    #      - stun.nextcloud.com:3478
+    #      - stun.sip.us:3478
+    #      - global.stun.twilio.com:3478
+    #    # 下面支持填写针对server-url的TLS配置(sni, skip-cert-verify, fingerprint, certificate, private-key, alpn)
+    #    # skip-cert-verify： false
+    #    # ......
 
   - name: trusttunnel-in-1
     type: trusttunnel

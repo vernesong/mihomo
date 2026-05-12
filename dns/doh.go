@@ -191,6 +191,10 @@ func (doh *dnsOverHTTPS) ResetConnection() {
 func (doh *dnsOverHTTPS) closeClient(client *http.Client) (err error) {
 	client.CloseIdleConnections()
 
+	if tr, ok := client.Transport.(*http.Transport); ok { // HTTP/2 may leak due to keep-alive connections.
+		tr.CloseHttp2Connections()
+	}
+
 	if isHTTP3(client) { // HTTP/3 may leak due to keep-alive connections.
 		return client.Transport.(io.Closer).Close()
 	}
