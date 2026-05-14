@@ -1607,23 +1607,28 @@ func (s *Smart) checkNodeQualityDegradation(
 
 	// 异常状态码检测
 	if downloadTotal < 0.03 && metadata.Host != "" && metadata.DstPort == 443 && !isUDP {
-		TargetFailureCount, TargetLastUsed := s.store.GetHostStatus(s.Name(), s.configName, wildcardTarget)
-		if now - TargetLastUsed > 300 || TargetFailureCount > 0 {
-			ctx, cancel := context.WithTimeout(context.Background(), C.DefaultTCPTimeout)
-			defer cancel()
-			url := "https://" + metadata.Host + "/?z=" + strconv.FormatInt(rand.Int63(), 10)
-			status, ok, err := proxy.StatusTest(ctx, url)
-			if err == nil {
-				s.store.UpdateHostStatus(s.Name(), s.configName, wildcardTarget, !ok)
-				if !ok {
-					if TargetFailureCount >= s.maxFailedTimes {
-						return newWeight, false
+		TargetFailureCount, TargetLastCheck := s.store.GetHostStatus(s.Name(), s.configName, wildcardTarget)
+		var failure bool
+		var checked bool
+		if now - TargetLastCheck > 300 || TargetFailureCount > 0 {
+			if TargetFailureCount <= s.maxFailedTimes {
+				checked = true
+				ctx, cancel := context.WithTimeout(context.Background(), C.DefaultTCPTimeout)
+				defer cancel()
+				url := "https://" + metadata.Host + "/?z=" + strconv.FormatInt(rand.Int63(), 10)
+				status, ok, err := proxy.StatusTest(ctx, url)
+				if err == nil {
+					failure = !ok
+					if failure {
+						log.Debugln("[Smart] Connection Group: [%s] - Node: [%s] - Network: [%s] - Address: [%s] detected abnormal response [%d], degraded form [%.4f] to [%.4f] ...",
+							s.Name(), proxyName, networkType, addressDisplay, status, oldWeight, degradedWeight)
 					}
-					log.Debugln("[Smart] Connection Group: [%s] - Node: [%s] - Network: [%s] - Address: [%s] detected abnormal response [%d], degraded form [%.4f] to [%.4f] ...",
-						s.Name(), proxyName, networkType, addressDisplay, status, oldWeight, degradedWeight)
-					return degradedWeight, true
 				}
 			}
+		}
+		s.store.UpdateHostStatus(s.Name(), s.configName, wildcardTarget, failure, checked)
+		if failure {
+			return degradedWeight, true
 		}
 	}
 

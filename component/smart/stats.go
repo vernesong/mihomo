@@ -65,7 +65,7 @@ type AtomicStatsRecord struct {
 type HostStatus struct {
 	FailureCount int    `json:"failure_count"`
 	LastFailure  int64  `json:"last_failure"`
-	LastUsed     int64  `json:"last_used"`
+	LastCheck    int64  `json:"last_check"`
 }
 
 type ActiveTarget struct {
@@ -1138,7 +1138,7 @@ func (s *Store) GetHostStatus(group, config, host string) (int, int64) {
 
 	if stats, ok := hostStatusCache.Get(pathPrefix); ok {
 		hostStatusCache.Set(pathPrefix, stats)
-		return stats.FailureCount, stats.LastUsed
+		return stats.FailureCount, stats.LastCheck
 	}
 
 	rawResult, err := s.GetSubBytesByPath(pathPrefix)
@@ -1152,13 +1152,17 @@ func (s *Store) GetHostStatus(group, config, host string) (int, int64) {
 			continue
 		}
 		hostStatusCache.Set(pathPrefix, stats)
-		return stats.FailureCount, stats.LastUsed
+		return stats.FailureCount, stats.LastCheck
 	}
 
 	return 0, 0
 }
 
-func (s *Store) UpdateHostStatus(group, config, host string, failure bool) {
+func (s *Store) UpdateHostStatus(group, config, host string, failure bool, checked bool) {
+	if !checked {
+		return
+	}
+
 	pathPrefix := FormatDBKey(KeyTypeHostFailures, config, group, host)
 
 	var stats HostStatus
@@ -1167,20 +1171,16 @@ func (s *Store) UpdateHostStatus(group, config, host string, failure bool) {
 		stats = cached
 	} else {
 		rawResult, err := s.GetSubBytesByPath(pathPrefix)
-		if err != nil {
-			return
-		}
-		for _, data := range rawResult {
-			if err := json.Unmarshal(data, &stats); err == nil {
-				hostStatusCache.Set(pathPrefix, stats)
-				break
+		if err == nil {
+			for _, data := range rawResult {
+				if err := json.Unmarshal(data, &stats); err == nil {
+					break
+				}
 			}
 		}
 	}
 
-	if !failure && stats.FailureCount <= 0 {
-		return
-	}
+	stats.LastCheck = time.Now().Unix()
 
 	if failure {
 		stats.FailureCount++
@@ -1190,8 +1190,6 @@ func (s *Store) UpdateHostStatus(group, config, host string, failure bool) {
 			stats.FailureCount--
 		}
 	}
-
-    stats.LastUsed = time.Now().Unix()
 
 	hostStatusCache.Set(pathPrefix, stats)
 
