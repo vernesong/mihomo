@@ -354,8 +354,6 @@ func (s *Smart) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 
 	proxies = s.selectProxies(metadata, proxies)
 
-	s.store.StoreUnwrapResult(s.Name(), s.configName, metadata.SmartTarget, s.getASNCode(metadata), metadata.NetWork == C.UDP, proxies)
-
 	return proxies[0]
 }
 
@@ -654,6 +652,7 @@ func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy) []C.Proxy
 
 	resultNames, resultWeights := trySelector(metadata.NetWork == C.UDP)
 	result := s.filterProxies(metadata, resultNames, resultWeights, proxies, maxSelected, metadata.NetWork == C.UDP)
+	s.store.StoreUnwrapResult(s.Name(), s.configName, metadata.SmartTarget, asnNumber, metadata.NetWork == C.UDP, result)
 
 	return result
 }
