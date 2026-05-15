@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/netip"
 	"path/filepath"
@@ -69,8 +68,6 @@ var (
 	ruleUpdateCallback = utils.NewCallback[P.RuleProvider]()
 
 	countryCodeRegex = regexp.MustCompile(`(?i)^[A-Z]{2}$`)
-
-	runningCallback    = utils.NewCallback[struct{}]()
 )
 
 type tunnel struct{}
@@ -140,13 +137,6 @@ func OnInnerLoading() {
 
 func OnRunning() {
 	status.Store(Running)
-	runningCallback.Emit(struct{}{})
-}
-
-func RegisterOnRunning(callback func()) io.Closer {
-	return runningCallback.Register(func(struct{}) {
-		callback()
-	})
 }
 
 func Status() TunnelStatus {
