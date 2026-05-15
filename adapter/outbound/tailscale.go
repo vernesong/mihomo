@@ -72,8 +72,13 @@ func init() {
 				return nil, err
 			}
 			for _, iff := range ifaces {
+				addrs, err := anet.InterfaceAddrsByInterface(&iff)
+				if err != nil {
+					continue
+				}
 				nif = append(nif, netmon.Interface{
 					Interface: &iff,
+					AltAddrs:  addrs,
 				})
 			}
 			return

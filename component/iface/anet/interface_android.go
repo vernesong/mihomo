@@ -97,11 +97,15 @@ func InterfaceByName(name string) (*net.Interface, error) {
 // InterfaceAddrsByInterface returns a list of the system's unicast
 // interface addresses by specific interface.
 func InterfaceAddrsByInterface(ifi *net.Interface) ([]net.Addr, error) {
+	ifat, err := ifi.Addrs()
+	if err == nil {
+		return ifat, nil
+	}
 	if ifi == nil {
 		return nil, &net.OpError{Op: "route", Net: "ip+net", Source: nil, Addr: nil, Err: errInvalidInterface}
 	}
 
-	ifat, err := interfaceAddrTable(ifi)
+	ifat, err = interfaceAddrTable(ifi)
 	if err != nil {
 		err = &net.OpError{Op: "route", Net: "ip+net", Source: nil, Addr: nil, Err: err}
 	}
