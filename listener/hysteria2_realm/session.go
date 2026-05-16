@@ -188,22 +188,26 @@ func (s *server) sendEvent(sess *session, ev sessionEvent) bool {
 func (s *server) reaper(ctx context.Context) {
 	t := time.NewTicker(reaperInterval)
 	defer t.Stop()
-	select {
-	case <-ctx.Done():
-	case <-t.C:
-		s.mu.Lock()
-		now := time.Now()
-		var expired []*session
-		for _, sess := range s.sessions {
-			if now.After(sess.expires) {
-				expired = append(expired, sess)
+	for {
+		select {
+		case <-ctx.Done():
+			break
+		case <-t.C:
+			s.mu.Lock()
+			now := time.Now()
+			var expired []*session
+			for _, sess := range s.sessions {
+				if now.After(sess.expires) {
+					expired = append(expired, sess)
+				}
 			}
-		}
-		s.mu.Unlock()
-		for _, sess := range expired {
-			if s.removeExpiredSession(sess, now) {
-				debugf("session expired realm=%s session=%s", sess.realmID, sess.id)
+			s.mu.Unlock()
+			for _, sess := range expired {
+				if s.removeExpiredSession(sess, now) {
+					debugf("session expired realm=%s session=%s", sess.realmID, sess.id)
+				}
 			}
 		}
 	}
+
 }
