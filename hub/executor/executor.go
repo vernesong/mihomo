@@ -235,10 +235,11 @@ func updateNTP(c *config.NTP) {
 			net.JoinHostPort(c.Server, strconv.Itoa(c.Port)),
 			time.Duration(c.Interval),
 			c.DialerProxy,
+			tunnel.Tunnel,
 			c.WriteToSystem,
 		)
 	} else {
-		ntp.ReCreateNTPService("", 0, "", false)
+		ntp.ReCreateNTPService("", 0, "", nil, false)
 	}
 }
 

@@ -7,14 +7,23 @@ import (
 	"net/netip"
 
 	C "github.com/metacubex/mihomo/constant"
-	"github.com/metacubex/mihomo/tunnel"
 )
+
+type Tunnel interface {
+	C.Tunnel
+	Proxies() map[string]C.Proxy
+}
 
 type byNameProxyDialer struct {
 	proxyName string
+	tunnel    C.Tunnel
 }
 
 func (d byNameProxyDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	tunnel, _ := d.tunnel.(Tunnel)
+	if tunnel == nil {
+		return nil, fmt.Errorf("tunnel is invalid, must be proxydialer.Tunnel, but got: %T", d.tunnel)
+	}
 	proxies := tunnel.Proxies()
 	proxy, ok := proxies[d.proxyName]
 	if !ok {
@@ -24,6 +33,10 @@ func (d byNameProxyDialer) DialContext(ctx context.Context, network, address str
 }
 
 func (d byNameProxyDialer) ListenPacket(ctx context.Context, network, address string, rAddrPort netip.AddrPort) (net.PacketConn, error) {
+	tunnel, _ := d.tunnel.(Tunnel)
+	if tunnel == nil {
+		return nil, fmt.Errorf("tunnel is invalid, must be proxydialer.Tunnel, but got: %T", d.tunnel)
+	}
 	proxies := tunnel.Proxies()
 	proxy, ok := proxies[d.proxyName]
 	if !ok {
@@ -32,6 +45,6 @@ func (d byNameProxyDialer) ListenPacket(ctx context.Context, network, address st
 	return New(proxy, true).ListenPacket(ctx, network, address, rAddrPort)
 }
 
-func NewByName(proxyName string) C.Dialer {
-	return byNameProxyDialer{proxyName: proxyName}
+func NewByName(proxyName string, tunnel C.Tunnel) C.Dialer {
+	return byNameProxyDialer{proxyName: proxyName, tunnel: tunnel}
 }

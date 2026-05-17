@@ -66,6 +66,7 @@ func (o XHTTPConfig) Build() LC.XHTTPConfig {
 		XPaddingKey:          o.XPaddingKey,
 		XPaddingHeader:       o.XPaddingHeader,
 		XPaddingPlacement:    o.XPaddingPlacement,
+		XPaddingMethod:       o.XPaddingMethod,
 		UplinkHTTPMethod:     o.UplinkHTTPMethod,
 		SessionPlacement:     o.SessionPlacement,
 		SessionKey:           o.SessionKey,

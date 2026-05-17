@@ -27,7 +27,7 @@ type Service struct {
 	syncSystemTime bool
 }
 
-func ReCreateNTPService(server string, interval time.Duration, dialerProxy string, syncSystemTime bool) {
+func ReCreateNTPService(server string, interval time.Duration, dialerProxy string, tunnel C.Tunnel, syncSystemTime bool) {
 	globalMu.Lock()
 	defer globalMu.Unlock()
 	if globalSrv != nil {
@@ -39,7 +39,7 @@ func ReCreateNTPService(server string, interval time.Duration, dialerProxy strin
 	ctx, cancel := context.WithCancel(context.Background())
 	var cDialer C.Dialer = dialer.NewDialer()
 	if dialerProxy != "" {
-		cDialer = proxydialer.NewByName(dialerProxy)
+		cDialer = proxydialer.NewByName(dialerProxy, tunnel)
 	}
 	globalSrv = &Service{
 		server:         M.ParseSocksaddr(server),

@@ -126,7 +126,7 @@ func NewTailscale(option TailscaleOption) (*Tailscale, error) {
 		ControlURL:           option.ControlURL,
 		Ephemeral:            option.Ephemeral,
 		SystemDialer:         outbound.dialer.DialContext,
-		SystemPacketListener: tailscalePacketListener{dialer: outbound.dialer},
+		SystemPacketListener: tailscalePacketListener{dialer: outbound.dialer}.ListenPacket,
 		ExtraRootCAs:         ca.GetCertPool(),
 		LookupHook:           tailscaleLookupHook,
 		UserLogf: func(format string, args ...any) {
@@ -313,13 +313,27 @@ func (t *Tailscale) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.
 	if err = t.ensureStarted(ctx); err != nil {
 		return nil, err
 	}
+	netStack, err := t.server.Netstack(ctx)
+	if err != nil {
+		return nil, err
+	}
+	v4, v6 := t.server.TailscaleIPs()
 	options := t.DialOptions()
 	options = append(options, dialer.WithResolver(t.dnsResolver))
 	options = append(options, dialer.WithNetDialer(dialer.NetDialerFunc(func(ctx context.Context, network, address string) (net.Conn, error) {
-		if err = t.checkTailscaleRoute(ctx, network, address); err != nil {
+		dst, err := netip.ParseAddrPort(address) // the dialer will resolve the domain to ip
+		if err != nil {
 			return nil, err
 		}
-		return t.server.Dial(ctx, network, address)
+		src := v4
+		if dst.Addr().Is6() {
+			src = v6
+		}
+		tcpConn, err := netStack.DialContextTCPWithBind(ctx, src, dst)
+		if err != nil {
+			return nil, err
+		}
+		return tcpConn, nil
 	})))
 	var conn net.Conn
 	conn, err = dialer.NewDialer(options...).DialContext(ctx, "tcp", metadata.RemoteAddress())
@@ -361,17 +375,6 @@ func (t *Tailscale) ResolveUDP(ctx context.Context, metadata *C.Metadata) error 
 			return fmt.Errorf("can't resolve ip: %w", err)
 		}
 		metadata.DstIP = ip
-	}
-	return nil
-}
-
-func (t *Tailscale) checkTailscaleRoute(ctx context.Context, network, address string) error {
-	ipp, viaTailscale, err := t.server.DialPlan(ctx, network, address)
-	if err != nil {
-		return err
-	}
-	if !viaTailscale {
-		return fmt.Errorf("destination %s is not routed by Tailscale; configure exit-node or accept an advertised subnet route", ipp)
 	}
 	return nil
 }
