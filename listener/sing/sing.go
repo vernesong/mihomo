@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
-	"github.com/metacubex/mihomo/adapter/outbound"
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
@@ -80,8 +79,8 @@ func NewListenerHandler(lc ListenerConfig) (h *ListenerHandler, err error) {
 		Padding: lc.MuxOption.Padding,
 		Brutal: mux.BrutalOptions{
 			Enabled:    lc.MuxOption.Brutal.Enabled,
-			SendBPS:    outbound.StringToBps(lc.MuxOption.Brutal.Up),
-			ReceiveBPS: outbound.StringToBps(lc.MuxOption.Brutal.Down),
+			SendBPS:    utils.StringToBps(lc.MuxOption.Brutal.Up),
+			ReceiveBPS: utils.StringToBps(lc.MuxOption.Brutal.Down),
 		},
 	})
 	return

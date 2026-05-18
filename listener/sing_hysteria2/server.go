@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
-	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/common/sockopt"
+	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/ech"
 	"github.com/metacubex/mihomo/component/resolver"
@@ -209,8 +209,8 @@ func New(config LC.Hysteria2Server, tunnel C.Tunnel, additions ...inbound.Additi
 	service, err := hysteria2.NewService[string](hysteria2.ServiceOptions{
 		Context:               context.Background(),
 		Logger:                log.SingLogger,
-		SendBPS:               outbound.StringToBps(config.Up),
-		ReceiveBPS:            outbound.StringToBps(config.Down),
+		SendBPS:               utils.StringToBps(config.Up),
+		ReceiveBPS:            utils.StringToBps(config.Down),
 		SalamanderPassword:    salamanderPassword,
 		TLSConfig:             tlsConfig,
 		QUICConfig:            quicConfig,

@@ -39,7 +39,7 @@ require (
 	github.com/metacubex/sing-wireguard v0.0.0-20260507084707-690d479ec947
 	github.com/metacubex/smux v0.0.0-20260105030934-d0c8756d3141
 	github.com/metacubex/ssh v0.1.0
-	github.com/metacubex/tailscale v0.0.0-20260517085217-00f8608d19e5
+	github.com/metacubex/tailscale v0.0.0-20260518175029-9e64d98cba81
 	github.com/metacubex/tfo-go v0.0.0-20251130171125-413e892ac443
 	github.com/metacubex/tls v0.1.5
 	github.com/metacubex/utls v1.8.4
@@ -108,7 +108,7 @@ require (
 	github.com/metacubex/gvisor v0.0.0-20251227095601-261ec1326fe8 // indirect
 	github.com/metacubex/hkdf v0.1.0 // indirect
 	github.com/metacubex/hpke v0.1.0 // indirect
-	github.com/metacubex/jsonv2 v0.0.0-20260513175203-1c6abea7534c // indirect
+	github.com/metacubex/jsonv2 v0.0.0-20260518173308-f4597c22f1df // indirect
 	github.com/metacubex/nftables v0.0.0-20260426003805-208c2c1ba2cb // indirect
 	github.com/metacubex/qpack v0.6.0 // indirect
 	github.com/metacubex/tailscale-wireguard-go v0.0.0-20260513233728-8bc7ee255d04 // indirect

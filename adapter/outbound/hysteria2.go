@@ -196,8 +196,8 @@ func NewHysteria2(option Hysteria2Option) (*Hysteria2, error) {
 	clientOptions := hysteria2.ClientOptions{
 		Context:            context.TODO(),
 		Logger:             log.SingLogger,
-		SendBPS:            StringToBps(option.Up),
-		ReceiveBPS:         StringToBps(option.Down),
+		SendBPS:            utils.StringToBps(option.Up),
+		ReceiveBPS:         utils.StringToBps(option.Down),
 		SalamanderPassword: salamanderPassword,
 		Password:           option.Password,
 		TLSConfig:          tlsClientConfig,
