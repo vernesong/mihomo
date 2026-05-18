@@ -49,6 +49,8 @@ const (
 
 	RecordExpiredTime       = 7 * 24 * time.Hour
 
+	HostFailureNodeTTL      = 24 * time.Hour
+
 	AllowedWeight           = 0.4
 
 	RankMostUsed            = "MostUsed"

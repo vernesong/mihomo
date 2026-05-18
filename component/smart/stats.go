@@ -39,11 +39,8 @@ type StatsRecord struct {
 
 type NodeState struct {
 	Name               string         `json:"name"`
-	FailureCount       int            `json:"failure_count"`
-	LastFailure        int64          `json:"last_failure"`
+	LastChecked        int64          `json:"last_checked"`
 	BlockedUntil       int64          `json:"blocked_until"`
-	Degraded           bool           `json:"degraded"`
-	DegradedFactor     float64        `json:"degraded_factor"`
 }
 
 type AtomicStatsRecord struct {
@@ -63,9 +60,16 @@ type AtomicStatsRecord struct {
 }
 
 type HostStatus struct {
-	FailureCount int    `json:"failure_count"`
-	LastFailure  int64  `json:"last_failure"`
-	LastCheck    int64  `json:"last_check"`
+	LastFailure  int64                      `json:"last_failure"`
+	LastCheck    int64                      `json:"last_check"`
+	Nodes        map[string]int64           `json:"nodes"`
+	NodeFailures map[string]NodeFailureInfo `json:"node_failures"`
+	Blocked      bool                       `json:"blocked"`
+}
+
+type NodeFailureInfo struct {
+	Count int   `json:"count"`
+	Last  int64 `json:"last"`
 }
 
 type ActiveTarget struct {
@@ -299,12 +303,12 @@ func (r *AtomicStatsRecord) SetWeight(weightType string, value float64, isUDP bo
 	r.weights.Set(weightType, value)
 	if weightType != WeightTypeTCP && weightType != WeightTypeUDP {
 		if isUDP {
-			minUDP := r.minASNWeight(WeightTypeUDP)
+			minUDP := r.avgASNWeight(WeightTypeUDP)
 			if minUDP > 0 {
 				r.weights.Set(WeightTypeUDP, minUDP)
 			}
 		} else {
-			minTCP := r.minASNWeight(WeightTypeTCP)
+			minTCP := r.avgASNWeight(WeightTypeTCP)
 			if minTCP > 0 {
 				r.weights.Set(WeightTypeTCP, minTCP)
 			}
@@ -312,18 +316,21 @@ func (r *AtomicStatsRecord) SetWeight(weightType string, value float64, isUDP bo
 	}
 }
 
-func (r *AtomicStatsRecord) minASNWeight(prefix string) float64 {
-	min := 0.0
+func (r *AtomicStatsRecord) avgASNWeight(prefix string) float64 {
 	weights := r.weights.FilterByKeyPrefix(prefix)
+	var sum float64
+	var count int
 	for k, v := range weights {
 		if k == prefix {
 			continue
 		}
-		if min == 0.0 || v < min {
-			min = v
-		}
+		sum += v
+		count++
 	}
-	return min
+	if count == 0 {
+		return 0.0
+	}
+	return sum / float64(count)
 }
 
 // 获取节点权重排名缓存
@@ -345,7 +352,7 @@ func (s *Store) GetNodeWeightRankingCache(group, config string) (NodeRank, error
 }
 
 // 获取节点权重排名
-func (s *Store) GetNodeWeightRanking(group, config, testUrl string, proxies []C.Proxy, stableNodes map[string]bool) (NodeRank, error) {
+func (s *Store) GetNodeWeightRanking(group, config, testUrl string, proxies []C.Proxy) (NodeRank, error) {
 	var resultItems []NodeRankItem
 	if len(proxies) == 0 {
 		return NodeRank{}, fmt.Errorf("no proxies provided")
@@ -353,8 +360,9 @@ func (s *Store) GetNodeWeightRanking(group, config, testUrl string, proxies []C.
 
 	allNodes := make(map[string]bool, len(proxies))
 	aliveNodes := make(map[string]bool, len(proxies))
+	blockedNodes := s.GetBlockedNodes(group, config)
 	for _, p := range proxies {
-		if p.AliveForTestUrl(testUrl) && (len(stableNodes) == 0 || stableNodes[p.Name()]) {
+		if p.AliveForTestUrl(testUrl) && !blockedNodes[p.Name()] {
 			aliveNodes[p.Name()] = true
 		}
 		allNodes[p.Name()] = true
@@ -530,14 +538,15 @@ func (s *Store) GetBestProxyForTarget(group, config, target, asnNumber string, i
 			}
 		}
 
-		// 最高或者最低权重
 		for nodeName, weights := range nodeWeights {
-			sort.Float64s(weights)
-			if weights[0] < AllowedWeight {
-				nodesWithWeight[nodeName] = weights[0]
-			} else {
-				nodesWithWeight[nodeName] = weights[len(weights)-1]
+			if len(weights) == 0 {
+				continue
 			}
+			var sum float64
+			for _, w := range weights {
+				sum += w
+			}
+			nodesWithWeight[nodeName] = sum / float64(len(weights))
 		}
 	} else {
 		var mapStats map[string][]byte
@@ -560,7 +569,7 @@ func (s *Store) GetBestProxyForTarget(group, config, target, asnNumber string, i
 			}
 			if weight > 0 {
 				timeDecay := getTimeDecay(record.LastUsed)
-				// already minest than ASN weight
+				// weight maybe is all target ASNs average weight because of avgASNWeight()
 				decayedWeight := weight * timeDecay
 				nodesWithWeight[nodeName] = decayedWeight
 			}
@@ -946,16 +955,16 @@ func (s *Store) RunPrefetch(group, config string, proxyMap map[string]bool) int 
 }
 
 // GetBlockedNodes 获取被屏蔽节点
-func (s *Store) GetBlockedNodes(group, config string) (map[string]bool, error) {
+func (s *Store) GetBlockedNodes(group, config string) (map[string]bool) {
 	cacheKey := FormatDBKey(config, group)
 	blockedNodes := make(map[string]bool)
 	if blockedNodes, ok := blockedNodesCache.Get(cacheKey); ok {
-		return blockedNodes, nil
+		return blockedNodes
 	}
 
 	stateData, err := s.GetNodeStates(group, config)
 	if err != nil {
-		return nil, err
+		return nil
 	}
 
 	for nodeName, data := range stateData {
@@ -968,7 +977,7 @@ func (s *Store) GetBlockedNodes(group, config string) (map[string]bool, error) {
 	}
 
 	blockedNodesCache.Set(cacheKey, blockedNodes)
-	return blockedNodes, nil
+	return blockedNodes
 }
 
 // GetNodeStates 获取节点状态
@@ -1133,39 +1142,59 @@ func (s *Store) GetAllNodesForGroup(group, config string) ([]string, error) {
 }
 
 // 域名失败屏蔽
-func (s *Store) GetHostStatus(group, config, host string) (int, int64) {
+func (s *Store) GetHostStatus(group, config, host string, maxFailedTimes int) (map[string]bool, int64, int64, bool) {
 	pathPrefix := FormatDBKey(KeyTypeHostFailures, config, group, host)
 
-	if stats, ok := hostStatusCache.Get(pathPrefix); ok {
-		hostStatusCache.Set(pathPrefix, stats)
-		return stats.FailureCount, stats.LastCheck
-	}
+	now := time.Now().Unix()
+	cleaned := make(map[string]int64)
+	resultNodes := make(map[string]bool)
+	var failureNodesCount int
+	var stats HostStatus
 
-	rawResult, err := s.GetSubBytesByPath(pathPrefix)
-	if err != nil {
-		return 0, 0
-	}
-
-	for _, data := range rawResult {
-		var stats HostStatus
-		if err := json.Unmarshal(data, &stats); err != nil {
-			continue
+	if cached, ok := hostStatusCache.Get(pathPrefix); ok {
+		stats = cached
+	} else {
+		rawResult, err := s.GetSubBytesByPath(pathPrefix)
+		if err == nil {
+			for _, data := range rawResult {
+				if err := json.Unmarshal(data, &stats); err != nil {
+					continue
+				}
+			}
 		}
-		hostStatusCache.Set(pathPrefix, stats)
-		return stats.FailureCount, stats.LastCheck
 	}
 
-	return 0, 0
+	for n, ts := range stats.Nodes {
+		if ts == 0 || ts == 1 || ts == 2 || ts > now {
+			cleaned[n] = ts
+			resultNodes[n] = true
+		}
+		if ts != 1 {
+			failureNodesCount++
+		}
+	}
+
+	stats.Nodes = cleaned
+	if failureNodesCount <= maxFailedTimes && stats.Blocked {
+		stats.Blocked = false
+	}
+
+	hostStatusCache.Set(pathPrefix, stats)
+
+	return resultNodes, stats.LastCheck, stats.LastFailure, stats.Blocked
 }
 
-func (s *Store) UpdateHostStatus(group, config, host string, failure bool, checked bool) {
+func (s *Store) UpdateHostStatus(group, config, host, name string, maxFailedTimes int, failure, checked bool, statusCode int) bool {
 	if !checked {
-		return
+		return false
 	}
 
 	pathPrefix := FormatDBKey(KeyTypeHostFailures, config, group, host)
 
 	var stats HostStatus
+	var failureNodesCount int
+	var failedBlock bool
+	now := time.Now().Unix()
 
 	if cached, ok := hostStatusCache.Get(pathPrefix); ok {
 		stats = cached
@@ -1180,22 +1209,73 @@ func (s *Store) UpdateHostStatus(group, config, host string, failure bool, check
 		}
 	}
 
-	stats.LastCheck = time.Now().Unix()
 
-	if failure {
-		stats.FailureCount++
-		stats.LastFailure = time.Now().Unix()
+	if failure || statusCode == 3 {
+		if stats.NodeFailures == nil {
+			stats.NodeFailures = make(map[string]NodeFailureInfo)
+		}
+
+		if len(stats.Nodes) <= maxFailedTimes {
+			if stats.Nodes == nil {
+				stats.Nodes = make(map[string]int64)
+			}
+			switch statusCode {
+			case 1, 2:
+				stats.Nodes[name] = int64(statusCode)
+			case 3:
+				info := stats.NodeFailures[name]
+				if info.Last == 0 || now - info.Last > 300 {
+					info.Count = 1
+				} else {
+					info.Count = info.Count + 1
+				}
+				info.Last = now
+				stats.NodeFailures[name] = info
+				if info.Count > maxFailedTimes {
+					stats.Nodes[name] = time.Now().Add(HostFailureNodeTTL).Unix()
+					delete(stats.NodeFailures, name)
+					failedBlock = true
+				}
+			default:
+				stats.Nodes[name] = time.Now().Add(HostFailureNodeTTL).Unix()
+			}
+		}
+
+		stats.LastFailure = now
 	} else {
-		if stats.FailureCount > 0 {
-			stats.FailureCount--
+		if stats.Nodes != nil && stats.Nodes[name] != 1 {
+			delete(stats.Nodes, name)
+		}
+		if stats.NodeFailures != nil {
+			delete(stats.NodeFailures, name)
 		}
 	}
+
+	for n, ts := range stats.Nodes {
+		if ts != 1 && ts != 2 && ts <= now {
+			delete(stats.Nodes, n)
+		}
+		if ts != 1 {
+			failureNodesCount++
+		}
+	}
+
+	if failureNodesCount > maxFailedTimes {
+		stats.Blocked = true
+		failedBlock = false
+	}
+    
+	if failureNodesCount <= maxFailedTimes && stats.Blocked {
+		stats.Blocked = false
+	}
+
+	stats.LastCheck = now
 
 	hostStatusCache.Set(pathPrefix, stats)
 
 	data, err := json.Marshal(stats)
 	if err != nil {
-		return
+		return failedBlock
 	}
 
 	s.AppendToGlobalQueue(StoreOperation{
@@ -1205,6 +1285,39 @@ func (s *Store) UpdateHostStatus(group, config, host string, failure bool, check
 		Target: host,
 		Data:   data,
 	})
+
+	return failedBlock
+}
+
+func (s *Store) CheckHostStatus(group, config string) (map[string][]string, error) {
+	pathPrefix := FormatDBKey(KeyTypeHostFailures, config, group)
+	dataMap, err := s.GetSubBytesByPath(pathPrefix)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string][]string)
+
+	for key, data := range dataMap {
+		var hs HostStatus
+		if err := json.Unmarshal(data, &hs); err != nil {
+			continue
+		}
+
+		parts := strings.Split(key, "/")
+		if len(parts) == 0 {
+			continue
+		}
+		host := parts[len(parts)-1]
+
+		for nodeName, ts := range hs.Nodes {
+			if ts == 2 {
+				result[host] = append(result[host], nodeName)
+			}
+		}
+	}
+
+	return result, nil
 }
 
 // 移除节点数据
@@ -1367,7 +1480,7 @@ func (s *Store) RemoveNodesData(group, config string, nodes []string) error {
 }
 
 // 清理旧的记录
-func (s *Store) CleanupOldRecords(group, config string) error {
+func (s *Store) CleanupOldRecords(group, config string) {
 	keyTypes := []string{KeyTypeStats, KeyTypePrefetch, KeyTypeHostFailures}
 
 	globalCacheParams.mutex.RLock()
@@ -1423,7 +1536,7 @@ func (s *Store) CleanupOldRecords(group, config string) error {
 					continue
 				}
 				lastTime = stats.LastFailure
-				value = float64(stats.FailureCount)
+				value = float64(len(stats.Nodes))
 			default:
 				continue
 			}
@@ -1490,5 +1603,5 @@ func (s *Store) CleanupOldRecords(group, config string) error {
 		}
 	}
 
-	return nil
+	return
 }

@@ -219,6 +219,10 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 
 // 从数据库获取单个条目
 func (s *Store) DBViewGetItem(key string) ([]byte, error) {
+	if db == nil {
+		return nil, errors.New("DB Cache file load failed")
+	}
+
 	var data []byte
 	err := db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(bucketSmartStats)
@@ -240,6 +244,10 @@ func (s *Store) DBViewGetItem(key string) ([]byte, error) {
 
 // 将单个条目保存到数据库
 func (s *Store) DBBatchPutItem(key string, value []byte) error {
+	if db == nil {
+		return errors.New("DB Cache file load failed")
+	}
+
 	return db.Batch(func(tx *bbolt.Tx) error {
 		bucket, err := tx.CreateBucketIfNotExists(bucketSmartStats)
 		if err != nil {
@@ -251,6 +259,10 @@ func (s *Store) DBBatchPutItem(key string, value []byte) error {
 
 // 扫描前缀匹配的记录并随机返回结果
 func (s *Store) DBViewPrefixScan(prefix string, maxResults int, strict bool) (map[string][]byte, error) {
+	if db == nil {
+		return nil, errors.New("DB Cache file load failed")
+	}
+	
 	result := make(map[string][]byte)
 
 	if maxResults == 0 {
@@ -307,6 +319,10 @@ func (s *Store) DBViewPrefixScan(prefix string, maxResults int, strict bool) (ma
 
 // 删除前缀匹配的所有记录
 func (s *Store) DBBatchDeletePrefix(prefix string, strict bool) error {
+	if db == nil {
+		return errors.New("DB Cache file load failed")
+	}
+
 	var keysToDelete [][]byte
 
 	err := db.View(func(tx *bbolt.Tx) error {

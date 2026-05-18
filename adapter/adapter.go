@@ -398,12 +398,13 @@ func (p *Proxy) StatusTest(ctx context.Context, rawURL string) (status uint16, o
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
 
 	banStatus := map[int]bool{
-		http.StatusForbidden:        true, // 403
-		http.StatusMethodNotAllowed: true, // 405
-		http.StatusNotImplemented:   true, // 501
-		503:                         true, // 503
-		520:                         true, // Cloudflare 520
-		599:                         true, // timeout
+		http.StatusForbidden:          true, // 403
+		http.StatusMethodNotAllowed:   true, // 405
+		http.StatusMisdirectedRequest: true, // 421
+		http.StatusNotImplemented:     true, // 501
+		http.StatusServiceUnavailable: true, // 503
+		520:                           true, // Cloudflare 520
+		599:                           true, // timeout
 	}
 
 	resp, err := client.Do(req)

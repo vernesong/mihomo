@@ -14,20 +14,24 @@ var (
 )
 
 func GetSmartStore() *smart.Store {
-	cache := Cache()
-	if cache == nil || cache.DB == nil {
-		log.Fatalln("[Smart] DB Cache file load failed")
-	}
-
 	smartInitOnce.Do(func() {
-		err := cache.DB.Update(func(tx *bbolt.Tx) error {
+		c := Cache()
+		if c == nil || c.DB == nil {
+			smartStore = smart.NewStore(nil)
+			return
+		}
+
+		err := c.DB.Update(func(tx *bbolt.Tx) error {
 			_, err := tx.CreateBucketIfNotExists(bucketSmartStats)
 			return err
 		})
+
 		if err != nil {
-			log.Fatalln("[SmartStore] Failed to create bucket: %v", err)
+			log.Warnln("[CacheFile] write cache to %s failed: %s", c.DB.Path(), err.Error())
+			smartStore = smart.NewStore(nil)
+			return
 		}
-		smartStore = smart.NewStore(cache.DB)
+		smartStore = smart.NewStore(c.DB)
 	})
 
 	return smartStore

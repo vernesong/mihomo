@@ -70,7 +70,7 @@ func InitCache() {
 
 	unwrapCache = lru.New[string, UnwrapMap](
 		lru.WithSize[string, UnwrapMap](globalCacheParams.MaxTargets / 4),
-		lru.WithAge[string, UnwrapMap](300),
+		lru.WithAge[string, UnwrapMap](600),
 	)
 
 	recordCache = lru.New[string, *AtomicStatsRecord](
@@ -248,7 +248,7 @@ func (s *Store) StoreUnwrapResult(group, config string, target string, asnNumber
 				}
 			}
 		} else {
-			um := UnwrapMap{}
+			var um UnwrapMap
 			if isUDP {
 				um.UDP = names
 			} else {
@@ -271,7 +271,7 @@ func (s *Store) StoreUnwrapResult(group, config string, target string, asnNumber
 				}
 			}
 		} else {
-			um := UnwrapMap{}
+			var um UnwrapMap
 			if isUDP {
 				um.RefUDP = asnKey
 			} else {
@@ -289,7 +289,7 @@ func (s *Store) StoreUnwrapResult(group, config string, target string, asnNumber
 			}
 			unwrapCache.Set(targetKey, um)
 		} else {
-			um := UnwrapMap{}
+			var um UnwrapMap
 			if isUDP {
 				um.UDP = names
 			} else {
@@ -389,9 +389,23 @@ func (s *Store) DeleteUnwrapResult(group, config string, target string, asnNumbe
 	}
 }
 
-func ClearBlockedNodesCache(group, config string) {
-	cachePrefix := FormatDBKey(config, group)
-	blockedNodesCache.RemoveByKeyPrefix(cachePrefix)
+func (s *Store) UpdateBlockedNodesCache(group, config string, updates map[string]*NodeState) {
+	cacheKey := FormatDBKey(config, group)
+	blocked := s.GetBlockedNodes(group, config)
+	now := time.Now().Unix()
+
+	for node, state := range updates {
+		if state == nil {
+			continue
+		}
+		if state.BlockedUntil > 0 && state.BlockedUntil > now {
+			blocked[node] = true
+		} else {
+			delete(blocked, node)
+		}
+	}
+
+	blockedNodesCache.Set(cacheKey, blocked)
 }
 
 // 调整缓存参数
@@ -429,7 +443,7 @@ func (s *Store) AdjustCacheParameters() {
 		globalCacheParams.BatchSaveThreshold)
 
 	targetCache = lru.ResetLRU(targetCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, string](300))
-	unwrapCache = lru.ResetLRU(unwrapCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, UnwrapMap](300))
+	unwrapCache = lru.ResetLRU(unwrapCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, UnwrapMap](600))
 	recordCache = lru.ResetLRU(recordCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, *AtomicStatsRecord](300))
 	dbResultCache = lru.ResetLRU(dbResultCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, map[string][]byte](300))
 	blockedNodesCache = lru.ResetLRU(blockedNodesCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, map[string]bool](300))
