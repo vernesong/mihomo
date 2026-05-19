@@ -1603,7 +1603,7 @@ func (s *Smart) checkHostStatus() {
 			status, okRes, err := s.StatusTest(p, host)
 			if err == nil && okRes {
 				s.store.UpdateHostStatus(s.Name(), s.configName, host, nodeName, s.maxFailedTimes, false, true, 0)
-				log.Debugln("[Smart] Recover node for host: node: [%s] - host: [%s] - status: [%d]", nodeName, host, status)
+				log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] - Status: [%d]", s.Name(), nodeName, host, status)
 			}
 		}
 	}

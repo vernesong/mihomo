@@ -22,7 +22,7 @@ var (
 
 	blockedNodesCache *lru.LruCache[string, map[string]bool]
 
-	hostStatusCache *lru.LruCache[string, HostStatus]
+	hostStatusCache *lru.LruCache[string, *HostStatus]
 )
 
 type (
@@ -88,9 +88,9 @@ func InitCache() {
 		lru.WithAge[string, map[string]bool](300),
 	)
 
-	hostStatusCache = lru.New[string, HostStatus](
-		lru.WithSize[string, HostStatus](globalCacheParams.MaxTargets / 4),
-		lru.WithAge[string, HostStatus](300),
+	hostStatusCache = lru.New[string, *HostStatus](
+		lru.WithSize[string, *HostStatus](globalCacheParams.MaxTargets / 4),
+		lru.WithAge[string, *HostStatus](300),
 	)
 }
 
@@ -447,7 +447,7 @@ func (s *Store) AdjustCacheParameters() {
 	recordCache = lru.ResetLRU(recordCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, *AtomicStatsRecord](300))
 	dbResultCache = lru.ResetLRU(dbResultCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, map[string][]byte](300))
 	blockedNodesCache = lru.ResetLRU(blockedNodesCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, map[string]bool](300))
-	hostStatusCache = lru.ResetLRU(hostStatusCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, HostStatus](300))
+	hostStatusCache = lru.ResetLRU(hostStatusCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, *HostStatus](300))
 	go s.FlushQueue(true)
 }
 

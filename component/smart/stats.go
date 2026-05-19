@@ -60,11 +60,11 @@ type AtomicStatsRecord struct {
 }
 
 type HostStatus struct {
-	LastFailure  int64                      `json:"last_failure"`
-	LastCheck    int64                      `json:"last_check"`
-	Nodes        map[string]int64           `json:"nodes"`
-	NodeFailures map[string]NodeFailureInfo `json:"node_failures"`
-	Blocked      bool                       `json:"blocked"`
+	LastFailure  atomic.Int64                                  `json:"last_failure"`
+	LastCheck    atomic.Int64                                  `json:"last_check"`
+	Nodes        atomic.TypedValue[map[string]int64]           `json:"nodes"`
+	NodeFailures atomic.TypedValue[map[string]NodeFailureInfo] `json:"node_failures"`
+	Blocked      atomic.Bool                                   `json:"blocked"`
 }
 
 type NodeFailureInfo struct {
@@ -1152,7 +1152,9 @@ func (s *Store) GetHostStatus(group, config, host string, maxFailedTimes int) (m
 	var stats HostStatus
 
 	if cached, ok := hostStatusCache.Get(pathPrefix); ok {
-		stats = cached
+		if cached != nil {
+			stats = *cached
+		}
 	} else {
 		rawResult, err := s.GetSubBytesByPath(pathPrefix)
 		if err == nil {
@@ -1164,7 +1166,8 @@ func (s *Store) GetHostStatus(group, config, host string, maxFailedTimes int) (m
 		}
 	}
 
-	for n, ts := range stats.Nodes {
+	nodesMap := stats.Nodes.Load()
+	for n, ts := range nodesMap {
 		if ts == 0 || ts == 1 || ts == 2 || ts > now {
 			cleaned[n] = ts
 			resultNodes[n] = true
@@ -1174,14 +1177,14 @@ func (s *Store) GetHostStatus(group, config, host string, maxFailedTimes int) (m
 		}
 	}
 
-	stats.Nodes = cleaned
-	if failureNodesCount <= maxFailedTimes && stats.Blocked {
-		stats.Blocked = false
+	stats.Nodes.Store(cleaned)
+	if failureNodesCount <= maxFailedTimes && stats.Blocked.Load() {
+		stats.Blocked.Store(false)
 	}
 
-	hostStatusCache.Set(pathPrefix, stats)
+	hostStatusCache.Set(pathPrefix, &stats)
 
-	return resultNodes, stats.LastCheck, stats.LastFailure, stats.Blocked
+	return resultNodes, stats.LastCheck.Load(), stats.LastFailure.Load(), stats.Blocked.Load()
 }
 
 func (s *Store) UpdateHostStatus(group, config, host, name string, maxFailedTimes int, failure, checked bool, statusCode int) bool {
@@ -1197,7 +1200,9 @@ func (s *Store) UpdateHostStatus(group, config, host, name string, maxFailedTime
 	now := time.Now().Unix()
 
 	if cached, ok := hostStatusCache.Get(pathPrefix); ok {
-		stats = cached
+		if cached != nil {
+			stats = *cached
+		}
 	} else {
 		rawResult, err := s.GetSubBytesByPath(pathPrefix)
 		if err == nil {
@@ -1209,69 +1214,83 @@ func (s *Store) UpdateHostStatus(group, config, host, name string, maxFailedTime
 		}
 	}
 
-
 	if failure || statusCode == 3 {
-		if stats.NodeFailures == nil {
-			stats.NodeFailures = make(map[string]NodeFailureInfo)
+		nfMap := stats.NodeFailures.Load()
+		if nfMap == nil {
+			nfMap = make(map[string]NodeFailureInfo)
 		}
 
-		if len(stats.Nodes) <= maxFailedTimes {
-			if stats.Nodes == nil {
-				stats.Nodes = make(map[string]int64)
-			}
+		nodesMap := stats.Nodes.Load()
+		if nodesMap == nil {
+			nodesMap = make(map[string]int64)
+		}
+
+		if len(nodesMap) <= maxFailedTimes {
 			switch statusCode {
 			case 1, 2:
-				stats.Nodes[name] = int64(statusCode)
+				nodesMap[name] = int64(statusCode)
 			case 3:
-				info := stats.NodeFailures[name]
+				info := nfMap[name]
 				if info.Last == 0 || now - info.Last > 300 {
 					info.Count = 1
 				} else {
 					info.Count = info.Count + 1
 				}
 				info.Last = now
-				stats.NodeFailures[name] = info
+				nfMap[name] = info
 				if info.Count > maxFailedTimes {
-					stats.Nodes[name] = time.Now().Add(HostFailureNodeTTL).Unix()
-					delete(stats.NodeFailures, name)
+					nodesMap[name] = time.Now().Add(HostFailureNodeTTL).Unix()
+					delete(nfMap, name)
 					failedBlock = true
 				}
 			default:
-				stats.Nodes[name] = time.Now().Add(HostFailureNodeTTL).Unix()
+				nodesMap[name] = time.Now().Add(HostFailureNodeTTL).Unix()
 			}
 		}
 
-		stats.LastFailure = now
+		stats.NodeFailures.Store(nfMap)
+		stats.Nodes.Store(nodesMap)
+
+		stats.LastFailure.Store(now)
 	} else {
-		if stats.Nodes != nil && stats.Nodes[name] != 1 {
-			delete(stats.Nodes, name)
+		nodesMap := stats.Nodes.Load()
+		if nodesMap != nil && nodesMap[name] != 1 {
+			delete(nodesMap, name)
+			stats.Nodes.Store(nodesMap)
 		}
-		if stats.NodeFailures != nil {
-			delete(stats.NodeFailures, name)
+		nfMap := stats.NodeFailures.Load()
+		if nfMap != nil {
+			delete(nfMap, name)
+			stats.NodeFailures.Store(nfMap)
 		}
 	}
 
-	for n, ts := range stats.Nodes {
+	nodesMap := stats.Nodes.Load()
+	if nodesMap == nil {
+		nodesMap = make(map[string]int64)
+	}
+	for n, ts := range nodesMap {
 		if ts != 1 && ts != 2 && ts <= now {
-			delete(stats.Nodes, n)
+			delete(nodesMap, n)
 		}
 		if ts != 1 {
 			failureNodesCount++
 		}
 	}
+	stats.Nodes.Store(nodesMap)
 
 	if failureNodesCount > maxFailedTimes {
-		stats.Blocked = true
+		stats.Blocked.Store(true)
 		failedBlock = false
 	}
-    
-	if failureNodesCount <= maxFailedTimes && stats.Blocked {
-		stats.Blocked = false
+
+	if failureNodesCount <= maxFailedTimes && stats.Blocked.Load() {
+		stats.Blocked.Store(false)
 	}
 
-	stats.LastCheck = now
+	stats.LastCheck.Store(now)
 
-	hostStatusCache.Set(pathPrefix, stats)
+	hostStatusCache.Set(pathPrefix, &stats)
 
 	data, err := json.Marshal(stats)
 	if err != nil {
@@ -1310,7 +1329,8 @@ func (s *Store) CheckHostStatus(group, config string) (map[string][]string, erro
 		}
 		host := parts[len(parts)-1]
 
-		for nodeName, ts := range hs.Nodes {
+		nodesMap := hs.Nodes.Load()
+		for nodeName, ts := range nodesMap {
 			if ts == 2 {
 				result[host] = append(result[host], nodeName)
 			}
@@ -1535,8 +1555,8 @@ func (s *Store) CleanupOldRecords(group, config string) {
 				if err := json.Unmarshal(data, &stats); err != nil {
 					continue
 				}
-				lastTime = stats.LastFailure
-				value = float64(len(stats.Nodes))
+				lastTime = stats.LastFailure.Load()
+				value = float64(len(stats.Nodes.Load()))
 			default:
 				continue
 			}
