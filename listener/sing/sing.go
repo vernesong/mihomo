@@ -3,6 +3,7 @@ package sing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 
+	"github.com/gofrs/uuid/v5"
 	mux "github.com/metacubex/sing-mux"
 	vmess "github.com/metacubex/sing-vmess"
 	"github.com/metacubex/sing-vmess/packetaddr"
@@ -50,6 +52,7 @@ type BrutalOptions struct {
 
 type ListenerHandler struct {
 	ListenerConfig
+	handlerId  uuid.UUID
 	muxService *mux.Service
 }
 
@@ -70,6 +73,7 @@ func ConvertMetadata(metadata *C.Metadata) M.Metadata {
 
 func NewListenerHandler(lc ListenerConfig) (h *ListenerHandler, err error) {
 	h = &ListenerHandler{ListenerConfig: lc}
+	h.handlerId = utils.NewUUIDV4()
 	h.muxService, err = mux.NewService(mux.ServiceOptions{
 		NewStreamContext: func(ctx context.Context, conn net.Conn) context.Context {
 			return ctx
@@ -213,8 +217,12 @@ func (h *ListenerHandler) NewPacket(ctx context.Context, key netip.AddrPort, buf
 	cPacket := &packet{
 		writer: &writer,
 		mutex:  &mutex,
-		rAddr:  metadata.Source.UDPAddr(), // TODO: using key argument to make a SNAT key
+		rAddr:  metadata.Source.UDPAddr(),
 		buff:   buffer,
+	}
+	if h.Type != C.TUN { // make the handler-related SNAT key for not TUN listener
+		connID := fmt.Sprintf("%s:%s", h.handlerId, key)
+		cPacket.rAddr = N.NewCustomAddr(h.Type.String(), connID, cPacket.rAddr) // for tunnel's handleUDPConn
 	}
 	if conn, ok := common.Cast[localAddr](writer); ok { // tun does not have real inAddr
 		cPacket.lAddr = conn.LocalAddr()
