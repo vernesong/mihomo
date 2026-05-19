@@ -290,6 +290,10 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 			}
 		}
 
+		if len(proxies) == 1 {
+			s.store.DeleteUnwrapResult(s.Name(), s.configName, metadata.SmartTarget, asnNumber, metadata.NetWork == C.UDP)
+		}
+
 		return nil, finalErr
 	}
 
