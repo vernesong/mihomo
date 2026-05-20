@@ -62,7 +62,7 @@ type AtomicStatsRecord struct {
 type HostStatus struct {
 	LastFailure  atomic.Int64                                  `json:"last_failure"`
 	LastCheck    atomic.Int64                                  `json:"last_check"`
-	Nodes        atomic.TypedValue[map[string]int64]           `json:"nodes"`
+	Nodes        atomic.TypedValue[map[string]NodeEntry]       `json:"nodes"`
 	NodeFailures atomic.TypedValue[map[string]NodeFailureInfo] `json:"node_failures"`
 	Blocked      atomic.Bool                                   `json:"blocked"`
 }
@@ -70,6 +70,11 @@ type HostStatus struct {
 type NodeFailureInfo struct {
 	Count int   `json:"count"`
 	Last  int64 `json:"last"`
+}
+
+type NodeEntry struct {
+	Status int64  `json:"status"`
+	Host   string `json:"host,omitempty"`
 }
 
 type ActiveTarget struct {
@@ -1146,7 +1151,7 @@ func (s *Store) GetHostStatus(group, config, host string, maxFailedTimes int) (m
 	pathPrefix := FormatDBKey(KeyTypeHostFailures, config, group, host)
 
 	now := time.Now().Unix()
-	cleaned := make(map[string]int64)
+	cleaned := make(map[string]NodeEntry)
 	resultNodes := make(map[string]bool)
 	var failureNodesCount int
 	var stats HostStatus
@@ -1167,9 +1172,10 @@ func (s *Store) GetHostStatus(group, config, host string, maxFailedTimes int) (m
 	}
 
 	nodesMap := stats.Nodes.Load()
-	for n, ts := range nodesMap {
+	for n, entry := range nodesMap {
+		ts := entry.Status
 		if ts == 0 || ts == 1 || ts == 2 || ts > now {
-			cleaned[n] = ts
+			cleaned[n] = entry
 			resultNodes[n] = true
 		}
 		if ts != 1 {
@@ -1187,12 +1193,12 @@ func (s *Store) GetHostStatus(group, config, host string, maxFailedTimes int) (m
 	return resultNodes, stats.LastCheck.Load(), stats.LastFailure.Load(), stats.Blocked.Load()
 }
 
-func (s *Store) UpdateHostStatus(group, config, host, name string, maxFailedTimes int, failure, checked bool, statusCode int) bool {
+func (s *Store) UpdateHostStatus(group, config, wildcardTarget, host, name string, maxFailedTimes int, failure, checked bool, statusCode int64) bool {
 	if !checked {
 		return false
 	}
 
-	pathPrefix := FormatDBKey(KeyTypeHostFailures, config, group, host)
+	pathPrefix := FormatDBKey(KeyTypeHostFailures, config, group, wildcardTarget)
 
 	var stats HostStatus
 	var failureNodesCount int
@@ -1214,21 +1220,48 @@ func (s *Store) UpdateHostStatus(group, config, host, name string, maxFailedTime
 		}
 	}
 
+	nodesMap := stats.Nodes.Load()
+	nfMap := stats.NodeFailures.Load()
+
+	// prevent status covered
+	if nodesMap != nil {
+		if entry, ok := nodesMap[name]; ok {
+			if (entry.Status == 1 || entry.Status == 2 || entry.Status == 3) && statusCode != entry.Status {
+				switch entry.Status{
+				case 1:
+					statusCode = entry.Status
+				case 2:
+					if statusCode == 3 {
+						statusCode = 4
+					}
+				case 3:
+					if statusCode == 1 || statusCode == 2 {
+						if nfMap != nil {
+							delete(nfMap, name)
+						}
+					}
+				}
+			}
+		}
+	}
+
 	if failure || statusCode == 3 {
-		nfMap := stats.NodeFailures.Load()
 		if nfMap == nil {
 			nfMap = make(map[string]NodeFailureInfo)
 		}
 
-		nodesMap := stats.Nodes.Load()
 		if nodesMap == nil {
-			nodesMap = make(map[string]int64)
+			nodesMap = make(map[string]NodeEntry)
 		}
+
+		stats.LastFailure.Store(now)
 
 		if len(nodesMap) <= maxFailedTimes {
 			switch statusCode {
-			case 1, 2:
-				nodesMap[name] = int64(statusCode)
+			case 1:
+				nodesMap[name] = NodeEntry{Status: statusCode}
+			case 2:
+				nodesMap[name] = NodeEntry{Status: statusCode, Host: host}
 			case 3:
 				info := nfMap[name]
 				if info.Last == 0 || now - info.Last > 300 {
@@ -1239,44 +1272,40 @@ func (s *Store) UpdateHostStatus(group, config, host, name string, maxFailedTime
 				info.Last = now
 				nfMap[name] = info
 				if info.Count > maxFailedTimes {
-					nodesMap[name] = time.Now().Add(HostFailureNodeTTL).Unix()
+					nodesMap[name] = NodeEntry{Status: time.Now().Add(HostFailureNodeTTL).Unix()}
 					delete(nfMap, name)
 					failedBlock = true
 				}
+			case 4:
+				nodesMap[name] = nodesMap[name]
 			default:
-				nodesMap[name] = time.Now().Add(HostFailureNodeTTL).Unix()
+				nodesMap[name] = NodeEntry{Status: time.Now().Add(HostFailureNodeTTL).Unix()}
 			}
 		}
-
-		stats.NodeFailures.Store(nfMap)
-		stats.Nodes.Store(nodesMap)
-		stats.LastFailure.Store(now)
 	} else {
-		nodesMap := stats.Nodes.Load()
-		if nodesMap != nil && nodesMap[name] != 1 {
-			delete(nodesMap, name)
-			stats.Nodes.Store(nodesMap)
+		if nodesMap != nil {
+			if entry, ok := nodesMap[name]; ok {
+				if entry.Status != 1 {
+					delete(nodesMap, name)
+				}
+			}
 		}
-		nfMap := stats.NodeFailures.Load()
 		if nfMap != nil {
 			delete(nfMap, name)
-			stats.NodeFailures.Store(nfMap)
 		}
 	}
 
-	nodesMap := stats.Nodes.Load()
-	if nodesMap == nil {
-		nodesMap = make(map[string]int64)
-	}
-	for n, ts := range nodesMap {
-		if ts != 1 && ts != 2 && ts <= now {
-			delete(nodesMap, n)
+	if nodesMap != nil {
+		for n, entry := range nodesMap {
+			ts := entry.Status
+			if ts != 1 && ts != 2 && ts <= now {
+				delete(nodesMap, n)
+			}
+			if ts != 1 {
+				failureNodesCount++
+			}
 		}
-		if ts != 1 {
-			failureNodesCount++
-		}
 	}
-	stats.Nodes.Store(nodesMap)
 
 	if failureNodesCount > maxFailedTimes {
 		stats.Blocked.Store(true)
@@ -1288,7 +1317,8 @@ func (s *Store) UpdateHostStatus(group, config, host, name string, maxFailedTime
 	}
 
 	stats.LastCheck.Store(now)
-
+	stats.NodeFailures.Store(nfMap)
+	stats.Nodes.Store(nodesMap)
 	hostStatusCache.Set(pathPrefix, &stats)
 
 	data, err := json.Marshal(stats)
@@ -1300,38 +1330,49 @@ func (s *Store) UpdateHostStatus(group, config, host, name string, maxFailedTime
 		Type:   OpSaveHostFailures,
 		Group:  group,
 		Config: config,
-		Target: host,
+		Target: wildcardTarget,
 		Data:   data,
 	})
 
 	return failedBlock
 }
 
-func (s *Store) CheckHostStatus(group, config string) (map[string][]string, error) {
+func (s *Store) CheckHostStatus(group, config string) (map[string]map[string]string, error) {
 	pathPrefix := FormatDBKey(KeyTypeHostFailures, config, group)
 	dataMap, err := s.GetSubBytesByPath(pathPrefix)
 	if err != nil {
 		return nil, err
 	}
 
-	result := make(map[string][]string)
+	// result[wildcardTarget][nodeName] = host
+	result := make(map[string]map[string]string)
 
-	for key, data := range dataMap {
+	for fullPath, data := range dataMap {
 		var hs HostStatus
 		if err := json.Unmarshal(data, &hs); err != nil {
 			continue
 		}
 
-		parts := strings.Split(key, "/")
+		parts := strings.Split(fullPath, "/")
 		if len(parts) == 0 {
 			continue
 		}
-		host := parts[len(parts)-1]
+		wildcardTarget := parts[len(parts)-1]
 
 		nodesMap := hs.Nodes.Load()
-		for nodeName, ts := range nodesMap {
-			if ts == 2 {
-				result[host] = append(result[host], nodeName)
+		if nodesMap == nil {
+			continue
+		}
+
+		for nodeName, entry := range nodesMap {
+			if entry.Status == 2 {
+				if entry.Host == "" {
+					continue
+				}
+				if _, ok := result[wildcardTarget]; !ok {
+					result[wildcardTarget] = make(map[string]string)
+				}
+				result[wildcardTarget][nodeName] = entry.Host
 			}
 		}
 	}
