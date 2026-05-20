@@ -1382,6 +1382,9 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 	newWeight := updateAverageValueFloat(oldWeight, adjWeight)
 
 	if isDegraded || failedBlock {
+		if newWeight == 0 {
+			newWeight = smart.AllowedWeight * rand.Float64()
+		}
 		s.updatePrefetch(metadata, target, addressDisplay, proxy.Name(), newWeight, asnInfo, metadata.NetWork == C.UDP)
 		s.findSameConnection(metadata, proxy.Name(), target, asnInfo, metadata.NetWork == C.UDP)
 	}
@@ -1394,9 +1397,15 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 
 	if s.collectData {
 		collectedWeight := adjWeight / priorityFactor
-		if (isDegraded || failedBlock) && collectedWeight >= smart.AllowedWeight {
-			// 对于异常连接强制调整为10%权重，便于模型训练时进行识别
-			collectedWeight = collectedWeight * 0.1
+		if isDegraded || failedBlock {
+			// 对于异常连接强制调整，便于模型训练时进行识别
+			if collectedWeight >= smart.AllowedWeight {
+				collectedWeight = collectedWeight * 0.1
+			} else {
+				if collectedWeight == 0 {
+					collectedWeight = smart.AllowedWeight * rand.Float64()
+				}
+			}
 		}
 		s.collectConnectionData(input, metadata, collectedWeight, proxy.Name(), ModelPredicted)
 	}
