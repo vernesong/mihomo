@@ -1261,6 +1261,26 @@ func (s *Store) UpdateHostStatus(group, config, wildcardTarget string, metadata 
 	} else if entry.Codes == nil {
 		entry.Codes = make(map[int]*CodeNodeSet)
 	}
+	for code, codeSet := range entry.Codes {
+		if codeSet == nil {
+			delete(entry.Codes, code)
+			continue
+		}
+		if code == 1 || code == 2 {
+			continue
+		}
+		for nodeName, nodeEntry := range codeSet.Nodes {
+			if nodeEntry != 0 && nodeEntry <= now {
+				delete(codeSet.Nodes, nodeName)
+				if codeSet.FailCounts != nil {
+					delete(codeSet.FailCounts, nodeName)
+				}
+			}
+		}
+		if len(codeSet.Nodes) == 0 && len(codeSet.FailCounts) == 0 {
+			delete(entry.Codes, code)
+		}
+	}
 
 	oldLastFailure := entry.LastFailure
 	currentCode := -1
