@@ -21,11 +21,13 @@ type ifReq [40]byte
 
 // Interfaces returns a list of the system's network interfaces.
 func Interfaces() ([]net.Interface, error) {
-	ift, err := net.Interfaces()
-	if err == nil {
-		return ift, nil
+	if !IsForceAnet() {
+		ift, err := net.Interfaces()
+		if err == nil {
+			return ift, nil
+		}
 	}
-	ift, err = interfaceTable(0)
+	ift, err := interfaceTable(0)
 	if err != nil {
 		return nil, &net.OpError{Op: "route", Net: "ip+net", Source: nil, Addr: nil, Err: err}
 	}
@@ -38,11 +40,13 @@ func Interfaces() ([]net.Interface, error) {
 // The returned list does not identify the associated interface; use
 // Interfaces and Interface.Addrs for more detail.
 func InterfaceAddrs() ([]net.Addr, error) {
-	ifat, err := net.InterfaceAddrs()
-	if err == nil {
-		return ifat, nil
+	if !IsForceAnet() {
+		ifat, err := net.InterfaceAddrs()
+		if err == nil {
+			return ifat, nil
+		}
 	}
-	ifat, err = interfaceAddrTable(nil)
+	ifat, err := interfaceAddrTable(nil)
 	if err != nil {
 		err = &net.OpError{Op: "route", Net: "ip+net", Source: nil, Addr: nil, Err: err}
 	}
@@ -55,9 +59,11 @@ func InterfaceAddrs() ([]net.Addr, error) {
 // sharing the logical data link; for more precision use
 // InterfaceByName.
 func InterfaceByIndex(index int) (*net.Interface, error) {
-	ifi, err := net.InterfaceByIndex(index)
-	if err == nil {
-		return ifi, nil
+	if !IsForceAnet() {
+		ifi, err := net.InterfaceByIndex(index)
+		if err == nil {
+			return ifi, nil
+		}
 	}
 	if index <= 0 {
 		return nil, &net.OpError{Op: "route", Net: "ip+net", Source: nil, Addr: nil, Err: errInvalidInterfaceIndex}
@@ -66,7 +72,7 @@ func InterfaceByIndex(index int) (*net.Interface, error) {
 	if err != nil {
 		return nil, &net.OpError{Op: "route", Net: "ip+net", Source: nil, Addr: nil, Err: err}
 	}
-	ifi, err = interfaceByIndex(ift, index)
+	ifi, err := interfaceByIndex(ift, index)
 	if err != nil {
 		err = &net.OpError{Op: "route", Net: "ip+net", Source: nil, Addr: nil, Err: err}
 	}
@@ -75,9 +81,11 @@ func InterfaceByIndex(index int) (*net.Interface, error) {
 
 // InterfaceByName returns the interface specified by name.
 func InterfaceByName(name string) (*net.Interface, error) {
-	ifi, err := net.InterfaceByName(name)
-	if err == nil {
-		return ifi, nil
+	if !IsForceAnet() {
+		ifi, err := net.InterfaceByName(name)
+		if err == nil {
+			return ifi, nil
+		}
 	}
 	if name == "" {
 		return nil, &net.OpError{Op: "route", Net: "ip+net", Source: nil, Addr: nil, Err: errInvalidInterfaceName}

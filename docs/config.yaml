@@ -394,13 +394,14 @@ proxies: # socks5
     # ip-version: dual
 
   # Snell
-  # Beware that there's currently no UDP support yet
   - name: "snell"
     type: snell
     server: server
     port: 44046
     psk: yourpsk
-    # version: 2
+    # version: 4 # support 1/2/3/4/5
+    # udp: true # support UDP on version 3/4/5
+    # reuse: false # v4/5 only
     # obfs-opts:
     # mode: http # or tls
     # host: bing.com
@@ -1169,8 +1170,8 @@ proxies: # socks5
     port: 1194
     proto: udp # udp/tcp，默认 udp
     # dev: tun # 目前仅支持 tun，默认 tun
-    # cipher: AES-128-GCM # 支持 AES-128-GCM / AES-256-GCM / CHACHA20-POLY1305，默认 AES-128-GCM
-    # auth: SHA256 # 目前仅支持 SHA256，默认 SHA256
+    # cipher: AES-128-GCM # 支持 AES-128-GCM / AES-256-GCM / AES-128-CBC / AES-256-CBC / CHACHA20-POLY1305，默认 AES-128-GCM；AES-CBC 会按 AES-128-CBC 处理
+    # auth: SHA256 # 支持 SHA1 / SHA256，默认 SHA256；AEAD cipher 会忽略 auth
     # username / password: auth-user-pass 模式（与下方 cert+key 二选一，不能都不填）
     # username: "user"
     # password: "pass"
@@ -1189,12 +1190,12 @@ proxies: # socks5
       -----BEGIN PRIVATE KEY-----
       MIIE...example
       -----END PRIVATE KEY-----
-    # 从 .ovpn 中复制 <tls-crypt></tls-crypt> 内的内容，不需要保留 <tls-crypt> 标签
-    tls-crypt: |
-      -----BEGIN OpenVPN Static key V1-----
-      00000000000000000000000000000000
-      ...
-      -----END OpenVPN Static key V1-----
+    # 从 .ovpn 中复制 <tls-crypt></tls-crypt> 内的内容，不需要保留 <tls-crypt> 标签；没有 tls-crypt 的配置可省略
+    # tls-crypt: |
+    #   -----BEGIN OpenVPN Static key V1-----
+    #   00000000000000000000000000000000
+    #   ...
+    #   -----END OpenVPN Static key V1-----
     # mtu: 1500
     udp: true
     # 一个出站代理的标识。当值不为空时，将使用指定的 proxy 发出连接
@@ -1724,6 +1725,19 @@ listeners:
     #   framesize: 8192 # smux max frame size
     #   streambuf: 2097152 # per stream receive buffer in bytes, smux v2+
     #   keepalive: 10 # seconds between heartbeats
+
+  - name: snell-in-1
+    type: snell
+    port: 10815 # 支持使用ports格式，例如200,302 or 200,204,401-429,501-503
+    listen: 0.0.0.0
+    psk: your-password
+    version: 4 # 仅支持 4/5
+    udp: true # UDP over TCP tunnel，默认 true
+    # obfs-opts:
+    #   mode: http # 可选：http / tls
+    #   host: bing.com
+    # rule: sub-rule-name1
+    # proxy: proxy
 
   - name: vmess-in-1
     type: vmess
