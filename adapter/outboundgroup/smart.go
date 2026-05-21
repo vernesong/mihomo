@@ -462,7 +462,7 @@ func (s *Smart) MarshalJSON() ([]byte, error) {
 
 func (s *Smart) filterProxies(metadata *C.Metadata, wildcardTarget string, names []string, weights []float64, all []C.Proxy, minCount int, isUDP bool) []C.Proxy {
 	blockedNodes := s.store.GetBlockedNodes(s.Name(), s.configName)
-	wtFailNodes, _, _, wtBlocked := s.store.GetHostStatus(s.Name(), s.configName, wildcardTarget, s.maxFailedTimes)
+	wtFailNodes, _, _, wtBlocked := s.store.GetHostStatus(s.Name(), s.configName, wildcardTarget, metadata, s.maxFailedTimes)
 
 	proxyByName := make(map[string]C.Proxy)
 	for _, p := range all {
@@ -1376,7 +1376,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 		metadata.NetWork.String(), asnInfo, metadata.NetWork == C.UDP)
 
 	// 针对具体 域名/IP 屏蔽节点
-	failedBlock := s.store.UpdateHostStatus(s.Name(), s.configName, wildcardTarget, metadata.Host, proxy.Name(), s.maxFailedTimes, isDegraded, checked, blockCode)
+	failedBlock := s.store.UpdateHostStatus(s.Name(), s.configName, wildcardTarget, metadata, proxy.Name(), s.maxFailedTimes, isDegraded, checked, blockCode)
 
 	// 平均权重(适应 target 调整为 rule based 和 asn based 的情况)
 	newWeight := updateAverageValueFloat(oldWeight, adjWeight)
@@ -1486,14 +1486,14 @@ func (s *Smart) checkNodeQuality(
 		return newWeight, true, true, 1
 	}
 
-	_, wtLastCheck, wtLastFailure, wtBlocked := s.store.GetHostStatus(s.Name(), s.configName, wildcardTarget, s.maxFailedTimes)
+	_, wtLastCheck, wtLastFailure, wtBlocked := s.store.GetHostStatus(s.Name(), s.configName, wildcardTarget, metadata, s.maxFailedTimes)
 
 	if wtBlocked {
 		return newWeight, false, false, 0
 	}
 
 	if newWeight < smart.AllowedWeight {
-		return newWeight, true, true, 0
+		return newWeight, true, true, 5
 	}
 
 	if status == "failed" {
@@ -1504,7 +1504,7 @@ func (s *Smart) checkNodeQuality(
 	if connectionDuration > 100 && downloadTotal == 0 && uploadTotal == 0 && metadata.DstPort == 443 && !isUDP {
 		log.Debugln("[Smart] Connection Group: [%s] - Node: [%s] - Network: [%s] - Address: [%s] detected zero-traffic...",
 			s.Name(), proxyName, networkType, addressDisplay)
-		return newWeight, true, true, 0
+		return newWeight, true, true, 4
 	}
 
 	// 异常状态码检测
@@ -1612,8 +1612,10 @@ func (s *Smart) checkHostStatus() {
 			}
 			status, okRes, err := s.StatusTest(p, host)
 			if err == nil && okRes {
-				s.store.UpdateHostStatus(s.Name(), s.configName, wildcardTarget, host, nodeName, s.maxFailedTimes, false, true, 0)
-				log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] - Status: [%d]", s.Name(), nodeName, host, status)
+				s.store.UpdateHostStatus(s.Name(), s.configName, wildcardTarget, &C.Metadata{Host: host}, nodeName, s.maxFailedTimes, false, true, 0)
+				log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] with HTTP Status: [%d]", s.Name(), nodeName, host, status)
+			} else if err == nil {
+				log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] still abnormal with HTTP Status: [%d]", s.Name(), nodeName, host, status)
 			}
 		}
 	}

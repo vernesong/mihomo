@@ -59,22 +59,22 @@ type AtomicStatsRecord struct {
 	weights         *lru.LruCache[string, float64]
 }
 
+type CodeNodeSet struct {
+	Nodes      map[string]int64 `json:"nodes"`
+	FailCounts map[string]int   `json:"fail_counts,omitempty"`
+}
+
+type HostEntry struct {
+	LastFailure int64                `json:"last_failure,omitempty"`
+	LastCheck   int64                `json:"last_check,omitempty"`
+	Blocked     bool                 `json:"blocked,omitempty"`
+	Codes       map[int]*CodeNodeSet `json:"codes,omitempty"`
+}
+
 type HostStatus struct {
-	LastFailure  atomic.Int64                                  `json:"last_failure"`
-	LastCheck    atomic.Int64                                  `json:"last_check"`
-	Nodes        atomic.TypedValue[map[string]NodeEntry]       `json:"nodes"`
-	NodeFailures atomic.TypedValue[map[string]NodeFailureInfo] `json:"node_failures"`
-	Blocked      atomic.Bool                                   `json:"blocked"`
-}
-
-type NodeFailureInfo struct {
-	Count int   `json:"count"`
-	Last  int64 `json:"last"`
-}
-
-type NodeEntry struct {
-	Status int64  `json:"status"`
-	Host   string `json:"host,omitempty"`
+	initOnce    sync.Once             `json:"-"`
+	mu          sync.RWMutex          `json:"-"`
+	Hosts       map[string]*HostEntry `json:"hosts,omitempty"`
 }
 
 type ActiveTarget struct {
@@ -1147,181 +1147,240 @@ func (s *Store) GetAllNodesForGroup(group, config string) ([]string, error) {
 }
 
 // 域名失败屏蔽
-func (s *Store) GetHostStatus(group, config, host string, maxFailedTimes int) (map[string]bool, int64, int64, bool) {
-	pathPrefix := FormatDBKey(KeyTypeHostFailures, config, group, host)
-
-	now := time.Now().Unix()
-	cleaned := make(map[string]NodeEntry)
-	resultNodes := make(map[string]bool)
-	var failureNodesCount int
-	var stats HostStatus
-
-	if cached, ok := hostStatusCache.Get(pathPrefix); ok {
-		if cached != nil {
-			stats = *cached
-		}
-	} else {
-		rawResult, err := s.GetSubBytesByPath(pathPrefix)
-		if err == nil {
-			for _, data := range rawResult {
-				if err := json.Unmarshal(data, &stats); err != nil {
-					continue
-				}
-			}
-		}
-	}
-
-	nodesMap := stats.Nodes.Load()
-	for n, entry := range nodesMap {
-		ts := entry.Status
-		if ts == 0 || ts == 1 || ts == 2 || ts > now {
-			cleaned[n] = entry
-			resultNodes[n] = true
-		}
-		if ts != 1 {
-			failureNodesCount++
-		}
-	}
-
-	stats.Nodes.Store(cleaned)
-	if failureNodesCount <= maxFailedTimes && stats.Blocked.Load() {
-		stats.Blocked.Store(false)
-	}
-
-	hostStatusCache.Set(pathPrefix, &stats)
-
-	return resultNodes, stats.LastCheck.Load(), stats.LastFailure.Load(), stats.Blocked.Load()
-}
-
-func (s *Store) UpdateHostStatus(group, config, wildcardTarget, host, name string, maxFailedTimes int, failure, checked bool, statusCode int64) bool {
-	if !checked {
-		return false
-	}
-
+func (s *Store) GetHostStatus(group, config, wildcardTarget string, metadata *C.Metadata, maxFailedTimes int) (map[string]bool, int64, int64, bool) {
 	pathPrefix := FormatDBKey(KeyTypeHostFailures, config, group, wildcardTarget)
 
-	var stats HostStatus
-	var failureNodesCount int
-	var failedBlock bool
 	now := time.Now().Unix()
+	resultNodes := make(map[string]bool)
 
-	if cached, ok := hostStatusCache.Get(pathPrefix); ok {
-		if cached != nil {
-			stats = *cached
+	var lookupHost string
+	if metadata != nil {
+		if metadata.Host != "" {
+			lookupHost = metadata.Host
+		} else {
+			lookupHost = metadata.DstIP.String()
 		}
-	} else {
+	}
+
+	hs, _ := hostStatusCache.GetOrStore(pathPrefix, func() *HostStatus { return &HostStatus{} })
+
+	hs.initOnce.Do(func() {
 		rawResult, err := s.GetSubBytesByPath(pathPrefix)
 		if err == nil {
 			for _, data := range rawResult {
-				if err := json.Unmarshal(data, &stats); err == nil {
+				if err := json.Unmarshal(data, hs); err == nil {
 					break
 				}
 			}
 		}
+	})
+
+	if lookupHost == "" {
+		return resultNodes, 0, 0, false
 	}
 
-	nodesMap := stats.Nodes.Load()
-	nfMap := stats.NodeFailures.Load()
+	hs.mu.RLock()
+	defer hs.mu.RUnlock()
 
-	// prevent status covered
-	if nodesMap != nil {
-		if entry, ok := nodesMap[name]; ok {
-			if (entry.Status == 1 || entry.Status == 2 || entry.Status == 3) && statusCode != entry.Status {
-				switch entry.Status{
-				case 1:
-					statusCode = entry.Status
-				case 2:
-					if statusCode == 3 {
-						statusCode = 4
-					}
-				case 3:
-					if statusCode == 1 || statusCode == 2 {
-						if nfMap != nil {
-							delete(nfMap, name)
-						}
-					}
-				}
+	if hs.Hosts == nil {
+		return resultNodes, 0, 0, false
+	}
+
+	entry := hs.Hosts[lookupHost]
+	if entry == nil || len(entry.Codes) == 0 {
+		return resultNodes, 0, 0, false
+	}
+
+	for _, codeSet := range entry.Codes {
+		if codeSet == nil {
+			continue
+		}
+		for nodeName, nodeEntry := range codeSet.Nodes {
+			if nodeEntry == 0 || nodeEntry > now {
+				resultNodes[nodeName] = true
 			}
 		}
 	}
 
-	if failure || statusCode == 3 {
-		if nfMap == nil {
-			nfMap = make(map[string]NodeFailureInfo)
-		}
+	return resultNodes, entry.LastCheck, entry.LastFailure, entry.Blocked
+}
 
-		if nodesMap == nil {
-			nodesMap = make(map[string]NodeEntry)
-		}
+func (s *Store) UpdateHostStatus(group, config, wildcardTarget string, metadata *C.Metadata, name string, maxFailedTimes int, failure, checked bool, statusCode int64) bool {
+	if !checked {
+		return false
+	}
 
-		stats.LastFailure.Store(now)
+	newCode := int(statusCode)
 
-		if len(nodesMap) <= maxFailedTimes {
-			switch statusCode {
-			case 1:
-				nodesMap[name] = NodeEntry{Status: statusCode}
-			case 2:
-				nodesMap[name] = NodeEntry{Status: statusCode, Host: host}
-			case 3:
-				info := nfMap[name]
-				if info.Last == 0 || now - info.Last > 300 {
-					info.Count = 1
-				} else {
-					info.Count = info.Count + 1
-				}
-				info.Last = now
-				nfMap[name] = info
-				if info.Count > maxFailedTimes {
-					nodesMap[name] = NodeEntry{Status: time.Now().Add(HostFailureNodeTTL).Unix()}
-					delete(nfMap, name)
-					failedBlock = true
-				}
-			case 4:
-				nodesMap[name] = nodesMap[name]
-			default:
-				nodesMap[name] = NodeEntry{Status: time.Now().Add(HostFailureNodeTTL).Unix()}
-			}
+	var host string
+	if newCode == 2 {
+		if metadata == nil || metadata.Host == "" {
+			return false
 		}
+		host = metadata.Host
 	} else {
-		if nodesMap != nil {
-			if entry, ok := nodesMap[name]; ok {
-				if entry.Status != 1 {
-					delete(nodesMap, name)
+		if metadata != nil && metadata.Host != "" {
+			host = metadata.Host
+		} else if metadata != nil {
+			host = metadata.DstIP.String()
+		}
+		if host == "" {
+			return false
+		}
+	}
+
+	pathPrefix := FormatDBKey(KeyTypeHostFailures, config, group, wildcardTarget)
+
+	var failedBlock bool
+	now := time.Now().Unix()
+
+	hs, _ := hostStatusCache.GetOrStore(pathPrefix, func() *HostStatus { return &HostStatus{} })
+
+	hs.initOnce.Do(func() {
+		rawResult, err := s.GetSubBytesByPath(pathPrefix)
+		if err == nil {
+			for _, data := range rawResult {
+				if err := json.Unmarshal(data, hs); err == nil {
+					break
 				}
 			}
 		}
-		if nfMap != nil {
-			delete(nfMap, name)
+	})
+
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+
+	if hs.Hosts == nil {
+		hs.Hosts = make(map[string]*HostEntry)
+	}
+
+	entry := hs.Hosts[host]
+	if entry == nil {
+		entry = &HostEntry{Codes: make(map[int]*CodeNodeSet)}
+		hs.Hosts[host] = entry
+	} else if entry.Codes == nil {
+		entry.Codes = make(map[int]*CodeNodeSet)
+	}
+
+	oldLastFailure := entry.LastFailure
+	currentCode := -1
+	for code, codeSet := range entry.Codes {
+		if codeSet == nil {
+			continue
+		}
+		if _, ok := codeSet.Nodes[name]; ok {
+			if currentCode == -1 || code < currentCode {
+				currentCode = code
+			}
+		}
+		if codeSet.FailCounts != nil {
+			if _, ok := codeSet.FailCounts[name]; ok {
+				if currentCode == -1 || code < currentCode {
+					currentCode = code
+				}
+			}
 		}
 	}
 
-	if nodesMap != nil {
-		for n, entry := range nodesMap {
-			ts := entry.Status
-			if ts != 1 && ts != 2 && ts <= now {
-				delete(nodesMap, n)
+	if !failure && newCode == 0 {
+		for code, codeSet := range entry.Codes {
+			if code == 1 || codeSet == nil {
+				continue
 			}
-			if ts != 1 {
-				failureNodesCount++
+			delete(codeSet.Nodes, name)
+			if codeSet.FailCounts != nil {
+				delete(codeSet.FailCounts, name)
+			}
+		}
+		goto saveAndReturn
+	}
+
+	if currentCode != -1 && currentCode != newCode {
+		if newCode > currentCode {
+			goto saveAndReturn
+		}
+		for code, codeSet := range entry.Codes {
+			if code == newCode || codeSet == nil {
+				continue
+			}
+			delete(codeSet.Nodes, name)
+			if codeSet.FailCounts != nil {
+				delete(codeSet.FailCounts, name)
 			}
 		}
 	}
 
-	if failureNodesCount > maxFailedTimes {
-		stats.Blocked.Store(true)
-		failedBlock = false
+	if failure || newCode == 3 {
+		entry.LastFailure = now
+
+		if entry.Codes[newCode] == nil {
+			entry.Codes[newCode] = &CodeNodeSet{
+				Nodes: make(map[string]int64),
+			}
+		}
+		codeSet := entry.Codes[newCode]
+		if codeSet.Nodes == nil {
+			codeSet.Nodes = make(map[string]int64)
+		}
+
+		switch newCode {
+		case 1:
+			codeSet.Nodes[name] = 0 // TTL=0 means permanent
+		case 3:
+			if codeSet.FailCounts == nil {
+				codeSet.FailCounts = make(map[string]int)
+			}
+			count := codeSet.FailCounts[name]
+			if oldLastFailure == 0 || now-oldLastFailure > 300 {
+				count = 1
+			} else {
+				count++
+			}
+			if count >= maxFailedTimes {
+				codeSet.Nodes[name] = time.Now().Add(HostFailureNodeTTL).Unix()
+				delete(codeSet.FailCounts, name)
+				failedBlock = true
+			} else {
+				codeSet.FailCounts[name] = count
+			}
+		default:
+			codeSet.Nodes[name] = time.Now().Add(HostFailureNodeTTL).Unix()
+		}
 	}
 
-	if failureNodesCount <= maxFailedTimes && stats.Blocked.Load() {
-		stats.Blocked.Store(false)
+	{
+		hostBlockingCount := 0
+		for code, cs := range entry.Codes {
+			if code != 1 && cs != nil {
+				hostBlockingCount += len(cs.Nodes)
+			}
+		}
+		if hostBlockingCount > maxFailedTimes {
+			entry.Blocked = true
+			failedBlock = false
+		} else {
+			entry.Blocked = false
+		}
 	}
 
-	stats.LastCheck.Store(now)
-	stats.NodeFailures.Store(nfMap)
-	stats.Nodes.Store(nodesMap)
-	hostStatusCache.Set(pathPrefix, &stats)
+saveAndReturn:
+	entry.LastCheck = now
+	for h, e := range hs.Hosts {
+		if e == nil {
+			delete(hs.Hosts, h)
+			continue
+		}
+		for code, codeSet := range e.Codes {
+			if codeSet == nil || (len(codeSet.Nodes) == 0 && len(codeSet.FailCounts) == 0) {
+				delete(e.Codes, code)
+			}
+		}
+		if len(e.Codes) == 0 {
+			delete(hs.Hosts, h)
+		}
+	}
 
-	data, err := json.Marshal(stats)
+	data, err := json.Marshal(hs)
 	if err != nil {
 		return failedBlock
 	}
@@ -1359,20 +1418,23 @@ func (s *Store) CheckHostStatus(group, config string) (map[string]map[string]str
 		}
 		wildcardTarget := parts[len(parts)-1]
 
-		nodesMap := hs.Nodes.Load()
-		if nodesMap == nil {
+		if hs.Hosts == nil {
 			continue
 		}
 
-		for nodeName, entry := range nodesMap {
-			if entry.Status == 2 {
-				if entry.Host == "" {
-					continue
-				}
+		for hostKey, hostEntry := range hs.Hosts {
+			if hostEntry == nil {
+				continue
+			}
+			codeSet, ok := hostEntry.Codes[2]
+			if !ok || codeSet == nil {
+				continue
+			}
+			for nodeName := range codeSet.Nodes {
 				if _, ok := result[wildcardTarget]; !ok {
 					result[wildcardTarget] = make(map[string]string)
 				}
-				result[wildcardTarget][nodeName] = entry.Host
+				result[wildcardTarget][nodeName] = hostKey
 			}
 		}
 	}
@@ -1531,6 +1593,80 @@ func (s *Store) RemoveNodesData(group, config string, nodes []string) error {
 		}
 	}
 
+	failuresPrefix := FormatDBKey(KeyTypeHostFailures, config, group)
+	failuresResults, err := s.DBViewPrefixScan(failuresPrefix, -1, false)
+	if err != nil {
+		if firstErr == nil {
+			firstErr = err
+		}
+	} else {
+		for path, data := range failuresResults {
+			var hs HostStatus
+			if err := json.Unmarshal(data, &hs); err != nil {
+				continue
+			}
+			if hs.Hosts == nil {
+				continue
+			}
+			changed := false
+			for host, entry := range hs.Hosts {
+				if entry == nil {
+					delete(hs.Hosts, host)
+					continue
+				}
+				for code, codeSet := range entry.Codes {
+					if codeSet == nil {
+						continue
+					}
+					for nodeName := range codeSet.Nodes {
+						if _, toRemove := nodeSet[nodeName]; toRemove {
+							delete(codeSet.Nodes, nodeName)
+							changed = true
+						}
+					}
+					if codeSet.FailCounts != nil {
+						for nodeName := range codeSet.FailCounts {
+							if _, toRemove := nodeSet[nodeName]; toRemove {
+								delete(codeSet.FailCounts, nodeName)
+								changed = true
+							}
+						}
+					}
+					if len(codeSet.Nodes) == 0 && len(codeSet.FailCounts) == 0 {
+						delete(entry.Codes, code)
+					}
+				}
+				if len(entry.Codes) == 0 {
+					delete(hs.Hosts, host)
+				}
+			}
+			if changed {
+				parts := strings.Split(path, "/")
+				if len(parts) >= 5 {
+					wTarget := parts[len(parts)-1]
+					cachePath := FormatDBKey(KeyTypeHostFailures, config, group, wTarget)
+					hostStatusCache.Delete(cachePath)
+				}
+				if len(hs.Hosts) == 0 {
+					if delErr := s.DBBatchDeletePrefix(path, true); delErr != nil && firstErr == nil {
+						firstErr = delErr
+					}
+				} else {
+					newData, merr := json.Marshal(hs)
+					if merr != nil {
+						if firstErr == nil {
+							firstErr = merr
+						}
+						continue
+					}
+					if perr := s.DBBatchPutItem(path, newData); perr != nil && firstErr == nil {
+						firstErr = perr
+					}
+				}
+			}
+		}
+	}
+
 	// 删除节点状态
 	for _, nodeName := range nodes {
 		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeNode, config, group, nodeName), true)
@@ -1595,8 +1731,21 @@ func (s *Store) CleanupOldRecords(group, config string) {
 				if err := json.Unmarshal(data, &stats); err != nil {
 					continue
 				}
-				lastTime = stats.LastFailure.Load()
-				value = float64(len(stats.Nodes.Load()))
+				totalNodes := 0
+				for _, entry := range stats.Hosts {
+					if entry == nil {
+						continue
+					}
+					if entry.LastFailure > lastTime {
+						lastTime = entry.LastFailure
+					}
+					for _, codeSet := range entry.Codes {
+						if codeSet != nil {
+							totalNodes += len(codeSet.Nodes)
+						}
+					}
+				}
+				value = float64(totalNodes)
 			default:
 				continue
 			}
@@ -1657,7 +1806,13 @@ func (s *Store) CleanupOldRecords(group, config string) {
 		}
 
 		if deleted > 0 {
-			dbResultCache.RemoveByKeyPrefix(pathPrefix)
+			if keyType == KeyTypeStats {
+				recordCache.RemoveByKeyPrefix(pathPrefix)
+			} else if keyType == KeyTypePrefetch {
+				dbResultCache.RemoveByKeyPrefix(pathPrefix)
+			} else if keyType == KeyTypeHostFailures {
+				hostStatusCache.RemoveByKeyPrefix(pathPrefix)
+			}
 			log.Debugln("[SmartStore] Cleaned up [%d] old [%s] records, group [%s] keeping [%d] valuable and recent data...",
 				deleted, keyType, group, totalRecords - deleted)
 		}
