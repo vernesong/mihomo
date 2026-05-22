@@ -1266,7 +1266,20 @@ func (s *Store) UpdateHostStatus(group, config, wildcardTarget string, metadata 
 			delete(entry.Codes, code)
 			continue
 		}
-		if code == 1 || code == 2 {
+		if code == 1 {
+			continue
+		}
+		if code == 2 {
+			if entry.Blocked {
+				for nodeName, nodeEntry := range codeSet.Nodes {
+					if nodeEntry != 0 && nodeEntry <= now {
+						delete(codeSet.Nodes, nodeName)
+					}
+				}
+				if len(codeSet.Nodes) == 0 {
+					delete(entry.Codes, code)
+				}
+			}
 			continue
 		}
 		for nodeName, nodeEntry := range codeSet.Nodes {
@@ -1443,7 +1456,7 @@ func (s *Store) CheckHostStatus(group, config string) (map[string]map[string]str
 		}
 
 		for hostKey, hostEntry := range hs.Hosts {
-			if hostEntry == nil {
+			if hostEntry == nil || hostEntry.Blocked {
 				continue
 			}
 			codeSet, ok := hostEntry.Codes[2]

@@ -668,7 +668,7 @@ func (s *Smart) InitSmart() {
 	s.startTimedTask(5*time.Minute, checkInterval , "Group targets prefetch", s.runPrefetch, false)
 	s.startTimedTask(1*time.Minute, rankingInterval, "Group nodes Ranking", s.updateNodeRanking, false)
 	s.startTimedTask(5*time.Minute, recoveryCheckInterval, "Group nodes recovery check", s.checkDegradedNodes, false)
-	s.startTimedTask(15*time.Second, hostStatusCheckInterval, "Group host status check", s.checkHostStatus, false)
+	s.startTimedTask(15*time.Minute, hostStatusCheckInterval, "Group host status check", s.checkHostStatus, false)
 	s.startTimedTask(10*time.Minute, cleanupInterval, "Group old records clean up", func() {
 		s.store.CleanupOldRecords(s.Name(), s.configName)
 	}, false)
