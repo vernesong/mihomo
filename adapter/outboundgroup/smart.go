@@ -666,6 +666,7 @@ func (s *Smart) InitSmart() {
 
 	s.startTimedTask(10*time.Minute, checkInterval, "Group orphaned nodes clean up", s.cleanupOrphanedNodeCache, true)
 	s.startTimedTask(5*time.Minute, checkInterval , "Group targets prefetch", s.runPrefetch, false)
+	s.startTimedTask(5*time.Minute, checkInterval , "Group nodes stable check", s.checkNodesStable, false)
 	s.startTimedTask(1*time.Minute, rankingInterval, "Group nodes Ranking", s.updateNodeRanking, false)
 	s.startTimedTask(5*time.Minute, recoveryCheckInterval, "Group nodes recovery check", s.checkDegradedNodes, false)
 	s.startTimedTask(15*time.Minute, hostStatusCheckInterval, "Group host status check", s.checkHostStatus, false)
@@ -736,12 +737,10 @@ func (s *Smart) startTimedTask(initialDelay, interval time.Duration, taskName st
 
 func (s *Smart) runPrefetch() {
 	proxies := s.GetProxies(true)
-	blockedNodes := s.store.GetBlockedNodes(s.Name(), s.configName)
 	proxyMap := make(map[string]bool)
 	for _, proxy := range proxies {
 		proxyMap[proxy.Name()] = true
 	}
-	s.checkNodesStable(proxies, blockedNodes)
 	s.store.RunPrefetch(s.Name(), s.configName, proxyMap)
 }
 
@@ -1036,7 +1035,8 @@ func (s *Smart) calcMADMetrics(delays []float64) (currentAnomaly bool, unstable 
 	return currentAnomaly, unstable
 }
 
-func (s *Smart) checkNodesStable(proxies []C.Proxy, blockedNodes map[string]bool) {
+func (s *Smart) checkNodesStable() {
+	proxies := s.GetProxies(true)
 	var nodeState smart.NodeState
 	filted := make([]C.Proxy, 0, len(proxies))
 	operations := make([]smart.StoreOperation, 0, len(proxies))
@@ -1044,7 +1044,7 @@ func (s *Smart) checkNodesStable(proxies []C.Proxy, blockedNodes map[string]bool
 	now := time.Now().Unix()
 
 	for _, p := range proxies {
-		if !p.AliveForTestUrl(s.testUrl) || blockedNodes[p.Name()] {
+		if !p.AliveForTestUrl(s.testUrl) {
 			continue
 		}
 
@@ -1074,11 +1074,7 @@ func (s *Smart) checkNodesStable(proxies []C.Proxy, blockedNodes map[string]bool
 		for _, p := range filted {
 			if data, exists := nodeStateData[p.Name()]; exists {
 				if err := json.Unmarshal(data, &nodeState); err == nil {
-					if nodeState.BlockedUntil > now {
-						nodeState.BlockedUntil = time.Unix(nodeState.BlockedUntil, 0).Add(checkInterval + 2 * time.Minute).Unix()
-					} else {
-						nodeState.BlockedUntil = time.Now().Add(checkInterval  + 2 * time.Minute).Unix()
-					}
+					nodeState.BlockedUntil = time.Now().Add(checkInterval  + 2 * time.Minute).Unix()
 					nodeState.LastChecked = now
 					nodesToUpdate[p.Name()] = &nodeState
 					continue

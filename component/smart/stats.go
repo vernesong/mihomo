@@ -478,6 +478,7 @@ func (s *Store) GetNodeWeightRanking(group, config, testUrl string, proxies []C.
 
     return NodeRank{}, nil
 }
+
 // 存储节点权重排名
 func (s *Store) StoreNodeWeightRanking(group, config string, ranking NodeRank) {
 	data, err := json.Marshal(ranking)
