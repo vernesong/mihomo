@@ -32,9 +32,7 @@ var (
 	modelOnce    sync.Once
 	lgbmUrl      string
 
-	asnNumberRegex = regexp.MustCompile(`^(\d+)`)
-	domainRegex    = regexp.MustCompile(`([a-zA-Z0-9-]+)(\.[a-zA-Z0-9-]+)+$`)
-	ipv4Regex      = regexp.MustCompile(`^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$`)
+	domainRegex = regexp.MustCompile(`([a-zA-Z0-9-]+)(\.[a-zA-Z0-9-]+)+$`)
 
 	// 常见ASN提供商类型分类
 	asnCategories = map[string]int{
@@ -396,6 +394,34 @@ var (
 	}
 )
 
+type domainKeywordEntry struct {
+	keyword  string
+	category int
+}
+
+var allDomainKeywords []domainKeywordEntry
+
+func init() {
+	total := len(dnsServiceKeywords) + len(apiServiceKeywords) + len(gameKeywords) +
+		len(communicationKeywords) + len(streamingKeywords)
+	allDomainKeywords = make([]domainKeywordEntry, 0, total)
+	for _, kw := range dnsServiceKeywords {
+		allDomainKeywords = append(allDomainKeywords, domainKeywordEntry{kw, 6})
+	}
+	for _, kw := range apiServiceKeywords {
+		allDomainKeywords = append(allDomainKeywords, domainKeywordEntry{kw, 5})
+	}
+	for _, kw := range gameKeywords {
+		allDomainKeywords = append(allDomainKeywords, domainKeywordEntry{kw, 3})
+	}
+	for _, kw := range communicationKeywords {
+		allDomainKeywords = append(allDomainKeywords, domainKeywordEntry{kw, 4})
+	}
+	for _, kw := range streamingKeywords {
+		allDomainKeywords = append(allDomainKeywords, domainKeywordEntry{kw, 2})
+	}
+}
+
 type WeightModel struct {
 	model      *leaves.Ensemble
 	transforms *FeatureTransforms
@@ -726,8 +752,16 @@ func extractASNFeature(asnInfo string) int {
 	}
 
 	// 2. 尝试提取ASN号码并进行简单分类
-	if matches := asnNumberRegex.FindStringSubmatch(asnInfo); len(matches) > 1 {
-		if asnNum, err := strconv.Atoi(matches[1]); err == nil {
+	s := asnInfo
+	if len(s) >= 2 && s[0] == 'a' && s[1] == 's' {
+		s = s[2:]
+	}
+	j := 0
+	for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+		j++
+	}
+	if j > 0 {
+		if asnNum, err := strconv.Atoi(s[:j]); err == nil {
 			// 粗略分类ASN号码范围
 			switch {
 			case asnNum < 1000:
@@ -783,43 +817,17 @@ func extractDomainTypeFeature(host string) int {
 	host = strings.ToLower(host)
 
 	// 1. 检查是否为IP地址形式
-	if strings.Contains(host, "[") || (strings.Count(host, ".") == 3 &&
-		ipv4Regex.MatchString(host)) {
+	if strings.Contains(host, "[") {
+		return 1
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
 		return 1
 	}
 
-	// 2.1 DNS服务优先 - 基础设施服务
-	for _, keyword := range dnsServiceKeywords {
-		if strings.Contains(host, keyword) {
-			return 6
-		}
-	}
-
-	// 2.2 API服务 - 开发和基础设施服务
-	for _, keyword := range apiServiceKeywords {
-		if strings.Contains(host, keyword) {
-			return 5
-		}
-	}
-
-	// 2.3 游戏服务 - 高延迟敏感
-	for _, keyword := range gameKeywords {
-		if strings.Contains(host, keyword) {
-			return 3
-		}
-	}
-
-	// 2.4 通讯/会议服务 - 实时性要求高
-	for _, keyword := range communicationKeywords {
-		if strings.Contains(host, keyword) {
-			return 4
-		}
-	}
-
-	// 2.5 流媒体/视频服务 - 带宽敏感
-	for _, keyword := range streamingKeywords {
-		if strings.Contains(host, keyword) {
-			return 2
+	// 2. 关键词匹配（优先级：DNS>API>游戏>通信>流媒体）
+	for _, entry := range allDomainKeywords {
+		if strings.Contains(host, entry.keyword) {
+			return entry.category
 		}
 	}
 

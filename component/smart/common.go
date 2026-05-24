@@ -3,7 +3,6 @@ package smart
 import (
 	"errors"
 	"math"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -130,16 +129,22 @@ func NewStore(newdb *bbolt.DB) *Store {
 
 // 格式化数据库键
 func FormatDBKey(parts ...string) string {
-	elements := make([]string, 0, len(parts)+1)
-	elements = append(elements, "smart")
-
+	size := 5
 	for _, part := range parts {
 		if part != "" {
-			elements = append(elements, part)
+			size += 1 + len(part)
 		}
 	}
-
-	return strings.Join(elements, "/")
+	var b strings.Builder
+	b.Grow(size)
+	b.WriteString("smart")
+	for _, part := range parts {
+		if part != "" {
+			b.WriteByte('/')
+			b.WriteString(part)
+		}
+	}
+	return b.String()
 }
 
 func formatOperationKey(op *StoreOperation) string {
@@ -159,16 +164,39 @@ func formatOperationKey(op *StoreOperation) string {
 	}
 }
 
+func isHexRandom(s string) bool {
+	if len(s) < 8 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func isValidLabel(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 // 获取有效顶级域名加一二级域名并使用通配符处理
-func GetEffectiveTarget(host string, dstIP string) (string) {
+func GetEffectiveTarget(host string, dstIP string) string {
 	if host == "" {
 		return dstIP
 	}
 
 	h := strings.ToLower(host)
-
-	validLabel := regexp.MustCompile(`^[a-z0-9-]+$`)
-	hexRandom := regexp.MustCompile(`^[0-9a-f]{8,}$`)
 
 	compute := func() string {
 		parts := strings.Split(h, ".")
@@ -197,7 +225,7 @@ func GetEffectiveTarget(host string, dstIP string) (string) {
 
 		if strings.Contains(last, "-") {
 			last = "*"
-		} else if hexRandom.MatchString(last) {
+		} else if isHexRandom(last) {
 			last = "*"
 		} else {
 			letters := 0
@@ -216,7 +244,7 @@ func GetEffectiveTarget(host string, dstIP string) (string) {
 			}
 		}
 
-		if !validLabel.MatchString(last) || strings.HasPrefix(last, "-") || strings.HasSuffix(last, "-") {
+		if !isValidLabel(last) || strings.HasPrefix(last, "-") || strings.HasSuffix(last, "-") {
 			last = "*"
 		}
 
@@ -262,6 +290,7 @@ func GetEffectiveTarget(host string, dstIP string) (string) {
 			}
 
 			targetCache.Set(h, result)
+			return result
 		}
 	}
 
@@ -393,25 +422,25 @@ func (s *Store) AppendToGlobalQueue(operations ...StoreOperation) {
 	var snapshot []StoreOperation
 
 	globalOperationQueue.Update(func(old []StoreOperation) []StoreOperation {
-		opMap := make(map[string]*StoreOperation)
+		opMap := make(map[string]StoreOperation, len(old)+len(operations))
 
 		for i := range old {
 			key := formatOperationKey(&old[i])
 			if key != "" {
-				opMap[key] = &old[i]
+				opMap[key] = old[i]
 			}
 		}
 
 		for i := range operations {
 			key := formatOperationKey(&operations[i])
 			if key != "" {
-				opMap[key] = &operations[i]
+				opMap[key] = operations[i]
 			}
 		}
 
 		newQueue := make([]StoreOperation, 0, len(opMap))
 		for _, op := range opMap {
-			newQueue = append(newQueue, *op)
+			newQueue = append(newQueue, op)
 		}
 
 		threshold := GetBatchSaveThreshold()
@@ -419,7 +448,7 @@ func (s *Store) AppendToGlobalQueue(operations ...StoreOperation) {
 			shouldFlush = true
 			snapshot = make([]StoreOperation, len(newQueue))
 			copy(snapshot, newQueue)
-			newQueue = make([]StoreOperation, 0, threshold)
+			return make([]StoreOperation, 0, threshold)
 		}
 
 		return newQueue
@@ -439,11 +468,34 @@ func replaceGlobalQueue(newQueue []StoreOperation) {
 }
 
 func getGlobalQueueSnapshot() []StoreOperation {
-	return globalOperationQueue.Load()
+	current := globalOperationQueue.Load()
+	snapshot := make([]StoreOperation, len(current))
+	copy(snapshot, current)
+	return snapshot
 }
 
 func updateGlobalQueue(updateFunc func([]StoreOperation) []StoreOperation) {
 	globalOperationQueue.Update(updateFunc)
+}
+
+func drainGlobalQueue(force bool) []StoreOperation {
+	threshold := GetBatchSaveThreshold()
+	var snapshot []StoreOperation
+
+	globalOperationQueue.Update(func(current []StoreOperation) []StoreOperation {
+		if len(current) == 0 {
+			return current
+		}
+		if !force && len(current) < threshold {
+			return current
+		}
+
+		snapshot = make([]StoreOperation, len(current))
+		copy(snapshot, current)
+		return make([]StoreOperation, 0, threshold)
+	})
+
+	return snapshot
 }
 
 func removeFromGlobalQueue(shouldRemove func(StoreOperation) bool) {
@@ -483,13 +535,14 @@ func filterQueueByGroup(group, config string) {
 }
 
 func removeNodesFromQueue(group, config string, nodes []string) {
+	nodeSet := make(map[string]struct{}, len(nodes))
+	for _, n := range nodes {
+		nodeSet[n] = struct{}{}
+	}
 	removeFromGlobalQueue(func(op StoreOperation) bool {
 		if op.Group == group && op.Config == config {
-			for _, node := range nodes {
-				if op.Node == node {
-					return true
-				}
-			}
+			_, found := nodeSet[op.Node]
+			return found
 		}
 		return false
 	})
@@ -512,19 +565,23 @@ func (s *Store) FlushByLevel(level string, config string, group string) error {
 	s.clearCache(level, config, group)
 
 	if level == "all" {
-		s.DBBatchDeletePrefix("smart", false)
+		s.DBBatchDeletePrefix([]string{"smart"}, false)
 	} else if level == "config" {
-		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeStats, config), false)
-		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeNode, config), false)
-		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeRanking, config), false)
-		s.DBBatchDeletePrefix(FormatDBKey(KeyTypePrefetch, config), false)
-		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeHostFailures, config), false)
+		s.DBBatchDeletePrefix([]string{
+			FormatDBKey(KeyTypeStats, config),
+			FormatDBKey(KeyTypeNode, config),
+			FormatDBKey(KeyTypeRanking, config),
+			FormatDBKey(KeyTypePrefetch, config),
+			FormatDBKey(KeyTypeHostFailures, config),
+		}, false)
 	} else if level == "group" {
-		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeStats, config, group), false)
-		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeNode, config, group), false)
-		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeRanking, config, group), false)
-		s.DBBatchDeletePrefix(FormatDBKey(KeyTypePrefetch, config, group), false)
-		s.DBBatchDeletePrefix(FormatDBKey(KeyTypeHostFailures, config, group), false)
+		s.DBBatchDeletePrefix([]string{
+			FormatDBKey(KeyTypeStats, config, group),
+			FormatDBKey(KeyTypeNode, config, group),
+			FormatDBKey(KeyTypeRanking, config, group),
+			FormatDBKey(KeyTypePrefetch, config, group),
+			FormatDBKey(KeyTypeHostFailures, config, group),
+		}, false)
 	}
 
 	return nil
@@ -532,7 +589,7 @@ func (s *Store) FlushByLevel(level string, config string, group string) error {
 
 // 清空所有缓存
 func (s *Store) FlushAll() error {
-	log.Debugln("[SmartStore] Starting FlushAll, current queue length: %d", len(getGlobalQueueSnapshot()))
+	log.Debugln("[SmartStore] Starting FlushAll, current queue length: %d", len(globalOperationQueue.Load()))
 	err := s.FlushByLevel("all", "", "")
 	if err == nil {
 		log.Debugln("[SmartStore] All Smart data cleared")

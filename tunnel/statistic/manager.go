@@ -132,58 +132,68 @@ type Snapshot struct {
 }
 
 func (m *Manager) joinSmartTarget(c Tracker) {
-	target := c.Info().Metadata.SmartTarget
+	info := c.Info()
+	target := info.Metadata.SmartTarget
 
 	if target == "" {
 		return
 	}
 
-	result, _ := m.smartTarget.LoadOrStore(target, xsync.NewMap[string, bool]())
-	result.Store(c.ID(), true)
+	id := c.ID()
 
-	asn := c.Info().Metadata.DstIPASN
+	result, ok := m.smartTarget.Load(target)
+	if !ok {
+		result, _ = m.smartTarget.LoadOrStore(target, xsync.NewMap[string, bool]())
+	}
+	result.Store(id, true)
+
+	asn := info.Metadata.DstIPASN
 	if asn != "" && asn != "unknown" {
-		result, _ := m.smartTarget.LoadOrStore(asn, xsync.NewMap[string, bool]())
-		result.Store(c.ID(), true)
+		result, ok = m.smartTarget.Load(asn)
+		if !ok {
+			result, _ = m.smartTarget.LoadOrStore(asn, xsync.NewMap[string, bool]())
+		}
+		result.Store(id, true)
 	}
 }
 
 func (m *Manager) leaveSmartTarget(c Tracker) {
-	target := c.Info().Metadata.SmartTarget
+	info := c.Info()
+	target := info.Metadata.SmartTarget
 
 	if target == "" {
 		return
 	}
 
+	id := c.ID()
+
 	m.smartTarget.Compute(target, func(result *xsync.Map[string, bool], loaded bool) (*xsync.Map[string, bool], xsync.ComputeOp) {
 		if loaded {
-			result.Delete(c.ID())
+			result.Delete(id)
 			if result.Size() == 0 {
 				return result, xsync.DeleteOp
-			} else {
-				return result, xsync.UpdateOp
 			}
+			return result, xsync.UpdateOp
 		}
 		return result, xsync.CancelOp
 	})
 
-	asn := c.Info().Metadata.DstIPASN
+	asn := info.Metadata.DstIPASN
 	if asn != "" && asn != "unknown" {
 		m.smartTarget.Compute(asn, func(result *xsync.Map[string, bool], loaded bool) (*xsync.Map[string, bool], xsync.ComputeOp) {
 			if loaded {
-				result.Delete(c.ID())
+				result.Delete(id)
 				if result.Size() == 0 {
 					return result, xsync.DeleteOp
-				} else {
-					return result, xsync.UpdateOp
 				}
+				return result, xsync.UpdateOp
 			}
 			return result, xsync.CancelOp
 		})
 	}
 }
 
-func (m *Manager) GetSmartTargetIDs(target, asn string) (map[string]bool) {
+func (m *Manager) GetSmartTargetIDs(target, asn string) map[string]bool {
 	targetIDs := make(map[string]bool)
 
 	if result, ok := m.smartTarget.Load(target); ok {

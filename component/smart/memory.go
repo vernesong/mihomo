@@ -3,7 +3,6 @@ package smart
 import (
 	"encoding/json"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/metacubex/mihomo/common/lru"
@@ -100,8 +99,6 @@ func (s *Store) StorePrefetchResult(group, config string, target string, asnNumb
 		return
 	}
 
-	targetCacheKey := FormatDBKey(KeyTypePrefetch, config, group, target)
-
 	var pm PrefetchMap
 	operations := make([]StoreOperation, 0, 2)
 	nodeWeight := NodesWithWeights{Nodes: proxyNames, Weights: weights}
@@ -125,6 +122,7 @@ func (s *Store) StorePrefetchResult(group, config string, target string, asnNumb
 	}
 
 	if asnNumber != "" && !CdnASNs[asnNumber] {
+		targetCacheKey := FormatDBKey(KeyTypePrefetch, config, group, target)
 		var asnPm PrefetchMap
 		if isUDP {
 			asnPm.RefUDP = targetCacheKey
@@ -156,20 +154,7 @@ func (s *Store) GetPrefetchResult(group, config string, target string, asnNumber
 		return nil, nil
 	}
 
-	findResult := func(pm PrefetchMap) ([]string, []float64) {
-		var res NodesWithWeights
-		if isUDP {
-			res = pm.UDP
-		} else {
-			res = pm.TCP
-		}
-		if len(res.Nodes) > 0 && len(res.Weights) == len(res.Nodes) {
-			return res.Nodes, res.Weights
-		}
-		return nil, nil
-	}
-
-	getPrefetchMap := func(pathPrefix string) (PrefetchMap, bool) {
+	loadPM := func(pathPrefix string) (PrefetchMap, bool) {
 		rawResult, err := s.GetSubBytesByPath(pathPrefix)
 		if err != nil {
 			return PrefetchMap{}, false
@@ -183,26 +168,35 @@ func (s *Store) GetPrefetchResult(group, config string, target string, asnNumber
 		return PrefetchMap{}, false
 	}
 
-	getRefKey := func(pm PrefetchMap, isUDP bool) string {
+	pick := func(pm PrefetchMap) ([]string, []float64) {
+		var res NodesWithWeights
 		if isUDP {
-			return pm.RefUDP
+			res = pm.UDP
+		} else {
+			res = pm.TCP
 		}
-		return pm.RefTCP
+		if len(res.Nodes) > 0 && len(res.Weights) == len(res.Nodes) {
+			return res.Nodes, res.Weights
+		}
+		return nil, nil
 	}
 
 	// ASN
 	if asnNumber != "" && !CdnASNs[asnNumber] {
-		asnPathPrefix := FormatDBKey(KeyTypePrefetch, config, group, asnNumber)
-		if pm, ok := getPrefetchMap(asnPathPrefix); ok {
-			if refKey := getRefKey(pm, isUDP); refKey != "" {
-				parts := strings.Split(refKey, "/")
-				if len(parts) >= 5 {
-					parsedTarget := strings.Join(parts[4:], "/")
-					targetPathPrefix := FormatDBKey(KeyTypePrefetch, config, group, parsedTarget)
-					if refPm, ok := getPrefetchMap(targetPathPrefix); ok {
-						if nodes, weights := findResult(refPm); nodes != nil {
-							return nodes, weights
-						}
+		if pm, ok := loadPM(FormatDBKey(KeyTypePrefetch, config, group, asnNumber)); ok {
+			if nodes, weights := pick(pm); nodes != nil {
+				return nodes, weights
+			}
+			var refKey string
+			if isUDP {
+				refKey = pm.RefUDP
+			} else {
+				refKey = pm.RefTCP
+			}
+			if refKey != "" {
+				if refPm, ok := loadPM(refKey); ok {
+					if nodes, weights := pick(refPm); nodes != nil {
+						return nodes, weights
 					}
 				}
 			}
@@ -210,9 +204,8 @@ func (s *Store) GetPrefetchResult(group, config string, target string, asnNumber
 	}
 
 	// target
-	pathPrefix := FormatDBKey(KeyTypePrefetch, config, group, target)
-	if pm, ok := getPrefetchMap(pathPrefix); ok {
-		if nodes, weights := findResult(pm); nodes != nil {
+	if pm, ok := loadPM(FormatDBKey(KeyTypePrefetch, config, group, target)); ok {
+		if nodes, weights := pick(pm); nodes != nil {
 			return nodes, weights
 		}
 	}
@@ -442,28 +435,48 @@ func (s *Store) AdjustCacheParameters() {
 		globalCacheParams.MaxTargets,
 		globalCacheParams.BatchSaveThreshold)
 
-	targetCache = lru.ResetLRU(targetCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, string](300))
-	unwrapCache = lru.ResetLRU(unwrapCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, UnwrapMap](600))
-	recordCache = lru.ResetLRU(recordCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, *AtomicStatsRecord](300))
-	dbResultCache = lru.ResetLRU(dbResultCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, map[string][]byte](300))
-	blockedNodesCache = lru.ResetLRU(blockedNodesCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, map[string]bool](300))
-	hostStatusCache = lru.ResetLRU(hostStatusCache, globalCacheParams.MaxTargets / 4, lru.WithAge[string, *HostStatus](300))
+	cacheSize := globalCacheParams.MaxTargets / 4
+	targetCache = lru.ResetLRU(targetCache, cacheSize, lru.WithAge[string, string](300))
+	unwrapCache = lru.ResetLRU(unwrapCache, cacheSize, lru.WithAge[string, UnwrapMap](600))
+	recordCache = lru.ResetLRU(recordCache, cacheSize, lru.WithAge[string, *AtomicStatsRecord](300))
+	dbResultCache = lru.ResetLRU(dbResultCache, cacheSize, lru.WithAge[string, map[string][]byte](300))
+	blockedNodesCache = lru.ResetLRU(blockedNodesCache, cacheSize, lru.WithAge[string, map[string]bool](300))
+	hostStatusCache = lru.ResetLRU(hostStatusCache, cacheSize, lru.WithAge[string, *HostStatus](300))
 	go s.FlushQueue(true)
 }
 
 // 按级别清理内存缓存
 func (s *Store) clearCache(level string, config string, group string) {
+	s.FlushQueue(true)
+
+	if level == "all" {
+		targetCache.Clear()
+		unwrapCache.Clear()
+		recordCache.Clear()
+		dbResultCache.Clear()
+		blockedNodesCache.Clear()
+		hostStatusCache.Clear()
+		return
+	}
+
 	targetCache.Clear()
 
-	unwrapCache.Clear()
-
-	recordCache.Clear()
-
-	dbResultCache.Clear()
-
-	blockedNodesCache.Clear()
-
-	hostStatusCache.Clear()
-
-	s.FlushQueue(true)
+	if level == "config" {
+		unwrapCache.RemoveByKeyPrefix(FormatDBKey(config) + "/")
+		recordCache.RemoveByKeyPrefix(FormatDBKey(KeyTypeStats, config) + "/")
+		for _, kt := range []string{KeyTypeStats, KeyTypeNode, KeyTypePrefetch, KeyTypeRanking, KeyTypeHostFailures} {
+			dbResultCache.RemoveByKeyPrefix(FormatDBKey(kt, config) + "/")
+		}
+		blockedNodesCache.RemoveByKeyPrefix(FormatDBKey(config) + "/")
+		hostStatusCache.RemoveByKeyPrefix(FormatDBKey(KeyTypeHostFailures, config) + "/")
+	} else if level == "group" {
+		groupKey := FormatDBKey(config, group) // "smart/{config}/{group}"
+		unwrapCache.RemoveByKeyPrefix(groupKey + "/")
+		recordCache.RemoveByKeyPrefix(FormatDBKey(KeyTypeStats, config, group) + "/")
+		for _, kt := range []string{KeyTypeStats, KeyTypeNode, KeyTypePrefetch, KeyTypeRanking, KeyTypeHostFailures} {
+			dbResultCache.Delete(FormatDBKey(kt, config, group))
+		}
+		blockedNodesCache.Delete(groupKey)
+		hostStatusCache.RemoveByKeyPrefix(FormatDBKey(KeyTypeHostFailures, config, group) + "/")
+	}
 }

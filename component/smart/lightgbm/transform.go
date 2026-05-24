@@ -439,10 +439,9 @@ func (ft *FeatureTransforms) ApplyTransforms(features []float64) []float64 {
 		log.Errorln("[Smart] Apply transforms errors: %s", strings.Join(errors, "; "))
 	}
 
-	transformPool.Put(result)
-
 	out := make([]float64, len(result))
 	copy(out, result)
+	transformPool.Put(result)
 	return out
 }
 

@@ -311,8 +311,7 @@ func urlToMetadata(rawURL string) (addr C.Metadata, err error) {
 }
 
 func (p *Proxy) StatusTest(ctx context.Context, rawURL string) (status uint16, ok bool, err error) {
-	addr, err := urlToMetadata(rawURL)
-	if err != nil {
+	if _, err = urlToMetadata(rawURL); err != nil {
 		return 1, false, err
 	}
 
@@ -321,43 +320,47 @@ func (p *Proxy) StatusTest(ctx context.Context, rawURL string) (status uint16, o
 		return 1, false, err
 	}
 
-	instance, err := p.DialContext(ctx, &addr)
-	if err != nil {
-		return 1, false, err
-	}
-	defer func() {
-		_ = instance.Close()
-	}()
-
-	parsedURL, err := url.Parse(rawURL)
-	if err != nil {
-		return 1, false, err
-	}
-	hostname := parsedURL.Hostname()
-
-	uConfig := tls.UConfig(tlsConfig)
-	uConfig.ServerName = hostname
-
 	fingerprint, ok2 := tls.GetFingerprint("chrome")
 	if !ok2 {
 		return 1, false, fmt.Errorf("failed to get TLS fingerprint")
 	}
 
+	dialProxy := func(dialCtx context.Context, targetAddr string) (net.Conn, error) {
+		var metadata C.Metadata
+		if err := metadata.SetRemoteAddress(targetAddr); err != nil {
+			return nil, err
+		}
+		return p.DialContext(dialCtx, &metadata)
+	}
+
 	transport := &http.Transport{
-		DialContext: func(context.Context, string, string) (net.Conn, error) {
-			return instance, nil
+		DialContext: func(dialCtx context.Context, network, targetAddr string) (net.Conn, error) {
+			return dialProxy(dialCtx, targetAddr)
 		},
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     false,
-		DialTLSContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
-			uConn := tls.UClient(instance, uConfig, fingerprint)
+		DialTLSContext: func(dialCtx context.Context, network, targetAddr string) (net.Conn, error) {
+			rawConn, err := dialProxy(dialCtx, targetAddr)
+			if err != nil {
+				return nil, err
+			}
+			host, _, splitErr := net.SplitHostPort(targetAddr)
+			if splitErr != nil {
+				_ = rawConn.Close()
+				return nil, splitErr
+			}
+			uCfg := tls.UConfig(tlsConfig)
+			uCfg.ServerName = host
+			uConn := tls.UClient(rawConn, uCfg, fingerprint)
 			if err := tls.BuildWebsocketHandshakeState(uConn); err != nil {
+				_ = rawConn.Close()
 				return nil, err
 			}
 			if err := uConn.HandshakeContext(dialCtx); err != nil {
+				_ = rawConn.Close()
 				return nil, err
 			}
 			return uConn, nil

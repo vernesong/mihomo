@@ -28,10 +28,12 @@ type timeBucket struct {
 }
 
 type bucketWindow struct {
-	buckets  []timeBucket
-	interval int64
-	windowMs int64
-	mu       sync.Mutex
+	buckets    []timeBucket
+	interval   int64
+	windowMs   int64
+	mu         sync.Mutex
+	lastSlot   int64
+	cachedRate atomic.Int64
 }
 
 type TrackerInfo struct {
@@ -298,27 +300,40 @@ func newBucketWindow(bucketCount int, intervalMs int64) *bucketWindow {
 }
 
 func (w *bucketWindow) updateMaxRate(bytes int64) int64 {
-	w.mu.Lock()
+	if bytes <= 0 {
+		return w.cachedRate.Load()
+	}
 	nowMs := time.Now().UnixNano() / 1e6
-	idx := int((nowMs / w.interval) % int64(len(w.buckets)))
-	bucketStart := (nowMs / w.interval) * w.interval
+	slot := nowMs / w.interval
+	idx := int(slot % int64(len(w.buckets)))
+	bucketStart := slot * w.interval
+
+	w.mu.Lock()
 	if w.buckets[idx].startMs != bucketStart {
 		w.buckets[idx].startMs = bucketStart
 		w.buckets[idx].bytes = 0
 	}
 	w.buckets[idx].bytes += bytes
 
-	now := nowMs
-	windowStart := now - w.windowMs
-	maxRate := int64(0)
-	for _, b := range w.buckets {
-		if b.startMs >= windowStart && b.bytes > 0 {
-			rate := int64(float64(b.bytes) * 1000 / float64(w.interval))
-			if rate > maxRate {
-				maxRate = rate
+	if slot != w.lastSlot {
+		w.lastSlot = slot
+		windowStart := nowMs - w.windowMs
+		maxRate := int64(0)
+		for _, b := range w.buckets {
+			if b.startMs >= windowStart && b.bytes > 0 {
+				rate := b.bytes * 1000 / w.interval
+				if rate > maxRate {
+					maxRate = rate
+				}
 			}
 		}
+		w.cachedRate.Store(maxRate)
+	} else {
+		if r := w.buckets[idx].bytes * 1000 / w.interval; r > w.cachedRate.Load() {
+			w.cachedRate.Store(r)
+		}
 	}
+	result := w.cachedRate.Load()
 	w.mu.Unlock()
-	return maxRate
+	return result
 }

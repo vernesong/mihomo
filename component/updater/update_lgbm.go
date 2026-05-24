@@ -104,14 +104,12 @@ func updateLgbmModel() error {
 var ErrGetLgbmModelUpdateSkip = errors.New("LightGBM model is updating, skip")
 
 func UpdateLgbmModelDatabase() error {
-	if updatingLgbm.Load() {
+	if !updatingLgbm.CompareAndSwap(false, true) {
 		return ErrGetLgbmModelUpdateSkip
 	}
+	defer updatingLgbm.Store(false)
 
 	log.Infoln("[Smart] Start updating LightGBM model")
-
-	updatingLgbm.Store(true)
-	defer updatingLgbm.Store(false)
 
 	if err := updateLgbmModel(); err != nil {
 		log.Errorln("[Smart] update LightGBM model error: %s", err.Error())

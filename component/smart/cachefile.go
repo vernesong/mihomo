@@ -2,15 +2,11 @@ package smart
 
 import (
 	"bytes"
-	"context"
 	"errors"
-	"fmt"
 	"math/rand"
 	"strings"
 
 	"github.com/metacubex/bbolt"
-	"github.com/metacubex/mihomo/common/batch"
-	"github.com/metacubex/mihomo/common/xsync"
 	"github.com/metacubex/mihomo/log"
 )
 
@@ -19,52 +15,46 @@ func (s *Store) BatchSave(operations []StoreOperation) error {
 	if len(operations) == 0 {
 		return nil
 	}
-
-	concurrency := 2
-	batchSize := 100
-
-	var writeMapSync xsync.Map[string, []byte]
-
-	b, _ := batch.New[struct{}](context.Background(), batch.WithConcurrencyNum[struct{}](concurrency))
-
-	numBatches := (len(operations) + batchSize - 1) / batchSize
-
-	for i := 0; i < numBatches; i++ {
-		start := i * batchSize
-		end := (i + 1) * batchSize
-		if end > len(operations) {
-			end = len(operations)
-		}
-
-		curBatch := operations[start:end]
-		b.Go(fmt.Sprintf("batch-%d", i), func() (struct{}, error) {
-			for _, op := range curBatch {
-				key := formatOperationKey(&op)
-				if key != "" {
-					writeMapSync.Store(key, op.Data)
-				}
-			}
-			return struct{}{}, nil
-		})
+	if db == nil {
+		return errors.New("DB Cache file load failed")
 	}
 
-	b.Wait()
+	type writeEntry struct {
+		key  string
+		data []byte
+	}
 
-	writeMap := make(map[string][]byte)
-	writeMapSync.Range(func(key string, value []byte) bool {
-		writeMap[key] = value
-		return true
-	})
+	writeIndex := make(map[string]int, len(operations))
+	entries := make([]writeEntry, 0, len(operations))
+	for i := range operations {
+		key := formatOperationKey(&operations[i])
+		if key == "" {
+			continue
+		}
+		if idx, ok := writeIndex[key]; ok {
+			entries[idx].data = operations[i].Data
+			continue
+		}
+		writeIndex[key] = len(entries)
+		entries = append(entries, writeEntry{key: key, data: operations[i].Data})
+	}
+	if len(entries) == 0 {
+		return nil
+	}
 
 	var err error
 	err = db.Batch(func(tx *bbolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists(bucketSmartStats)
-		if err != nil {
-			return err
+		bucket := tx.Bucket(bucketSmartStats)
+		if bucket == nil {
+			var err error
+			bucket, err = tx.CreateBucketIfNotExists(bucketSmartStats)
+			if err != nil {
+				return err
+			}
 		}
 
-		for key, data := range writeMap {
-			if err := bucket.Put([]byte(key), data); err != nil {
+		for _, entry := range entries {
+			if err := bucket.Put([]byte(entry.key), entry.data); err != nil {
 				return err
 			}
 		}
@@ -81,25 +71,40 @@ func (s *Store) BatchSave(operations []StoreOperation) error {
 
 // 刷新队列中的操作到数据库
 func (s *Store) FlushQueue(force bool) {
-	threshold := GetBatchSaveThreshold()
-	ops := getGlobalQueueSnapshot()
-
+	ops := drainGlobalQueue(force)
 	if len(ops) == 0 {
 		return
 	}
-
-	if !force {
-		if len(ops) < threshold {
-			return
-		}
-	}
-
-	InitQueue()
 	s.BatchSave(ops)
 	log.Debugln("[SmartStore] Queue datas saved, operations: [%d]", len(ops))
 }
 
-// 根据路径前缀获取所有匹配的数据
+func matchKeyPrefix(key, queryPrefix string, strict bool) bool {
+	if !strings.HasPrefix(key, queryPrefix) {
+		return false
+	}
+	if strict && len(key) > len(queryPrefix) && key[len(queryPrefix)] != '/' {
+		return false
+	}
+	return true
+}
+
+func mergeIntoByPrefix(from, into map[string][]byte, queryPrefix string, strict bool) int {
+	merged := 0
+	for k, v := range from {
+		if !matchKeyPrefix(k, queryPrefix, strict) {
+			continue
+		}
+		if _, exists := into[k]; exists {
+			continue
+		}
+		into[k] = v
+		merged++
+	}
+	return merged
+}
+
+// 根据路径获取缓存数据
 func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 	result := make(map[string][]byte)
 
@@ -107,30 +112,36 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 	configMaxTargets := globalCacheParams.MaxTargets / 2
 	globalCacheParams.mutex.RUnlock()
 
-	pathParts := strings.Split(prefix, "/")
-	if len(pathParts) < 2 || pathParts[0] != "smart" {
+	depth := strings.Count(prefix, "/") + 1
+	if depth < 3 || !strings.HasPrefix(prefix, "smart/") {
 		return result, nil
 	}
-
-	keyType := pathParts[1]
-	config := pathParts[2]
-	group := ""
-	if len(pathParts) >= 4 {
-		group = pathParts[3]
+	rest := prefix[6:] // skip "smart/"
+	var keyType, config, group, seg4, seg5 string
+	keyType, rest, _ = strings.Cut(rest, "/")
+	config, rest, _ = strings.Cut(rest, "/")
+	if depth >= 4 {
+		group, rest, _ = strings.Cut(rest, "/")
+	}
+	if depth >= 5 {
+		seg4, rest, _ = strings.Cut(rest, "/")
+	}
+	if depth >= 6 {
+		seg5, _, _ = strings.Cut(rest, "/")
 	}
 
 	strict := false
 	switch keyType {
 	case KeyTypeNode, KeyTypePrefetch, KeyTypeHostFailures:
-		if len(pathParts) == 5 {
+		if depth == 5 {
 			strict = true
 		}
 	case KeyTypeRanking:
-		if len(pathParts) == 4 {
+		if depth == 4 {
 			strict = true
 		}
 	case KeyTypeStats:
-		if len(pathParts) == 6 {
+		if depth == 6 {
 			strict = true
 		}
 	}
@@ -138,45 +149,48 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 	// 从队列获取结果
 	ops := getGlobalQueueSnapshot()
 	for _, op := range ops {
-		if op.Config != config || op.Group != group {
+		if op.Config != config {
 			continue
 		}
-		var key string
+		if depth >= 4 && op.Group != group {
+			continue
+		}
 
 		switch keyType {
 		case KeyTypeNode:
 			if op.Type == OpSaveNodeState && op.Node != "" {
-				key = FormatDBKey(KeyTypeNode, op.Config, op.Group, op.Node)
-				result[key] = op.Data
+				if depth >= 5 && seg4 != op.Node {
+					continue
+				}
+				result[FormatDBKey(KeyTypeNode, op.Config, op.Group, op.Node)] = op.Data
 			}
 		case KeyTypeStats:
 			if op.Type == OpSaveStats && op.Target != "" && op.Node != "" {
-				if len(pathParts) >= 5 && pathParts[4] != op.Target {
+				if depth >= 5 && seg4 != op.Target {
 					continue
 				}
-				key = FormatDBKey(KeyTypeStats, op.Config, op.Group, op.Target, op.Node)
-				result[key] = op.Data
+				if depth >= 6 && seg5 != op.Node {
+					continue
+				}
+				result[FormatDBKey(KeyTypeStats, op.Config, op.Group, op.Target, op.Node)] = op.Data
 			}
 		case KeyTypePrefetch:
 			if op.Type == OpSavePrefetch && op.Target != "" {
-				if len(pathParts) >= 5 && pathParts[4] != op.Target {
+				if depth >= 5 && seg4 != op.Target {
 					continue
 				}
-				key = FormatDBKey(KeyTypePrefetch, op.Config, op.Group, op.Target)
-				result[key] = op.Data
+				result[FormatDBKey(KeyTypePrefetch, op.Config, op.Group, op.Target)] = op.Data
 			}
 		case KeyTypeRanking:
 			if op.Type == OpSaveRanking {
-				key = FormatDBKey(KeyTypeRanking, op.Config, op.Group)
-				result[key] = op.Data
+				result[FormatDBKey(KeyTypeRanking, op.Config, op.Group)] = op.Data
 			}
 		case KeyTypeHostFailures:
 			if op.Type == OpSaveHostFailures && op.Target != "" {
-				if len(pathParts) >= 5 && pathParts[4] != op.Target {
+				if depth >= 5 && seg4 != op.Target {
 					continue
 				}
-				key = FormatDBKey(KeyTypeHostFailures, op.Config, op.Group, op.Target)
-				result[key] = op.Data
+				result[FormatDBKey(KeyTypeHostFailures, op.Config, op.Group, op.Target)] = op.Data
 			}
 		}
 	}
@@ -190,6 +204,46 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 		maxResults = configMaxTargets
 	}
 
+	hasGroupLevel := false
+	var groupPrefix string
+
+	switch keyType {
+	case KeyTypeStats, KeyTypeNode, KeyTypePrefetch, KeyTypeHostFailures, KeyTypeRanking:
+		if depth >= 4 {
+			hasGroupLevel = true
+			groupPrefix = FormatDBKey(keyType, config, group)
+		}
+	}
+
+	if hasGroupLevel && maxResults > 0 {
+		if cachedGroup, ok := dbResultCache.Get(groupPrefix); ok {
+			merged := mergeIntoByPrefix(cachedGroup, result, prefix, strict)
+			if depth == 4 || merged > 0 {
+				return result, nil
+			}
+			if strict {
+				groupResult, err := s.DBViewPrefixScan(groupPrefix, maxResults, false)
+				if err == nil {
+					dbResultCache.Set(groupPrefix, groupResult)
+					merged = mergeIntoByPrefix(groupResult, result, prefix, strict)
+					if depth == 4 || merged > 0 {
+						return result, nil
+					}
+				}
+			}
+		} else {
+			groupResult, err := s.DBViewPrefixScan(groupPrefix, maxResults, false)
+			if err == nil {
+				dbResultCache.Set(groupPrefix, groupResult)
+				merged := mergeIntoByPrefix(groupResult, result, prefix, strict)
+				if depth == 4 || merged > 0 {
+					return result, nil
+				}
+			}
+		}
+		return result, nil
+	}
+
 	if cached, ok := dbResultCache.Get(prefix); ok && maxResults > 0 {
 		for k, v := range cached {
 			if _, exists := result[k]; !exists {
@@ -201,8 +255,7 @@ func (s *Store) GetSubBytesByPath(prefix string) (map[string][]byte, error) {
 		if err != nil {
 			return result, nil
 		}
-		// KeyTypeStats \ KeyTypeHostFailures use other cache
-		if maxResults > 0 {
+		if maxResults > 0 && !hasGroupLevel {
 			if keyType != KeyTypeStats && keyType != KeyTypeHostFailures {
 				dbResultCache.Set(prefix, dbResult)
 			}
@@ -222,6 +275,7 @@ func (s *Store) DBViewGetItem(key string) ([]byte, error) {
 	if db == nil {
 		return nil, errors.New("DB Cache file load failed")
 	}
+	keyBytes := []byte(key)
 
 	var data []byte
 	err := db.View(func(tx *bbolt.Tx) error {
@@ -230,13 +284,12 @@ func (s *Store) DBViewGetItem(key string) ([]byte, error) {
 			return errors.New("bucket not found")
 		}
 
-		value := bucket.Get([]byte(key))
+		value := bucket.Get(keyBytes)
 		if value == nil {
 			return errors.New("item not found")
 		}
 
-		data = make([]byte, len(value))
-		copy(data, value)
+		data = append(data[:0], value...)
 		return nil
 	})
 	return data, err
@@ -247,13 +300,18 @@ func (s *Store) DBBatchPutItem(key string, value []byte) error {
 	if db == nil {
 		return errors.New("DB Cache file load failed")
 	}
+	keyBytes := []byte(key)
 
 	return db.Batch(func(tx *bbolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists(bucketSmartStats)
-		if err != nil {
-			return err
+		bucket := tx.Bucket(bucketSmartStats)
+		if bucket == nil {
+			var err error
+			bucket, err = tx.CreateBucketIfNotExists(bucketSmartStats)
+			if err != nil {
+				return err
+			}
 		}
-		return bucket.Put([]byte(key), value)
+		return bucket.Put(keyBytes, value)
 	})
 }
 
@@ -262,8 +320,12 @@ func (s *Store) DBViewPrefixScan(prefix string, maxResults int, strict bool) (ma
 	if db == nil {
 		return nil, errors.New("DB Cache file load failed")
 	}
-	
-	result := make(map[string][]byte)
+
+	resultCap := 0
+	if maxResults > 0 {
+		resultCap = maxResults
+	}
+	result := make(map[string][]byte, resultCap)
 
 	if maxResults == 0 {
 		return result, nil
@@ -273,7 +335,9 @@ func (s *Store) DBViewPrefixScan(prefix string, maxResults int, strict bool) (ma
 		key string
 		val []byte
 	}
-	var kvs []kv
+
+	var reservoir []kv
+	seen := 0
 
 	err := db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(bucketSmartStats)
@@ -282,13 +346,41 @@ func (s *Store) DBViewPrefixScan(prefix string, maxResults int, strict bool) (ma
 		}
 		cursor := bucket.Cursor()
 		prefixBytes := []byte(prefix)
+
+		if maxResults < 0 {
+			for k, v := cursor.Seek(prefixBytes); k != nil && bytes.HasPrefix(k, prefixBytes); k, v = cursor.Next() {
+				if strict && len(k) > len(prefixBytes) && k[len(prefixBytes)] != '/' {
+					continue
+				}
+				keyCopy := string(k)
+				dataCopy := make([]byte, len(v))
+				copy(dataCopy, v)
+				result[keyCopy] = dataCopy
+			}
+			return nil
+		}
+
+		reservoir = make([]kv, 0, maxResults)
 		for k, v := cursor.Seek(prefixBytes); k != nil && bytes.HasPrefix(k, prefixBytes); k, v = cursor.Next() {
 			if strict && len(k) > len(prefixBytes) && k[len(prefixBytes)] != '/' {
 				continue
 			}
-			dataCopy := make([]byte, len(v))
-			copy(dataCopy, v)
-			kvs = append(kvs, kv{key: string(k), val: dataCopy})
+
+			if len(reservoir) < maxResults {
+				dataCopy := make([]byte, len(v))
+				copy(dataCopy, v)
+				reservoir = append(reservoir, kv{key: string(k), val: dataCopy})
+				seen++
+				continue
+			}
+
+			seen++
+			j := rand.Intn(seen)
+			if j < maxResults {
+				dataCopy := make([]byte, len(v))
+				copy(dataCopy, v)
+				reservoir[j] = kv{key: string(k), val: dataCopy}
+			}
 		}
 		return nil
 	})
@@ -297,84 +389,39 @@ func (s *Store) DBViewPrefixScan(prefix string, maxResults int, strict bool) (ma
 		return nil, err
 	}
 
-	if maxResults < 0 || len(kvs) <= maxResults {
-		for _, item := range kvs {
-			result[item.key] = item.val
-		}
-	} else {
-		reservoir := kvs[:maxResults]
-		for i := maxResults; i < len(kvs); i++ {
-			j := rand.Intn(i + 1)
-			if j < maxResults {
-				reservoir[j] = kvs[i]
-			}
-		}
-		for _, item := range reservoir {
-			result[item.key] = item.val
-		}
+	for _, item := range reservoir {
+		result[item.key] = item.val
 	}
 
 	return result, nil
 }
 
 // 删除前缀匹配的所有记录
-func (s *Store) DBBatchDeletePrefix(prefix string, strict bool) error {
+func (s *Store) DBBatchDeletePrefix(prefixes []string, strict bool) error {
 	if db == nil {
 		return errors.New("DB Cache file load failed")
 	}
 
-	var keysToDelete [][]byte
-
-	err := db.View(func(tx *bbolt.Tx) error {
+	return db.Batch(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(bucketSmartStats)
 		if bucket == nil {
 			return nil
 		}
 
 		cursor := bucket.Cursor()
-		prefixBytes := []byte(prefix)
-
-		for k, _ := cursor.Seek(prefixBytes); k != nil && bytes.HasPrefix(k, prefixBytes); k, _ = cursor.Next() {
-			if strict && len(k) > len(prefixBytes) && k[len(prefixBytes)] != '/' {
-				continue
+		for _, prefix := range prefixes {
+			prefixBytes := []byte(prefix)
+			for k, _ := cursor.Seek(prefixBytes); k != nil && bytes.HasPrefix(k, prefixBytes); {
+				if strict && len(k) > len(prefixBytes) && k[len(prefixBytes)] != '/' {
+					k, _ = cursor.Next()
+					continue
+				}
+				if err := cursor.Delete(); err != nil {
+					return err
+				}
+				k, _ = cursor.Next()
 			}
-			keyBytes := make([]byte, len(k))
-			copy(keyBytes, k)
-			keysToDelete = append(keysToDelete, keyBytes)
 		}
 		return nil
 	})
-
-	if err != nil {
-		return err
-	}
-
-	const batchSize = 200
-	for i := 0; i < len(keysToDelete); i += batchSize {
-		end := i + batchSize
-		if end > len(keysToDelete) {
-			end = len(keysToDelete)
-		}
-
-		batch := keysToDelete[i:end]
-		err := db.Batch(func(tx *bbolt.Tx) error {
-			bucket := tx.Bucket(bucketSmartStats)
-			if bucket == nil {
-				return nil
-			}
-
-			for _, k := range batch {
-				if err := bucket.Delete(k); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
 }

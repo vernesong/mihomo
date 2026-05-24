@@ -2,9 +2,9 @@ package lightgbm
 
 import (
 	"encoding/csv"
-	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,10 +27,12 @@ type DataCollector struct {
 	writer                 *csv.Writer
 	configured             bool
 	smartCollectorSize     int64
+	lastFileCheck          time.Time
 }
 
 const (
 	defaultSmartCollectorSize = 100 * 1024 * 1024
+	expectedColumns           = MaxFeatureSize + 10
 )
 
 func InitCollector(collectSize float64) {
@@ -59,7 +61,8 @@ func (c *DataCollector) AddSample(input *smart.ModelInput, metadata *C.Metadata,
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if c.configured {
+	if c.configured && time.Since(c.lastFileCheck) > 5 * time.Second {
+		c.lastFileCheck = time.Now()
 		if _, err := os.Stat(c.dataPath); os.IsNotExist(err) {
 			log.Infoln("[Smart] Data file was deleted, reinitializing collector")
 			c.configured = false
@@ -95,8 +98,9 @@ func (c *DataCollector) AddSample(input *smart.ModelInput, metadata *C.Metadata,
 	}
 
 	featureStrings := make([]string, len(features))
+	var buf [32]byte
 	for i, f := range features {
-		featureStrings[i] = fmt.Sprintf("%.6f", f)
+		featureStrings[i] = string(strconv.AppendFloat(buf[:0], f, 'f', 6, 64))
 	}
 
 	var geoIPStr string
@@ -128,20 +132,21 @@ func (c *DataCollector) AddSample(input *smart.ModelInput, metadata *C.Metadata,
 		standardizedSource = "unknown"
 	}
 
-	sample := append(featureStrings,
+	sample := make([]string, 0, expectedColumns)
+	sample = append(sample, featureStrings...)
+	sample = append(sample,
 		input.GroupName,
 		input.NodeName,
 		dstASN,
 		host,
 		dstIP,
-		fmt.Sprintf("%d", metadata.DstPort),
+		strconv.FormatUint(uint64(metadata.DstPort), 10),
 		geoIPStr,
-		fmt.Sprintf("%.6f", actualWeight),
+		strconv.FormatFloat(actualWeight, 'f', 6, 64),
 		standardizedSource,
 		time.Now().Format(time.RFC3339),
 	)
 
-	expectedColumns := MaxFeatureSize + 10
 	if len(sample) != expectedColumns {
 		return
 	}
@@ -204,9 +209,40 @@ func (c *DataCollector) initializeWriter() error {
 		fileExists = false
 	}
 
-	file, err := os.OpenFile(c.dataPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(c.dataPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return err
+	}
+
+	if fileExists {
+		if stat, err2 := file.Stat(); err2 == nil && stat.Size() > 0 {
+			last := make([]byte, 1)
+			if _, err2 = file.ReadAt(last, stat.Size() - 1); err2 == nil && last[0] != '\n' {
+				const scanSize = int64(65536)
+				readStart := stat.Size() - scanSize
+				if readStart < 0 {
+					readStart = 0
+				}
+				buf := make([]byte, stat.Size() - readStart)
+				if _, err3 := file.ReadAt(buf, readStart); err3 == nil {
+					newlinePos := int64(-1)
+					for i := int64(len(buf)) - 1; i >= 0; i-- {
+						if buf[i] == '\n' {
+							newlinePos = readStart + i + 1
+							break
+						}
+					}
+					if newlinePos > 0 {
+						_ = file.Truncate(newlinePos)
+						log.Warnln("[Smart] Removed incomplete CSV row from %s", c.dataPath)
+					} else {
+						_ = file.Truncate(0)
+						fileExists = false
+						log.Warnln("[Smart] No valid CSV rows found, reinitializing %s", c.dataPath)
+					}
+				}
+			}
+		}
 	}
 
 	c.file = file

@@ -199,7 +199,6 @@ func getAllGroupWeights(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 
 	if len(result) == 0 && len(errorsMap) == 0 {
-		render.Status(r, http.StatusInternalServerError)
 		render.JSON(w, r, render.M{
 			"weights": map[string][]smart.NodeRankItem{},
 			"message": "No Smart groups or no weight data available",
