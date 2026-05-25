@@ -1055,8 +1055,10 @@ proxies: # socks5
     # down: "200 Mbps" # 若不写单位，默认为 Mbps
     # bbr-profile: "" # Available: "standard", "conservative", "aggressive". Default: "standard"
     password: yourpassword
-    # obfs: salamander # 默认为空，如果填写则开启 obfs，目前仅支持 salamander
+    # obfs: salamander # 默认为空，如果填写则开启 obfs，目前支持 salamander 和 gecko
     # obfs-password: yourpassword
+    # obfs-min-packet-size: 512 # 最小线上数据包大小（字节）。仅限 Gecko。
+    # obfs-max-packet-size: 1200 # 最大线上数据包大小（字节）。仅限 Gecko。
     # sni: server.com
     # ech-opts:
     #   enable: true # 必须手动开启
@@ -2033,8 +2035,10 @@ listeners:
     ##  up 和 down 均不写或为 0 则使用 BBR 流控
     #  up: "30 Mbps" # 若不写单位，默认为 Mbps
     #  down: "200 Mbps" # 若不写单位，默认为 Mbps
-    #  obfs: salamander # 默认为空，如果填写则开启 obfs，目前仅支持 salamander
+    #  obfs: salamander # 默认为空，如果填写则开启 obfs，目前支持 salamander 和 gecko
     #  obfs-password: yourpassword
+    #  obfs-min-packet-size: 512 # 最小线上数据包大小（字节）。仅限 Gecko。
+    #  obfs-max-packet-size: 1200 # 最大线上数据包大小（字节）。仅限 Gecko。
     #  bbr-profile: "" # Available: "standard", "conservative", "aggressive". Default: "standard"
     #  max-idle-time: 15000
     #  alpn:
