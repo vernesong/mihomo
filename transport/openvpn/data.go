@@ -4,9 +4,11 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -153,10 +155,16 @@ func newDataChannelCBC(cipherName string, key []byte) (cipher.Block, error) {
 
 func newDataChannelAuth(authName string) (func() hash.Hash, int, error) {
 	switch authName {
+	case AuthMD5:
+		return md5.New, md5.Size, nil
 	case AuthSHA1:
 		return sha1.New, sha1.Size, nil
 	case AuthSHA256:
 		return sha256.New, sha256.Size, nil
+	case AuthSHA384:
+		return sha512.New384, sha512.Size384, nil
+	case AuthSHA512:
+		return sha512.New, sha512.Size, nil
 	default:
 		return nil, 0, fmt.Errorf("unsupported openvpn auth %q", authName)
 	}
