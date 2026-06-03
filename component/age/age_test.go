@@ -1,6 +1,7 @@
 package age_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/metacubex/mihomo/component/age"
@@ -29,6 +30,18 @@ func TestAge(t *testing.T) {
 			recipients, err := age.ParseRecipients(publicKey)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if len(identities) != len(recipients) {
+				t.Fatal("identities and recipients are not equal")
+			}
+			for i, identity := range identities {
+				recipient, err := age.ConvertToRecipient(identity)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if fmt.Sprint(recipient) != fmt.Sprint(recipients[i]) {
+					t.Fatal("recipient is not equal to recipients: ", recipient, " != ", recipients[i], "")
+				}
 			}
 			rawData := []byte("hello world")
 			encryptData, err := age.EncryptBytes(rawData, recipients...)

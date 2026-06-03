@@ -68,6 +68,18 @@ func EncryptBytes(data []byte, recipients ...Recipient) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// ConvertToRecipient convert age.Identity to age.Recipient
+func ConvertToRecipient(identity Identity) (Recipient, error) {
+	switch identity := identity.(type) {
+	case *age.X25519Identity:
+		return identity.Recipient(), nil
+	case *age.HybridIdentity:
+		return identity.Recipient(), nil
+	default:
+		return nil, fmt.Errorf("unexpected identity type: %T", identity)
+	}
+}
+
 func GenX25519KeyPair() (string, string, error) {
 	identity, err := age.GenerateX25519Identity()
 	if err != nil {
@@ -86,7 +98,7 @@ func GenHybridKeyPair() (string, string, error) {
 
 func Main(args []string) {
 	if len(args) < 1 {
-		panic("Using: age keygen/keygen-pq/decrypt/encrypt")
+		panic("Using: age keygen/keygen-pq/convert/decrypt/encrypt")
 	}
 	switch args[0] {
 	case "keygen":
@@ -105,6 +117,24 @@ func Main(args []string) {
 		fmt.Printf("# created: %s\n", time.Now().Format(time.RFC3339))
 		fmt.Printf("# public key: %s\n", publicKey)
 		fmt.Printf("%s\n", secretKey)
+	case "convert":
+		if len(args) < 1 {
+			panic("Using: age convert <secret_key>")
+		}
+		identities, err := ParseIdentities(args[1])
+		if err != nil {
+			panic(err)
+		}
+		if len(identities) == 0 {
+			panic("no identities found in the input")
+		}
+		for _, identity := range identities {
+			recipient, err := ConvertToRecipient(identity)
+			if err != nil {
+				panic(err)
+			}
+			fmt.Println(recipient)
+		}
 	case "decrypt":
 		if len(args) < 3 {
 			panic("Using: age decrypt <secret_key> <source_file> <target_file>")
