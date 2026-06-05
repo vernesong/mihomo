@@ -26,6 +26,7 @@ var _ ProxyGroup = (*Fallback)(nil)
 var _ ProxyGroup = (*LoadBalance)(nil)
 var _ ProxyGroup = (*URLTest)(nil)
 var _ ProxyGroup = (*Selector)(nil)
+var _ ProxyGroup = (*Smart)(nil)
 
 type SelectAble interface {
 	Set(string) error
