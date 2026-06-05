@@ -169,6 +169,7 @@ type RuleWrapper interface {
 type RuleMatchHelper struct {
 	ResolveIP   func()
 	FindProcess func()
+	CheckPassRule func(adapterName string) bool
 }
 
 type RuleGroup interface {
