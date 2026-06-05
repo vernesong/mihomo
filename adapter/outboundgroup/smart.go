@@ -493,6 +493,14 @@ func (s *Smart) MarshalJSON() ([]byte, error) {
 	})
 }
 
+func (s *Smart) Providers() []provider.ProxyProvider {
+	return s.providers
+}
+
+func (s *Smart) Proxies() []C.Proxy {
+	return s.GetProxies(false)
+}
+
 func (s *Smart) filterProxies(metadata *C.Metadata, wildcardTarget string, names []string, weights []float64, all []C.Proxy, minCount int, isUDP bool) []C.Proxy {
 	blockedNodes := s.store.GetBlockedNodes(s.Name(), s.configName)
 	wtFailNodes, _, _, wtBlocked := s.store.GetHostStatus(s.Name(), s.configName, wildcardTarget)
