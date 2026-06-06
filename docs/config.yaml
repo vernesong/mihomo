@@ -1570,6 +1570,7 @@ rule-providers:
     format: mrs
     behavior: domain
     path: /path/to/save/file.mrs
+    # path-in-bundle: "geo/geosite/cn.mrs" # 当设置该选项时，如果本地文件不存在，会优先从 Home Dir的 BundleMRS.7z 中解压该文件，此项的值用于指定在 BundleMRS.7z 中的路径
   rule4:
     type: inline
     behavior: domain # classical / ipcidr
