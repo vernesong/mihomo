@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/metacubex/mihomo/common/atomic"
+	"github.com/metacubex/mihomo/common/sockopt"
 	"github.com/metacubex/mihomo/component/keepalive"
 	"github.com/metacubex/mihomo/component/mptcp"
 
@@ -35,8 +36,6 @@ func MPTCP() bool {
 	return globalMPTCP.Load()
 }
 
-type controlFn = func(network, address string, c syscall.RawConn) error
-
 type ListenConfig struct {
 	routeMark int
 }
@@ -55,7 +54,7 @@ func (l ListenConfig) newListenConfig() *tfo.ListenConfig {
 	mptcp.SetNetListenConfig(&lc.ListenConfig, MPTCP())
 	lc.Control = func(network, address string, c syscall.RawConn) error {
 		if l.routeMark != 0 {
-			err := bindMarkToControl(l.routeMark)(network, address, c)
+			err := sockopt.RawConnMark(c, l.routeMark)
 			if err != nil {
 				return err
 			}
