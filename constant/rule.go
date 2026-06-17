@@ -31,6 +31,7 @@ const (
 	ProcessPathRegex
 	ProcessNameWildcard
 	ProcessPathWildcard
+	RematchName
 	RuleSet
 	Network
 	Uid
@@ -114,6 +115,8 @@ func (rt RuleType) String() string {
 		return "ProcessNameWildcard"
 	case ProcessPathWildcard:
 		return "ProcessPathWildcard"
+	case RematchName:
+		return "RematchName"
 	case MATCH:
 		return "Match"
 	case RuleSet:
@@ -167,8 +170,8 @@ type RuleWrapper interface {
 }
 
 type RuleMatchHelper struct {
-	ResolveIP   func()
-	FindProcess func()
+	ResolveIP     func()
+	FindProcess   func()
 	CheckPassRule func(adapterName string) bool
 }
 
