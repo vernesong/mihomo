@@ -1836,6 +1836,26 @@ func smartWithTypePriority(typePriority string) smartOption {
 	}
 }
 
+func smartWithEmptyFallback(fallback string) smartOption {
+	return func(s *Smart) {
+		fallback = strings.TrimSpace(fallback)
+		if fallback == "" {
+			return
+		}
+		switch strings.ToLower(fallback) {
+		case "reject":
+			s.emptyFallback = outbound.NewReject()
+		case "direct":
+			s.emptyFallback = outbound.NewDirect()
+		case "pass":
+			s.emptyFallback = outbound.NewPass()
+		default:
+			log.Warnln("[Smart] Unsupported empty-fallback type: [%s], only DIRECT, REJECT or PASS are supported. Using default DIRECT.", fallback)
+			s.emptyFallback = outbound.NewDirect()
+		}
+	}
+}
+
 func parseSmartOption(config map[string]any) []smartOption {
 	opts := []smartOption{}
 
@@ -1848,6 +1868,12 @@ func parseSmartOption(config map[string]any) []smartOption {
 	if elm, ok := config["type-priority"]; ok {
 		if typePriority, ok := elm.(string); ok {
 			opts = append(opts, smartWithTypePriority(typePriority))
+		}
+	}
+	
+	if elm, ok := config["empty-fallback"]; ok {
+		if ef, ok := elm.(string); ok {
+			opts = append(opts, smartWithEmptyFallback(ef))
 		}
 	}
 
