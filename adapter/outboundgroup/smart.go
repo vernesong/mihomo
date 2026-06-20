@@ -58,7 +58,13 @@ var (
 	smartInitOnce        sync.Once
 )
 
-type smartOption func(*Smart)
+type SmartOption struct {
+	PolicyPriority string  `group:"policy-priority,omitempty"`
+	UseLightGBM    bool    `group:"uselightgbm,omitempty"`
+	CollectData    bool    `group:"collectdata,omitempty"`
+	SampleRate     float64 `group:"sample-rate,omitempty"`
+	PreferASN      bool    `group:"prefer-asn,omitempty"`
+}
 
 type Smart struct {
 	*GroupBase
@@ -110,7 +116,7 @@ func getConfigFilename() string {
 	return filename
 }
 
-func NewSmart(option *GroupCommonOption, emptyFallback C.Proxy, providers []provider.ProxyProvider, options ...smartOption) (*Smart, error) {
+func NewSmart(option GroupCommonOption, smartOption SmartOption, emptyFallback C.Proxy, providers []provider.ProxyProvider) (*Smart, error) {
 	if option.URL == "" {
 		option.URL = C.DefaultTestURL
 	}
@@ -137,10 +143,17 @@ func NewSmart(option *GroupCommonOption, emptyFallback C.Proxy, providers []prov
 		disableUDP:           option.DisableUDP,
 		policyPriority:       make([]priorityRule, 0),
 		sampleRate:           1,
+		useLightGBM:          smartOption.UseLightGBM,
+		collectData:          smartOption.CollectData,
+		preferASN:            smartOption.PreferASN,
 	}
 
-	for _, option := range options {
-		option(s)
+	if smartOption.SampleRate > 0 && smartOption.SampleRate <= 1 {
+		s.sampleRate = smartOption.SampleRate
+	}
+
+	if smartOption.PolicyPriority != "" {
+		applyPolicyPriority(s, smartOption.PolicyPriority)
 	}
 
 	s.InitSmart()
@@ -1673,146 +1686,75 @@ func (s *Smart) getPriorityFactor(proxyName string) float64 {
 	return factor
 }
 
-func smartWithPolicyPriority(policyPriority string) smartOption {
-	return func(s *Smart) {
-		lastUnescapedColon := func(str string) int {
-			for i := len(str) - 1; i >= 0; i-- {
-				if str[i] == ':' {
-					bs := 0
-					j := i - 1
-					for j >= 0 && str[j] == '\\' {
-						bs++
-						j--
-					}
-					if bs%2 == 0 {
-						return i
-					}
+func applyPolicyPriority(s *Smart, policyPriority string) {
+	lastUnescapedColon := func(str string) int {
+		for i := len(str) - 1; i >= 0; i-- {
+			if str[i] == ':' {
+				bs := 0
+				j := i - 1
+				for j >= 0 && str[j] == '\\' {
+					bs++
+					j--
+				}
+				if bs%2 == 0 {
+					return i
 				}
 			}
-			return -1
 		}
+		return -1
+	}
 
-		unescapePattern := func(p string) string {
-			var b strings.Builder
-			for i := 0; i < len(p); i++ {
-				if p[i] == '\\' && i+1 < len(p) {
-					b.WriteByte(p[i+1])
-					i++
-				} else {
-					b.WriteByte(p[i])
-				}
+	unescapePattern := func(p string) string {
+		var b strings.Builder
+		for i := 0; i < len(p); i++ {
+			if p[i] == '\\' && i+1 < len(p) {
+				b.WriteByte(p[i+1])
+				i++
+			} else {
+				b.WriteByte(p[i])
 			}
-			return b.String()
+		}
+		return b.String()
+	}
+
+	pairs := strings.Split(policyPriority, ";")
+	for _, pair := range pairs {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
 		}
 
-		pairs := strings.Split(policyPriority, ";")
-		for _, pair := range pairs {
-			pair = strings.TrimSpace(pair)
-			if pair == "" {
-				continue
-			}
-
-			idx := lastUnescapedColon(pair)
-			if idx <= 0 || idx == len(pair)-1 {
-				log.Warnln("[Smart] Invalid policy-priority rule: [%s], must be in 'pattern:factor' format and factor is required", pair)
-				continue
-			}
-
-			patternRaw := strings.TrimSpace(pair[:idx])
-			factorStr := strings.TrimSpace(pair[idx+1:])
-
-			factor, err := strconv.ParseFloat(factorStr, 64)
-			if err != nil {
-				log.Warnln("[Smart] Invalid priority factor format for pattern [%s:%v]", patternRaw, err)
-				continue
-			}
-			if factor <= 0 {
-				log.Warnln("[Smart] Invalid priority factor [%.2f] for pattern [%s], factor must be positive", factor, patternRaw)
-				continue
-			}
-
-			rule := priorityRule{
-				pattern: unescapePattern(patternRaw),
-				factor:  factor,
-			}
-
-			if re, err := regexp2.Compile(rule.pattern, regexp2.None); err == nil {
-				rule.regex = re
-				rule.isRegex = true
-			}
-
-			s.policyPriority = append(s.policyPriority, rule)
+		idx := lastUnescapedColon(pair)
+		if idx <= 0 || idx == len(pair)-1 {
+			log.Warnln("[Smart] Invalid policy-priority rule: [%s], must be in 'pattern:factor' format and factor is required", pair)
+			continue
 		}
-	}
-}
 
-func smartWithLightGBM(useLightGBM bool) smartOption {
-	return func(s *Smart) {
-		s.useLightGBM = useLightGBM
-	}
-}
+		patternRaw := strings.TrimSpace(pair[:idx])
+		factorStr := strings.TrimSpace(pair[idx+1:])
 
-func smartWithCollectData(collectData bool) smartOption {
-	return func(s *Smart) {
-		s.collectData = collectData
-	}
-}
-
-func smartWithSampleRate(sampleRate float64) smartOption {
-	return func(s *Smart) {
-		if sampleRate <= 0 || sampleRate > 1 {
-			s.sampleRate = 1
-		} else {
-			s.sampleRate = sampleRate
+		factor, err := strconv.ParseFloat(factorStr, 64)
+		if err != nil {
+			log.Warnln("[Smart] Invalid priority factor format for pattern [%s:%v]", patternRaw, err)
+			continue
 		}
-	}
-}
-
-func smartWithPreferASN(preferASN bool) smartOption {
-	return func(s *Smart) {
-		s.preferASN = preferASN
-	}
-}
-
-func parseSmartOption(config map[string]any) []smartOption {
-	opts := []smartOption{}
-
-	if elm, ok := config["policy-priority"]; ok {
-		if policyPriority, ok := elm.(string); ok {
-			opts = append(opts, smartWithPolicyPriority(policyPriority))
+		if factor <= 0 {
+			log.Warnln("[Smart] Invalid priority factor [%.2f] for pattern [%s], factor must be positive", factor, patternRaw)
+			continue
 		}
-	}
 
-	if elm, ok := config["uselightgbm"]; ok {
-		if useLightGBM, ok := elm.(bool); ok {
-			opts = append(opts, smartWithLightGBM(useLightGBM))
+		rule := priorityRule{
+			pattern: unescapePattern(patternRaw),
+			factor:  factor,
 		}
-	}
 
-	if elm, ok := config["collectdata"]; ok {
-		if collectData, ok := elm.(bool); ok {
-			opts = append(opts, smartWithCollectData(collectData))
+		if re, err := regexp2.Compile(rule.pattern, regexp2.None); err == nil {
+			rule.regex = re
+			rule.isRegex = true
 		}
-	}
 
-	if elm, ok := config["sample-rate"]; ok {
-		switch v := elm.(type) {
-		case float64:
-			opts = append(opts, smartWithSampleRate(v))
-		case float32:
-			opts = append(opts, smartWithSampleRate(float64(v)))
-		case int:
-			opts = append(opts, smartWithSampleRate(float64(v)))
-		}
+		s.policyPriority = append(s.policyPriority, rule)
 	}
-
-	if elm, ok := config["prefer-asn"]; ok {
-		if preferASN, ok := elm.(bool); ok {
-			opts = append(opts, smartWithPreferASN(preferASN))
-		}
-	}
-
-	return opts
 }
 
 func (s *Smart) getASNCode(metadata *C.Metadata) string {
