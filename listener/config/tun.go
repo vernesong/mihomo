@@ -51,6 +51,7 @@ type Tun struct {
 	ExcludeMACAddress                     []string       `yaml:"exclude-mac-address" json:"exclude-mac-address,omitempty"`
 	EndpointIndependentNat                bool           `yaml:"endpoint-independent-nat" json:"endpoint-independent-nat,omitempty"`
 	UDPTimeout                            int64          `yaml:"udp-timeout" json:"udp-timeout,omitempty"`
+	ICMPTimeout                           int64          `yaml:"icmp-timeout" json:"icmp-timeout,omitempty"`
 	DisableICMPForwarding                 bool           `yaml:"disable-icmp-forwarding" json:"disable-icmp-forwarding,omitempty"`
 	FileDescriptor                        int            `yaml:"file-descriptor" json:"file-descriptor"`
 
@@ -199,6 +200,9 @@ func (t *Tun) Equal(other Tun) bool {
 		return false
 	}
 	if t.UDPTimeout != other.UDPTimeout {
+		return false
+	}
+	if t.ICMPTimeout != other.ICMPTimeout {
 		return false
 	}
 	if t.DisableICMPForwarding != other.DisableICMPForwarding {

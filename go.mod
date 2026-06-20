@@ -31,12 +31,12 @@ require (
 	github.com/metacubex/restls-client-go v0.1.7
 	github.com/metacubex/sevenzip v1.6.4
 	github.com/metacubex/sing v0.5.7
-	github.com/metacubex/sing-mux v0.3.9
+	github.com/metacubex/sing-mux v0.3.10
 	github.com/metacubex/sing-quic v0.0.0-20260527143057-68e10a6afdc3
 	github.com/metacubex/sing-shadowsocks v0.2.12
 	github.com/metacubex/sing-shadowsocks2 v0.2.7
 	github.com/metacubex/sing-shadowtls v0.0.0-20260517015314-c11c36474edc
-	github.com/metacubex/sing-tun v0.4.20
+	github.com/metacubex/sing-tun v0.4.21
 	github.com/metacubex/sing-vmess v0.2.5
 	github.com/metacubex/sing-wireguard v0.0.0-20260520151737-7e7c7c1b854c
 	github.com/metacubex/smux v0.0.0-20260105030934-d0c8756d3141

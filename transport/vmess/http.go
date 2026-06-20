@@ -71,7 +71,9 @@ func (hc *httpConn) Write(b []byte) (int, error) {
 		Body:   io.NopCloser(bytes.NewReader(b)),
 	}
 	for key, list := range hc.cfg.Headers {
-		req.Header.Set(key, list[randv2.IntN(len(list))])
+		if len(list) > 0 {
+			req.Header.Set(key, list[randv2.IntN(len(list))])
+		}
 	}
 	req.ContentLength = int64(len(b))
 	if err := req.Write(hc.Conn); err != nil {

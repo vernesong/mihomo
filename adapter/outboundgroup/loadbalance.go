@@ -19,7 +19,9 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
-type strategyFn = func(proxies []C.Proxy, metadata *C.Metadata, touch bool) C.Proxy
+type LoadBalanceOption struct {
+	Strategy string `group:"strategy,omitempty"`
+}
 
 type LoadBalance struct {
 	*GroupBase
@@ -29,14 +31,9 @@ type LoadBalance struct {
 	expectedStatus string
 }
 
-var errStrategy = errors.New("unsupported strategy")
+type strategyFn = func(proxies []C.Proxy, metadata *C.Metadata, touch bool) C.Proxy
 
-func parseStrategy(config map[string]any) string {
-	if strategy, ok := config["strategy"].(string); ok {
-		return strategy
-	}
-	return "consistent-hashing"
-}
+var errStrategy = errors.New("unsupported strategy")
 
 func getKey(metadata *C.Metadata) string {
 	if metadata == nil {
@@ -250,17 +247,17 @@ func (lb *LoadBalance) Now() string {
 	return ""
 }
 
-func NewLoadBalance(option *GroupCommonOption, emptyFallback C.Proxy, providers []P.ProxyProvider, strategy string) (lb *LoadBalance, err error) {
+func NewLoadBalance(option GroupCommonOption, loadBalanceOption LoadBalanceOption, emptyFallback C.Proxy, providers []P.ProxyProvider) (lb *LoadBalance, err error) {
 	var strategyFn strategyFn
-	switch strategy {
-	case "consistent-hashing":
+	switch loadBalanceOption.Strategy {
+	case "", "consistent-hashing":
 		strategyFn = strategyConsistentHashing(option.URL)
 	case "round-robin":
 		strategyFn = strategyRoundRobin(option.URL)
 	case "sticky-sessions":
 		strategyFn = strategyStickySessions(option.URL)
 	default:
-		return nil, fmt.Errorf("%w: %s", errStrategy, strategy)
+		return nil, fmt.Errorf("%w: %s", errStrategy, loadBalanceOption.Strategy)
 	}
 	return &LoadBalance{
 		GroupBase: NewGroupBase(GroupBaseOption{

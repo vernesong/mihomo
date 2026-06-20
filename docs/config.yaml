@@ -1419,17 +1419,6 @@ proxies: # socks5
     interface-name: en1
     routing-mark: 6667
 proxy-groups:
-  # 代理链，目前 relay 可以支持 udp 的只有 vmess/vless/trojan/ss/ssr/tuic
-  # wireguard 目前不支持在 relay 中使用，请使用 proxy 中的 dialer-proxy 配置项
-  # Traffic: mihomo <-> http <-> vmess <-> ss1 <-> ss2 <-> Internet
-  - name: "relay"
-    type: relay
-    proxies:
-      - http
-      - vmess
-      - ss1
-      - ss2
-
   # url-test 将按照 url 测试结果使用延迟最低节点
   - name: "auto"
     type: url-test
@@ -1473,6 +1462,7 @@ proxy-groups:
       - ss2
       - vmess1
       - auto
+    # default-selected: ss1 # 默认选择的节点（该项为空或者设置的节点名不存在时，默认选择组中第一个节点）
 
   - name: UseProvider
     type: select

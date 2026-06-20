@@ -52,6 +52,7 @@ type TunOption struct {
 	ExcludeMACAddress                     []string       `inbound:"exclude-mac-address,omitempty"`
 	EndpointIndependentNat                bool           `inbound:"endpoint-independent-nat,omitempty"`
 	UDPTimeout                            int64          `inbound:"udp-timeout,omitempty"`
+	ICMPTimeout                           int64          `inbound:"icmp-timeout,omitempty"`
 	DisableICMPForwarding                 bool           `inbound:"disable-icmp-forwarding,omitempty"`
 	FileDescriptor                        int            `inbound:"file-descriptor,omitempty"`
 
@@ -129,6 +130,7 @@ func NewTun(options *TunOption) (*Tun, error) {
 			ExcludeMACAddress:                     options.ExcludeMACAddress,
 			EndpointIndependentNat:                options.EndpointIndependentNat,
 			UDPTimeout:                            options.UDPTimeout,
+			ICMPTimeout:                           options.ICMPTimeout,
 			DisableICMPForwarding:                 options.DisableICMPForwarding,
 			FileDescriptor:                        options.FileDescriptor,
 

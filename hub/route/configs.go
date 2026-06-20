@@ -97,6 +97,7 @@ type tunSchema struct {
 	ExcludeMACAddress                     *[]string       `yaml:"exclude-mac-address" json:"exclude-mac-address,omitempty"`
 	EndpointIndependentNat                *bool           `yaml:"endpoint-independent-nat" json:"endpoint-independent-nat,omitempty"`
 	UDPTimeout                            *int64          `yaml:"udp-timeout" json:"udp-timeout,omitempty"`
+	ICMPTimeout                           *int64          `yaml:"icmp-timeout" json:"icmp-timeout,omitempty"`
 	FileDescriptor                        *int            `yaml:"file-descriptor" json:"file-descriptor"`
 
 	Inet4RouteAddress        *[]netip.Prefix `yaml:"inet4-route-address" json:"inet4-route-address,omitempty"`
@@ -256,6 +257,9 @@ func pointerOrDefaultTun(p *tunSchema, def LC.Tun) LC.Tun {
 		}
 		if p.UDPTimeout != nil {
 			def.UDPTimeout = *p.UDPTimeout
+		}
+		if p.ICMPTimeout != nil {
+			def.ICMPTimeout = *p.ICMPTimeout
 		}
 		if p.FileDescriptor != nil {
 			def.FileDescriptor = *p.FileDescriptor

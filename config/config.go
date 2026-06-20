@@ -316,6 +316,7 @@ type RawTun struct {
 	ExcludeMACAddress                     []string       `yaml:"exclude-mac-address" json:"exclude-mac-address,omitempty"`
 	EndpointIndependentNat                bool           `yaml:"endpoint-independent-nat" json:"endpoint-independent-nat,omitempty"`
 	UDPTimeout                            int64          `yaml:"udp-timeout" json:"udp-timeout,omitempty"`
+	ICMPTimeout                           int64          `yaml:"icmp-timeout" json:"icmp-timeout,omitempty"`
 	DisableICMPForwarding                 bool           `yaml:"disable-icmp-forwarding" json:"disable-icmp-forwarding,omitempty"`
 	FileDescriptor                        int            `yaml:"file-descriptor" json:"file-descriptor"`
 
@@ -986,13 +987,17 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 	providersMap[provider.ReservedName] = pd
 
 	if !hasGlobal {
-		global := outboundgroup.NewSelector(
-			&outboundgroup.GroupCommonOption{
+		global, err := outboundgroup.NewSelector(
+			outboundgroup.GroupCommonOption{
 				Name: "GLOBAL",
 			},
+			outboundgroup.SelectorOption{},
 			proxies["COMPATIBLE"],
 			[]P.ProxyProvider{pd},
 		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("new GLOBAL proxy group error: %w", err)
+		}
 		proxies["GLOBAL"] = adapter.NewProxy(global)
 	}
 
@@ -1728,6 +1733,7 @@ func parseTun(rawTun RawTun, dns *DNS, general *General) error {
 		ExcludeMACAddress:                     rawTun.ExcludeMACAddress,
 		EndpointIndependentNat:                rawTun.EndpointIndependentNat,
 		UDPTimeout:                            rawTun.UDPTimeout,
+		ICMPTimeout:                           rawTun.ICMPTimeout,
 		DisableICMPForwarding:                 rawTun.DisableICMPForwarding,
 		FileDescriptor:                        rawTun.FileDescriptor,
 

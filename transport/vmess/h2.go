@@ -2,6 +2,7 @@ package vmess
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/url"
@@ -28,6 +29,9 @@ type H2Config struct {
 func (hc *h2Conn) establishConn() error {
 	preader, pwriter := io.Pipe()
 
+	if len(hc.cfg.Hosts) == 0 {
+		return errors.New("hosts is empty")
+	}
 	host := hc.cfg.Hosts[randv2.IntN(len(hc.cfg.Hosts))]
 	path := hc.cfg.Path
 	// TODO: connect use VMess Host instead of H2 Host

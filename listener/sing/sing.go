@@ -30,6 +30,7 @@ import (
 )
 
 const UDPTimeout = 5 * time.Minute
+const ICMPTimeout = 10 * time.Second
 
 type ListenerConfig struct {
 	Tunnel     C.Tunnel
