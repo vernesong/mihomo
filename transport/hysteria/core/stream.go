@@ -12,6 +12,10 @@ type wrappedQUICStream struct {
 	Stream *quic.Stream
 }
 
+func (s *wrappedQUICStream) Upstream() any {
+	return s.Stream
+}
+
 func (s *wrappedQUICStream) StreamID() quic.StreamID {
 	return s.Stream.StreamID()
 }

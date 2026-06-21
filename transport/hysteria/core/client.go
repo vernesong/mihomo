@@ -294,6 +294,10 @@ type quicConn struct {
 	Established      bool
 }
 
+func (w *quicConn) Upstream() any {
+	return w.Orig
+}
+
 func (w *quicConn) Read(b []byte) (n int, err error) {
 	if !w.Established {
 		var sr *ServerResponse

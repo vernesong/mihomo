@@ -190,7 +190,7 @@ func (c *DataCollector) initializeWriter() error {
 			if err == nil {
 				hasMax := false
 				for _, h := range headers {
-					if h == "history_duration_minutes" {
+					if h == "loss_rate" {
 						hasMax = true
 						break
 					}
@@ -253,8 +253,13 @@ func (c *DataCollector) initializeWriter() error {
 			"success", "failure", "connect_time", "latency",
 			"upload_mb", "history_upload_mb", "maxuploadrate_kb", "history_maxuploadrate_kb",
 			"download_mb", "history_download_mb", "maxdownloadrate_kb", "history_maxdownloadrate_kb",
-			"duration_minutes", "history_duration_minutes", "last_used_seconds", "is_udp", "is_tcp",
-			"asn_feature", "country_feature", "address_feature", "port_feature",
+			"duration_minutes", "history_duration_minutes", "last_used_seconds",
+			"is_udp", "is_tcp",
+			"loss_rate",
+			"asn_feature",
+			"country_feature",
+			"address_feature",
+			"port_feature",
 			"traffic_ratio", "traffic_density", "connection_type_feature",
 			"asn_hash", "host_hash", "ip_hash", "geoip_hash",
 			"group_name", "node_name",

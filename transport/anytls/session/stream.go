@@ -113,6 +113,10 @@ func (s *Stream) SetDeadline(t time.Time) error {
 	return s.SetReadDeadline(t)
 }
 
+func (s *Stream) NetConn() net.Conn {
+	return s.sess.conn
+}
+
 // LocalAddr satisfies net.Conn interface
 func (s *Stream) LocalAddr() net.Addr {
 	if ts, ok := s.sess.conn.(interface {

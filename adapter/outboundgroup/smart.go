@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"math/rand"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -28,6 +29,7 @@ import (
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/component/smart"
 	"github.com/metacubex/mihomo/component/smart/lightgbm"
+	"github.com/metacubex/mihomo/component/smart/tcpstats"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/log"
@@ -233,7 +235,7 @@ func (s *Smart) singleDialContext(ctx context.Context, proxy C.Proxy, metadata *
 			return nil, connectTime, err
 		}
 		if !errors.Is(err, context.Canceled) {
-			go s.recordConnectionStats("failed", metadata, proxy, connectTime, 0, 0, 0, 0, 0, 0, err)
+			go s.recordConnectionStats(metadata, proxy, connectTime, 0, 0, 0, 0, 0, 0, 0, err)
 		}
 		return nil, connectTime, err
 	}
@@ -353,7 +355,7 @@ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 					return nil, err
 				}
 				finalErr = err
-				go s.recordConnectionStats("failed", metadata, proxy, connectTime, 0, 0, 0, 0, 0, 0, err)
+				go s.recordConnectionStats(metadata, proxy, connectTime, 0, 0, 0, 0, 0, 0, 0, err)
 				continue
 			}
 
@@ -1265,9 +1267,9 @@ func formatTimeUnit(val float64) string {
 }
 
 // 日志记录
-func (s *Smart) logConnectionStats(status string, record *smart.StatsRecord, metadata *C.Metadata, baseWeight, priorityFactor float64,
+func (s *Smart) logConnectionStats(err error, record *smart.StatsRecord, metadata *C.Metadata, baseWeight, priorityFactor float64,
 	addressDisplay, proxyName string, connectTime int64, latency int64, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate float64,
-	connectionDuration int64, asnInfo string, ModelPredicted bool) {
+	connectionDuration int64, asnInfo string, ModelPredicted bool, lossRate float64) {
 
 	var tcpAsnWeight, udpAsnWeight float64
 
@@ -1289,14 +1291,20 @@ func (s *Smart) logConnectionStats(status string, record *smart.StatsRecord, met
 		weightSource = "LightGBM"
 	}
 
+	statusStr := "closed"
+	if err != nil {
+		statusStr = "failed"
+	}
+
 	log.Debugln("[Smart] Connection status: [%s], Updated weights: (Model: [%s], TCP: [%.4f], UDP: [%.4f], TCP ASN: [%.4f], UDP ASN: [%.4f], Base: [%.4f], Priority: [%.2f]) "+
 		"For (Group: [%s] - Node: [%s] - Network: [%s] - Address: [%s]) "+
-		"- Current: (Connect: [%s], Latency: [%s], Up: [%s], Down: [%s], Max Up Speed: [%s], Max Down Speed: [%s], Duration: [%s]) "+
-		"- History: (Success: [%d], Failure: [%d], Avg Connect: [%s], Avg Latency: [%s], Total Up: [%s], Total Down: [%s], Max Up Speed: [%s], Max Down Speed: [%s], Avg Duration: [%s])",
-		status, weightSource, record.Weights[smart.WeightTypeTCP], record.Weights[smart.WeightTypeUDP], tcpAsnWeight, udpAsnWeight, baseWeight, priorityFactor,
+		"- Current: (Connect: [%s], Latency: [%s], LossRate: [%.2f%%], Up: [%s], Down: [%s], Max Up Speed: [%s], Max Down Speed: [%s], Duration: [%s]) "+
+		"- History: (Success: [%d], Failure: [%d], Avg Connect: [%s], Avg Latency: [%s], Avg LossRate: [%.2f%%], Total Up: [%s], Total Down: [%s], Max Up Speed: [%s], Max Down Speed: [%s], Avg Duration: [%s])",
+		statusStr, weightSource, record.Weights[smart.WeightTypeTCP], record.Weights[smart.WeightTypeUDP], tcpAsnWeight, udpAsnWeight, baseWeight, priorityFactor,
 		s.Name(), proxyName, metadata.NetWork.String(), addressDisplay,
 		formatTimeUnit(float64(connectTime)),
 		formatTimeUnit(float64(latency)),
+		lossRate*100,
 		formatTrafficUnit(uploadTotal*1024*1024, false),
 		formatTrafficUnit(downloadTotal*1024*1024, false),
 		formatTrafficUnit(maxUploadRate*1024, true),
@@ -1305,6 +1313,7 @@ func (s *Smart) logConnectionStats(status string, record *smart.StatsRecord, met
 		record.Success, record.Failure,
 		formatTimeUnit(float64(record.ConnectTime)),
 		formatTimeUnit(float64(record.Latency)),
+		record.LossRate*100,
 		formatTrafficUnit(record.UploadTotal*1024*1024, false),
 		formatTrafficUnit(record.DownloadTotal*1024*1024, false),
 		formatTrafficUnit(record.MaxUploadRate*1024, true),
@@ -1347,9 +1356,9 @@ func updateAverageValueFloat(oldValue, newValue float64) float64 {
 	return newValue
 }
 
-func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy C.Proxy,
+func (s *Smart) recordConnectionStats(metadata *C.Metadata, proxy C.Proxy,
 	connectTime, latency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate,
-	connectionDuration int64, err error) {
+	connectionDuration int64, lossRate float64, err error) {
 
 	if proxy.Type() == C.Compatible || proxy.Type() == C.Reject || proxy.Type() == C.Pass || proxy.Type() == C.RejectDrop {
 		return
@@ -1396,11 +1405,11 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 
 	atomicRecord := s.store.GetOrCreateAtomicRecord(cacheKey, s.Name(), s.configName, target, proxyName)
 
-	switch status {
-	case "failed":
+	switch {
+	case err != nil:
 		s.onDialFailed(proxy.Type(), err, s.healthCheck)
 		atomicRecord.Add("failure", int64(1))
-	case "closed":
+	default:
 		s.onDialSuccess()
 		atomicRecord.Add("success", int64(1))
 	}
@@ -1419,6 +1428,12 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 
 	if connectionDuration > 0 {
 		s.updateConnectionDuration(atomicRecord, connectionDuration)
+	}
+
+	if lossRate > 0 {
+		oldLossRate := atomicRecord.Get("lossRate").(float64)
+		newLossRate := updateAverageValueFloat(oldLossRate, lossRate)
+		atomicRecord.Set("lossRate", newLossRate)
 	}
 
 	oldWeight := atomicRecord.GetWeight(weightType)
@@ -1443,6 +1458,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 	input := lightgbm.CreateModelInputFromStatsRecord(
 		atomicRecord, metadata,
 		uploadTotalMB, downloadTotalMB, maxUploadRateKB, maxDownloadRateKB, float64(connectionDuration) / 60000.0, wildcardTarget,
+		lossRate,
 	)
 
 	if s.useLightGBM && s.weightModel != nil {
@@ -1454,7 +1470,7 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 	// 额外检查和权重调整
 	// 不再进行强制权重调整，仅在异常时对特定域名屏蔽节点，防止优秀节点被整个 target 完全屏蔽
 	adjWeight, isDegraded, checked, blockCode := s.checkNodeQuality(
-		status, metadata, proxy, wildcardTarget,
+		err, metadata, proxy, wildcardTarget,
 		addressDisplay, proxyName, calculatedWeight, oldWeight,
 		connectionDuration, uploadTotalMB, downloadTotalMB,
 		networkStr, asnInfo, isUDP)
@@ -1488,8 +1504,8 @@ func (s *Smart) recordConnectionStats(status string, metadata *C.Metadata, proxy
 		s.collectConnectionData(input, metadata, collectedWeight, proxyName, ModelPredicted)
 	}
 
-	s.logConnectionStats(status, statsSnapshot, metadata, calculatedWeight / priorityFactor, priorityFactor, addressDisplay, proxyName,
-		connectTime, latency, uploadTotalMB, downloadTotalMB, maxUploadRateKB, maxDownloadRateKB, connectionDuration, asnInfo, ModelPredicted)
+	s.logConnectionStats(err, statsSnapshot, metadata, calculatedWeight / priorityFactor, priorityFactor, addressDisplay, proxyName,
+		connectTime, latency, uploadTotalMB, downloadTotalMB, maxUploadRateKB, maxDownloadRateKB, connectionDuration, asnInfo, ModelPredicted, lossRate)
 }
 
 func (s *Smart) registerClosureMetricsCallback(c C.Conn, proxy C.Proxy, metadata *C.Metadata, connectTime int64, firstReadLatency *atomic.Int64, firstReadErr *atomic.TypedValue[error], firstWriteErr *atomic.TypedValue[error]) C.Conn {
@@ -1507,17 +1523,25 @@ func (s *Smart) registerClosureMetricsCallback(c C.Conn, proxy C.Proxy, metadata
 			readErr := firstReadErr.Load()
 			writeErr := firstWriteErr.Load()
 
-			if readErr == nil {
-				go s.recordConnectionStats("closed", metadata, proxy, connectTime, latency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, nil)
-			} else if readErr == io.EOF {
-				if writeErr != nil && writeErr != io.EOF {
-					go s.recordConnectionStats("failed", metadata, proxy, connectTime, latency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, readErr)
-				} else {
-					go s.recordConnectionStats("closed", metadata, proxy, connectTime, latency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, nil)
+			var lossRate float64
+			if trackerConn, ok := tracker.(net.Conn); ok {
+				if tcpStats := tcpstats.GetTCPStats(trackerConn); tcpStats != nil {
+					lossRate = tcpStats.LossRate()
 				}
-			} else {
-				go s.recordConnectionStats("failed", metadata, proxy, connectTime, latency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, readErr)
 			}
+
+			var closeErr error
+			if readErr != nil {
+				if readErr == io.EOF {
+					if writeErr != nil && writeErr != io.EOF {
+						closeErr = writeErr
+					}
+				} else {
+					closeErr = readErr
+				}
+			}
+
+			go s.recordConnectionStats(metadata, proxy, connectTime, latency, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, lossRate, closeErr)
 			return
 		}
 	})
@@ -1534,15 +1558,15 @@ func (s *Smart) registerPacketClosureMetricsCallback(pc C.PacketConn, proxy C.Pr
 			maxUploadRate := info.MaxUploadRate.Load()
 			maxDownloadRate := info.MaxDownloadRate.Load()
 
-			go s.recordConnectionStats("closed", metadata, proxy, connectTime, udpLatency.Load(),
-				uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, nil)
+			go s.recordConnectionStats(metadata, proxy, connectTime, udpLatency.Load(),
+				uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration, 0, nil)
 			return
 		}
 	})
 }
 
 func (s *Smart) checkNodeQuality(
-	status string, metadata *C.Metadata, proxy C.Proxy, wildcardTarget string,
+	err error, metadata *C.Metadata, proxy C.Proxy, wildcardTarget string,
 	addressDisplay, proxyName string,
 	newWeight, oldWeight float64,
 	connectionDuration int64, uploadTotal, downloadTotal float64,
@@ -1574,7 +1598,7 @@ func (s *Smart) checkNodeQuality(
 		return newWeight, true, true, 5
 	}
 
-	if status == "failed" {
+	if err != nil {
 		return newWeight, false, true, 3
 	}
 

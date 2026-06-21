@@ -32,23 +32,24 @@ import (
 // 14=last_used_seconds
 // 15=is_udp
 // 16=is_tcp
-// 17=asn_feature
-// 18=country_feature
-// 19=address_feature
-// 20=port_feature
-// 21=traffic_ratio
-// 22=traffic_density
-// 23=connection_type_feature
-// 24=asn_hash
-// 25=host_hash
-// 26=ip_hash
-// 27=geoip_hash
+// 17=loss_rate
+// 18=asn_feature
+// 19=country_feature
+// 20=address_feature
+// 21=port_feature
+// 22=traffic_ratio
+// 23=traffic_density
+// 24=connection_type_feature
+// 25=asn_hash
+// 26=host_hash
+// 27=ip_hash
+// 28=geoip_hash
 // ... (index=feature_name, one per line, up to MaxFeatureSize)
 // [/order]
 //
 // [definitions]
 // std_type=StandardScaler
-// std_features=2,3,4,5,6,7,8,9,10,11,12,13,21,22
+// std_features=2,3,4,5,6,7,8,9,10,11,12,13,22,23
 // std_mean=...comma separated float values...
 // std_scale=...comma separated float values...
 //
@@ -58,7 +59,7 @@ import (
 // robust_scale=...comma separated float values...
 // [/definitions]
 //
-// untransformed_features=15:is_udp,16:is_tcp,17:asn_feature,18:country_feature,19:address_feature,20:port_feature,23:connection_type_feature,24:asn_hash,25:host_hash,26:ip_hash,27:geoip_hash
+// untransformed_features=15:is_udp,16:is_tcp,17:loss_rate,18:asn_feature,19:country_feature,20:address_feature,21:port_feature,24:connection_type_feature,25:asn_hash,26:host_hash,27:ip_hash,28:geoip_hash
 // transform=true
 // [/transforms]
 //
@@ -391,17 +392,18 @@ func getDefaultFeatureOrder() map[int]string {
 		14: "last_used_seconds",
 		15: "is_udp",
 		16: "is_tcp",
-		17: "asn_feature",
-		18: "country_feature",
-		19: "address_feature",
-		20: "port_feature",
-		21: "traffic_ratio",
-		22: "traffic_density",
-		23: "connection_type_feature",
-		24: "asn_hash",
-		25: "host_hash",
-		26: "ip_hash",
-		27: "geoip_hash",
+		17: "loss_rate",
+		18: "asn_feature",
+		19: "country_feature",
+		20: "address_feature",
+		21: "port_feature",
+		22: "traffic_ratio",
+		23: "traffic_density",
+		24: "connection_type_feature",
+		25: "asn_hash",
+		26: "host_hash",
+		27: "ip_hash",
+		28: "geoip_hash",
 	}
 }
 

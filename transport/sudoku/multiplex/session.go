@@ -365,6 +365,10 @@ func newStream(session *Session, id uint32) *stream {
 	return st
 }
 
+func (c *stream) NetConn() net.Conn {
+	return c.session.conn
+}
+
 func (c *stream) enqueue(payload []byte) {
 	c.mu.Lock()
 	for !c.closed && c.queuedBytes+len(payload) > maxQueuedBytesPerStream {

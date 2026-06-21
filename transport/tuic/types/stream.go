@@ -20,6 +20,10 @@ type quicStreamConn struct {
 	closeErr  error
 }
 
+func (q *quicStreamConn) Upstream() any {
+	return q.Stream
+}
+
 func (q *quicStreamConn) Write(p []byte) (n int, err error) {
 	q.lock.Lock()
 	defer q.lock.Unlock()

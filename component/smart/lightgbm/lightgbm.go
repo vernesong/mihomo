@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	MaxFeatureSize = 28
+	MaxFeatureSize = 29
 )
 
 var (
@@ -673,6 +673,7 @@ func prepareFeatures(input *smart.ModelInput) []float64 {
 	// 网络协议特征
 	features = append(features, boolToFloat(input.IsUDP)) // 是否UDP协议
 	features = append(features, boolToFloat(input.IsTCP)) // 是否TCP协议
+	features = append(features, input.LossRate)           // 丢包率
 
 	// 2. ASN特征提取
 	asnFeature := extractASNFeature(input.DestIPASN)
@@ -1012,7 +1013,7 @@ func boolToFloat(b bool) float64 {
 	return 0.0
 }
 
-func CreateModelInputFromStatsRecord(atomicRecord *smart.AtomicStatsRecord, metadata *C.Metadata, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration float64, wildcardTarget string) *smart.ModelInput {
+func CreateModelInputFromStatsRecord(atomicRecord *smart.AtomicStatsRecord, metadata *C.Metadata, uploadTotal, downloadTotal, maxUploadRate, maxDownloadRate, connectionDuration float64, wildcardTarget string, lossRate float64) *smart.ModelInput {
 	input := &smart.ModelInput{
 		Success:                       atomicRecord.Get("success").(int64),
 		Failure:                       atomicRecord.Get("failure").(int64),
@@ -1031,6 +1032,7 @@ func CreateModelInputFromStatsRecord(atomicRecord *smart.AtomicStatsRecord, meta
 		LastUsed:                      atomicRecord.Get("lastUsed").(int64),
 		IsUDP:                         metadata.NetWork == C.UDP,
 		IsTCP:                         metadata.NetWork == C.TCP,
+		LossRate:                      lossRate,
 	}
 
 	if metadata.DstIPASN == "unknown" {

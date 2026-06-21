@@ -34,6 +34,7 @@ type StatsRecord struct {
 	MaxUploadRate      float64                 `json:"max_upload_rate"`
 	MaxDownloadRate    float64                 `json:"max_download_rate"`
 	ConnectionDuration float64                 `json:"connection_duration"`
+	LossRate           float64                 `json:"loss_rate,omitempty"`
 }
 
 type NodeState struct {
@@ -55,6 +56,7 @@ type AtomicStatsRecord struct {
 	duration        atomic.Float64
 	maxUploadRate   atomic.Float64
 	maxDownloadRate atomic.Float64
+	lossRate        atomic.Float64
 
 	weights         *lru.LruCache[string, float64]
 }
@@ -149,6 +151,7 @@ func (s *Store) GetOrCreateAtomicRecord(cacheKey string, group, config, target, 
 				record.duration.Store(existingRecord.ConnectionDuration)
 				record.maxUploadRate.Store(existingRecord.MaxUploadRate)
 				record.maxDownloadRate.Store(existingRecord.MaxDownloadRate)
+				record.lossRate.Store(existingRecord.LossRate)
 				if existingRecord.Weights != nil {
 					for k, v := range existingRecord.Weights {
 						record.weights.Set(k, v)
@@ -179,6 +182,7 @@ func (record *AtomicStatsRecord) CreateStatsSnapshot(cacheKey string) *StatsReco
 		MaxUploadRate:      record.maxUploadRate.Load(),
 		MaxDownloadRate:    record.maxDownloadRate.Load(),
 		ConnectionDuration: record.duration.Load(),
+		LossRate:           record.lossRate.Load(),
 		Weights:            record.weights.FilterByKeyPrefix(""),
 	}
 
@@ -209,6 +213,8 @@ func (r *AtomicStatsRecord) Get(field string) interface{} {
 		return r.maxDownloadRate.Load()
 	case "duration":
 		return r.duration.Load()
+	case "lossRate":
+		return r.lossRate.Load()
 	default:
 		return nil
 	}
@@ -255,6 +261,10 @@ func (r *AtomicStatsRecord) Set(field string, value interface{}) {
 	case "duration":
 		if v, ok := value.(float64); ok {
 			r.duration.Store(v)
+		}
+	case "lossRate":
+		if v, ok := value.(float64); ok {
+			r.lossRate.Store(v)
 		}
 	}
 }
