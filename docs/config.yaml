@@ -350,6 +350,7 @@ dns:
   #     - '+.google.com'
   #     - '+.facebook.com'
   #     - '+.youtube.com'
+  # fallback-lazy-query: false # 默认值为 false ，如果为 true 会先判断来自 nameserver 的结果是否满足 fallback-filter 后再发起查询
 
   # 配置查询域名使用的 DNS 服务器
   nameserver-policy:
