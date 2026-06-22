@@ -62,9 +62,10 @@ func TestGetTCPStats_Loopback(t *testing.T) {
 
 	stats := GetTCPStats(client)
 	if stats == nil {
-		if runtime.GOOS == "linux" || runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
-			t.Logf("GetTCPStats returned nil on %s (may be expected if connection is already closed)", runtime.GOOS)
-		} else {
+		switch runtime.GOOS {
+		case "linux", "darwin", "windows", "freebsd":
+			t.Logf("GetTCPStats returned nil on %s (may be expected if connection is already closed or kernel too old)", runtime.GOOS)
+		default:
 			t.Logf("GetTCPStats not supported on %s", runtime.GOOS)
 		}
 		return
@@ -79,8 +80,15 @@ func TestGetTCPStats_Loopback(t *testing.T) {
 		t.Errorf("expected 0 loss rate on loopback, got %.4f", lossRate)
 	}
 
+	// At least one of SegsOut or BytesSent should be populated
+	// (FreeBSD uses TCP_PERF_INFO which fills BytesSent; Linux uses TCP_INFO which fills SegsOut)
 	if stats.SegsOut == 0 && stats.BytesSent == 0 {
-		t.Error("expected non-zero sent statistics")
+		t.Error("expected non-zero sent statistics (SegsOut or BytesSent)")
+	}
+
+	// If BytesSent is populated, ensure BytesRetrans is also meaningful
+	if stats.BytesSent > 0 && stats.BytesRetrans > stats.BytesSent {
+		t.Errorf("BytesRetrans (%d) exceeds BytesSent (%d)", stats.BytesRetrans, stats.BytesSent)
 	}
 }
 
