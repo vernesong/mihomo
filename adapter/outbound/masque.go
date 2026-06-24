@@ -300,6 +300,9 @@ func (w *Masque) run(ctx context.Context) error {
 	} else {
 		var quicConn *quic.Conn
 		pc, quicConn, err = w.dialQuic(ctx)
+		if err != nil {
+			return err
+		}
 
 		closer, ipConn, err = masque.ConnectTunnel(ctx, quicConn, w.uri)
 		if err != nil {

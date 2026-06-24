@@ -271,6 +271,7 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid xpadding", http.StatusBadRequest)
 		return
 	}
+	obfsPaddingAccepted := h.config.XPaddingObfsMode && paddingValue != ""
 	sessionId, seqStr := h.config.ExtractMetaFromRequest(r, path)
 
 	var currentSession *httpSession
@@ -305,8 +306,8 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = rc.EnableFullDuplex() // http1 need to enable full duplex manually
 		_ = rc.Flush()            // force flush the response header
 
-		referrer := r.Header.Get("Referer")
-		if referrer != "" && h.scStreamUpServerSecs.Max > 0 {
+		hasLegacyRefererCompatMarker := r.Header.Get("Referer") != ""
+		if (hasLegacyRefererCompatMarker || obfsPaddingAccepted) && h.scStreamUpServerSecs.Max > 0 {
 			go func() {
 				for {
 					_, err := httpSC.Write(bytes.Repeat([]byte{'X'}, int(h.xPaddingBytes.Rand())))
