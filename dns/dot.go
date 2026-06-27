@@ -3,6 +3,7 @@ package dns
 import (
 	"context"
 	"fmt"
+	"github.com/metacubex/mihomo/component/resolver"
 	"net"
 	"runtime"
 	"sync"
@@ -159,7 +160,7 @@ func (t *dnsOverTLS) Close() error {
 	return nil
 }
 
-func newDoTClient(addr string, resolver *Resolver, params map[string]string, proxyAdapter C.ProxyAdapter, proxyName string) *dnsOverTLS {
+func newDoTClient(addr string, resolver resolver.Resolver, params map[string]string, proxyAdapter C.ProxyAdapter, proxyName string) *dnsOverTLS {
 	host, port, _ := net.SplitHostPort(addr)
 	c := &dnsOverTLS{
 		port:   port,

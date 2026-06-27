@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/component/ca"
+	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 
@@ -74,7 +75,7 @@ type dnsOverHTTPS struct {
 var _ dnsClient = (*dnsOverHTTPS)(nil)
 
 // newDoH returns the DNS-over-HTTPS Upstream.
-func newDoHClient(urlString string, r *Resolver, preferH3 bool, params map[string]string, proxyAdapter C.ProxyAdapter, proxyName string) dnsClient {
+func newDoHClient(urlString string, r resolver.Resolver, preferH3 bool, params map[string]string, proxyAdapter C.ProxyAdapter, proxyName string) dnsClient {
 	u, _ := url.Parse(urlString)
 	httpVersions := DefaultHTTPVersions
 	if preferH3 {

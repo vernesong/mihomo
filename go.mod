@@ -44,7 +44,7 @@ require (
 	github.com/metacubex/tailscale v0.0.0-20260623094802-1ab893d4162c
 	github.com/metacubex/tfo-go v0.0.0-20260623020846-376a77860b8c
 	github.com/metacubex/tls v0.1.6
-	github.com/metacubex/utls v1.8.4
+	github.com/metacubex/utls v1.8.7
 	github.com/metacubex/wireguard-go v0.0.0-20250820062549-a6cecdd7f57f
 	github.com/mroth/weightedrand/v2 v2.1.0
 	github.com/openacid/low v0.1.21

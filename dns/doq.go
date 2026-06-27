@@ -15,6 +15,7 @@ import (
 	"github.com/metacubex/mihomo/common/contextutils"
 	"github.com/metacubex/mihomo/common/pool"
 	"github.com/metacubex/mihomo/component/ca"
+	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 
@@ -67,7 +68,7 @@ type dnsOverQUIC struct {
 var _ dnsClient = (*dnsOverQUIC)(nil)
 
 // newDoQ returns the DNS-over-QUIC Upstream.
-func newDoQ(addr string, resolver *Resolver, params map[string]string, proxyAdapter C.ProxyAdapter, proxyName string) *dnsOverQUIC {
+func newDoQ(addr string, resolver resolver.Resolver, params map[string]string, proxyAdapter C.ProxyAdapter, proxyName string) *dnsOverQUIC {
 	doq := &dnsOverQUIC{
 		addr:   addr,
 		dialer: newDNSDialer(resolver, proxyAdapter, proxyName),
