@@ -17,8 +17,7 @@ import (
 )
 
 const (
-	DefaultHandshakeTimeout = 30 * time.Second
-	ControlRetransmitDelay  = time.Second
+	ControlRetransmitDelay = time.Second
 )
 
 type Client struct {
@@ -75,11 +74,6 @@ func NewClient(config *ClientConfig, io PacketIO) (*Client, error) {
 func (c *Client) Handshake(ctx context.Context) (*PushReply, error) {
 	if c == nil {
 		return nil, errors.New("nil openvpn client")
-	}
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultHandshakeTimeout)
-		defer cancel()
 	}
 	if err := c.control.SendReset(ctx); err != nil {
 		return nil, fmt.Errorf("send hard reset: %w", err)
