@@ -253,8 +253,8 @@ github.com/tailscale/peercred v0.0.0-20250107143737-35a0c7bd7edc h1:24heQPtnFR+y
 github.com/tailscale/peercred v0.0.0-20250107143737-35a0c7bd7edc/go.mod h1:f93CXfllFsO9ZQVq+Zocb1Gp4G5Fz0b0rXHLOzt/Djc=
 github.com/u-root/uio v0.0.0-20230220225925-ffce2a382923 h1:tHNk7XK9GkmKUR6Gh8gVBKXc2MVSZ4G/NnWLtzw4gNA=
 github.com/u-root/uio v0.0.0-20230220225925-ffce2a382923/go.mod h1:eLL9Nub3yfAho7qB0MzZizFhTU2QkLeoVsWdHtDW264=
-github.com/vernesong/leaves v0.0.0-20251129203830-02de011aefeb h1:x41uGQaw/tMtb6l4QUMhLSwEhbpMTFFFrC+SyoO+lyU=
-github.com/vernesong/leaves v0.0.0-20251129203830-02de011aefeb/go.mod h1:Ndptw/K8n2twzGNEgCBSaEdTjT3EWU5YvJ476KwDKGw=
+github.com/vernesong/leaves v0.0.0-20260629081247-2a1c022f37d0 h1:nUA4Mk3K64DfnpHfhJHrbDf5j0R7mYgPJ3W81vFopAg=
+github.com/vernesong/leaves v0.0.0-20260629081247-2a1c022f37d0/go.mod h1:Ndptw/K8n2twzGNEgCBSaEdTjT3EWU5YvJ476KwDKGw=
 github.com/ulikunitz/xz v0.5.15 h1:9DNdB5s+SgV3bQ2ApL10xRc35ck0DuIX/isZvIk+ubY=
 github.com/ulikunitz/xz v0.5.15/go.mod h1:nbz6k7qbPmH4IRqmfOplQw/tblSgqTqBwxkY0oWt/14=
 github.com/vishvananda/netlink v1.1.0/go.mod h1:cTgwzPIzzgDAYoQrMm0EdrjRUBkTqKYppBueQtXaqoE=
