@@ -21,8 +21,10 @@ import (
 	"github.com/dlclark/regexp2"
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/callback"
-	"github.com/metacubex/mihomo/common/xsync"
+	"github.com/metacubex/mihomo/common/lru"
 	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/common/xsync"
 	"github.com/metacubex/mihomo/component/geodata"
 	"github.com/metacubex/mihomo/component/mmdb"
 	"github.com/metacubex/mihomo/component/profile/cachefile"
@@ -50,9 +52,12 @@ const (
 
 	maxRetries               = 3
 	maxSelected              = 10
+	smartStickyCacheAge      = 10 * time.Minute
+	smartStickyCacheSize     = 1000
 
 	parallelDials            = 5
 	connectThreshold         = 5.0
+	smartStrategyStickySessions = "sticky-sessions"
 )
 
 var (
@@ -62,6 +67,7 @@ var (
 
 type SmartOption struct {
 	PolicyPriority string  `group:"policy-priority,omitempty"`
+	Strategy       string  `group:"strategy,omitempty"`
 	UseLightGBM    bool    `group:"uselightgbm,omitempty"`
 	CollectData    bool    `group:"collectdata,omitempty"`
 	SampleRate     float64 `group:"sample-rate,omitempty"`
@@ -78,6 +84,8 @@ type Smart struct {
 
 	configName             string
 	selected               string
+	strategy               string
+	stickyCache            *lru.LruCache[uint64, string]
 	testUrl                string
 	expectedStatus         string
 	disableUDP             bool
@@ -123,6 +131,13 @@ func NewSmart(option GroupCommonOption, smartOption SmartOption, emptyFallback C
 		option.URL = C.DefaultTestURL
 	}
 
+	strategy := strings.TrimSpace(smartOption.Strategy)
+	switch strategy {
+	case "", smartStrategyStickySessions:
+	default:
+		return nil, fmt.Errorf("%w: smart strategy %q", errStrategy, smartOption.Strategy)
+	}
+
 	configName := getConfigFilename()
 
 	s := &Smart{
@@ -142,12 +157,20 @@ func NewSmart(option GroupCommonOption, smartOption SmartOption, emptyFallback C
 		testUrl:              option.URL,
 		expectedStatus:       option.ExpectedStatus,
 		configName:           configName,
+		strategy:             strategy,
 		disableUDP:           option.DisableUDP,
 		policyPriority:       make([]priorityRule, 0),
 		sampleRate:           1,
 		useLightGBM:          smartOption.UseLightGBM,
 		collectData:          smartOption.CollectData,
 		preferASN:            smartOption.PreferASN,
+	}
+
+	if strategy == smartStrategyStickySessions {
+		s.stickyCache = lru.New[uint64, string](
+			lru.WithAge[uint64, string](int64(smartStickyCacheAge.Seconds())),
+			lru.WithSize[uint64, string](smartStickyCacheSize),
+		)
 	}
 
 	if smartOption.SampleRate > 0 && smartOption.SampleRate <= 1 {
@@ -302,12 +325,14 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, 
 				finalErr = err
 			} else {
 				s.store.StoreUnwrapResult(s.Name(), s.configName, metadata.SmartTarget, asnNumber, metadata.NetWork == C.UDP, []C.Proxy{p})
+				s.storeStickyProxy(metadata, p)
 				return s.WrapConnWithMetric(c, p, metadata, connectTime), nil
 			}
 		}
 
 		if len(proxies) == 1 {
 			s.store.DeleteUnwrapResult(s.Name(), s.configName, metadata.SmartTarget, asnNumber, metadata.NetWork == C.UDP)
+			s.clearStickyProxy(metadata)
 		}
 
 		return nil, finalErr
@@ -360,11 +385,13 @@ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
 			}
 
 			s.store.StoreUnwrapResult(s.Name(), s.configName, metadata.SmartTarget, asnNumber, metadata.NetWork == C.UDP, []C.Proxy{proxy})
+			s.storeStickyProxy(metadata, proxy)
 			return s.WrapPacketConnWithMetric(pc, proxy, metadata, connectTime), nil
 		}
 
 		if singleProxyRetry {
 			s.store.DeleteUnwrapResult(s.Name(), s.configName, metadata.SmartTarget, asnNumber, metadata.NetWork == C.UDP)
+			s.clearStickyProxy(metadata)
 			break
 		}
 	}
@@ -432,7 +459,7 @@ func (s *Smart) WrapConnWithMetric(c C.Conn, proxy C.Proxy, metadata *C.Metadata
 
 func (s *Smart) WrapPacketConnWithMetric(pc C.PacketConn, proxy C.Proxy, metadata *C.Metadata, connectTime int64) C.PacketConn {
 	pc.AppendToChains(s)
-	
+
 	var udpLatency atomic.Int64
 
 	pc = callback.NewFirstReadCallBackPacketConn(pc, func(latency int64) {
@@ -516,6 +543,82 @@ func (s *Smart) Providers() []provider.ProxyProvider {
 
 func (s *Smart) Proxies() []C.Proxy {
 	return s.GetProxies(false)
+}
+
+func getSmartStickyKey(metadata *C.Metadata) uint64 {
+	if metadata == nil {
+		return utils.MapHash("")
+	}
+
+	src := ""
+	if metadata.SrcIP.IsValid() {
+		src = metadata.SrcIP.String()
+	}
+
+	dstIP := ""
+	if metadata.DstIP.IsValid() {
+		dstIP = metadata.DstIP.String()
+	}
+
+	target := smart.GetEffectiveTarget(metadata.Host, dstIP)
+	if target == "" {
+		target = metadata.SmartTarget
+	}
+
+	return utils.MapHash(src + "\x00" + target)
+}
+
+func (s *Smart) getStickyProxy(metadata *C.Metadata, wildcardTarget string, proxies []C.Proxy, isUDP bool) C.Proxy {
+	if s.strategy != smartStrategyStickySessions || s.stickyCache == nil || metadata == nil {
+		return nil
+	}
+
+	key := getSmartStickyKey(metadata)
+	proxyName, ok := s.stickyCache.Get(key)
+	if !ok || proxyName == "" {
+		return nil
+	}
+
+	blockedNodes := s.store.GetBlockedNodes(s.Name(), s.configName)
+	wtFailNodes, _, _, wtBlocked := s.store.GetHostStatus(s.Name(), s.configName, wildcardTarget)
+
+	for _, proxy := range proxies {
+		if proxy.Name() != proxyName {
+			continue
+		}
+		if blockedNodes[proxyName] {
+			break
+		}
+		if !wtBlocked && wtFailNodes[proxyName] {
+			break
+		}
+		if !proxy.AliveForTestUrl(s.testUrl) {
+			break
+		}
+		if isUDP && !proxy.SupportUDP() {
+			break
+		}
+		return proxy
+	}
+
+	s.clearStickyProxy(metadata)
+	return nil
+}
+
+func (s *Smart) storeStickyProxy(metadata *C.Metadata, proxy C.Proxy) {
+	if s.strategy != smartStrategyStickySessions || s.stickyCache == nil || metadata == nil || proxy == nil {
+		return
+	}
+
+	s.stickyCache.Set(getSmartStickyKey(metadata), proxy.Name())
+}
+
+func (s *Smart) clearStickyProxy(metadata *C.Metadata) {
+	if s.strategy != smartStrategyStickySessions || s.stickyCache == nil || metadata == nil {
+		return
+	}
+
+	s.stickyCache.Delete(getSmartStickyKey(metadata))
 }
 
 func (s *Smart) filterProxies(metadata *C.Metadata, wildcardTarget string, names []string, weights []float64, all []C.Proxy, minCount int, isUDP bool) []C.Proxy {
@@ -692,6 +795,11 @@ func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy) ([]C.Prox
 		}
 	}
 
+	isUDP := metadata.NetWork == C.UDP
+	if proxy := s.getStickyProxy(metadata, wildcardTarget, proxies, isUDP); proxy != nil {
+		return []C.Proxy{proxy}, asnNumber
+	}
+
 	trySelector := func(isUDP bool) ([]string, []float64) {
 		// 检查匹配缓存
 		if proxiesName := s.store.GetUnwrapResult(s.Name(), s.configName, metadata.SmartTarget, asnNumber, isUDP); len(proxiesName) > 0 {
@@ -711,7 +819,6 @@ func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy) ([]C.Prox
 		return nil, nil
 	}
 
-	isUDP := metadata.NetWork == C.UDP
 	resultNames, resultWeights := trySelector(isUDP)
 	result := s.filterProxies(metadata, wildcardTarget, resultNames, resultWeights, proxies, maxSelected, isUDP)
 
@@ -1658,6 +1765,7 @@ func (s *Smart) findSameConnection(metadata *C.Metadata, proxyName, target, asnI
 	}
 
 	s.store.DeleteUnwrapResult(s.Name(), s.configName, target, asnInfo, isUDP)
+	s.clearStickyProxy(metadata)
 
 }
 
