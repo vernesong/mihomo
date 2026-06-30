@@ -60,7 +60,7 @@ import (
 // robust_scale=...comma separated float values...
 // [/definitions]
 //
-// untransformed_features=15:is_udp,16:is_tcp,17:loss_rate,18:cumul_loss_rate,19:asn_feature,20:country_feature,21:address_feature,22:port_feature,25:connection_type_feature,26:asn_hash,27:host_hash,28:ip_hash,29:geoip_hash
+// untransformed_features=14:last_used_seconds,15:is_udp,16:is_tcp,17:loss_rate,18:cumul_loss_rate,19:asn_feature,20:country_feature,21:address_feature,22:port_feature,25:connection_type_feature,26:asn_hash,27:host_hash,28:ip_hash,29:geoip_hash
 // transform=true
 // [/transforms]
 //
