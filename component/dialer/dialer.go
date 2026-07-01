@@ -272,6 +272,11 @@ loop:
 			}
 			if res.error == nil {
 				if res.isPrimary {
+					if fallback.error == nil && fallback.Conn != nil {
+						go func() { // close fallback connection in new goroutine to avoid blocking
+							_ = fallback.Conn.Close()
+						}()
+					}
 					return res.Conn, nil
 				}
 				fallback = res
