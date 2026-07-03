@@ -3,8 +3,8 @@ github.com/RyuaNerin/go-krypto v1.3.0/go.mod h1:9R9TU936laAIqAmjcHo/LsaXYOZlymud
 github.com/RyuaNerin/testingutil v0.1.0 h1:IYT6JL57RV3U2ml3dLHZsVtPOP6yNK7WUVdzzlpNrss=
 github.com/Yawning/aez v0.0.0-20211027044916-e49e68abd344 h1:cDVUiFo+npB0ZASqnw4q90ylaVAbnYyx0JYqK4YcGok=
 github.com/Yawning/aez v0.0.0-20211027044916-e49e68abd344/go.mod h1:9pIqrY6SXNL8vjRQE5Hd/OL5GyK/9MrGUWs87z/eFfk=
-github.com/ajg/form v1.5.1 h1:t9c7v8JUKu/XxOGBU0yjNpaMloxGEJhUkqFRq0ibGeU=
-github.com/ajg/form v1.5.1/go.mod h1:uL1WgH+h2mgNtvBq0339dVnzXdBETtL2LeUXaIv25UY=
+github.com/ajg/form v1.7.1 h1:OsnBDzTkrWdrxvEnO68I72ZVGJGNaMwPhoAm0V+llgc=
+github.com/ajg/form v1.7.1/go.mod h1:HL757PzLyNkj5AIfptT6L+iGNeXTlnrr/oDePGc/y7Q=
 github.com/akutz/memconn v0.1.0 h1:NawI0TORU4hcOMsMr11g7vwlCdkYeLKXBcxWu2W/P8A=
 github.com/akutz/memconn v0.1.0/go.mod h1:Jo8rI7m0NieZyLI5e2CDlRdRqRRB4S7Xp77ukDjH+Fw=
 github.com/alexbrainman/sspi v0.0.0-20231016080023-1a75b4708caa h1:LHTHcTQiSGT7VVbI0o4wBRNQIgn917usHWOd6VAffYI=
@@ -111,8 +111,8 @@ github.com/metacubex/blake3 v0.1.0 h1:KGnjh/56REO7U+cgZA8dnBhxdP7jByrG7hTP+bu6cq
 github.com/metacubex/blake3 v0.1.0/go.mod h1:CCkLdzFrqf7xmxCdhQFvJsRRV2mwOLDoSPg6vUTB9Uk=
 github.com/metacubex/chacha v0.1.5 h1:fKWMb/5c7ZrY8Uoqi79PPFxl+qwR7X/q0OrsAubyX2M=
 github.com/metacubex/chacha v0.1.5/go.mod h1:Djn9bPZxLTXbJFSeyo0/qzEzQI+gUSSzttuzZM75GH8=
-github.com/metacubex/chi v0.1.0 h1:rjNDyDj50nRpicG43CNkIw4ssiCbmDL8d7wJXKlUCsg=
-github.com/metacubex/chi v0.1.0/go.mod h1:zM5u5oMQt8b2DjvDHvzadKrP6B2ztmasL1YHRMbVV+g=
+github.com/metacubex/chi v0.1.1 h1:GajmCIXSIPAZNxqTTYpkCrkY9suBz9wjIdgPcoQ5K1A=
+github.com/metacubex/chi v0.1.1/go.mod h1:/CvDXe8jZD/ecU8Y7fmS5XKLRR44UDmC6/IBkRIb6Z4=
 github.com/metacubex/connect-ip-go v0.0.0-20260412152424-e1625567920a h1:Ph5UfTWDsGruZ+v95Df1ycTflQFmpZBFg2LUvj2kx/M=
 github.com/metacubex/connect-ip-go v0.0.0-20260412152424-e1625567920a/go.mod h1:xYC8Ik7/rN6no+vTRuWMEziGwm3brA0wNM/zZP9qhOQ=
 github.com/metacubex/cpu v0.1.1 h1:rRV5HGmeuGzjiKI3hYbL0dCd0qGwM7VUtk4ICXD06mI=
@@ -181,8 +181,8 @@ github.com/metacubex/tailscale-wireguard-go v0.0.0-20260623093519-06ea214022e4 h
 github.com/metacubex/tailscale-wireguard-go v0.0.0-20260623093519-06ea214022e4/go.mod h1:W00EeoPdd2jbV3+ZUa0m2b7FdKx5B1LFsXvEpy7cToQ=
 github.com/metacubex/tfo-go v0.0.0-20260623020846-376a77860b8c h1:+2C1UshSLzaogLY/IDz1XhOLxjhs3rkhVHB4eCN9Zto=
 github.com/metacubex/tfo-go v0.0.0-20260623020846-376a77860b8c/go.mod h1:l9oLnLoEXyGZ5RVLsh7QCC5XsouTUyKk4F2nLm2DHLw=
-github.com/metacubex/tls v0.1.6 h1:t2ubLneYa4ceyIC++54a57BLqZFA/QYUrhdjLk2GPwo=
-github.com/metacubex/tls v0.1.6/go.mod h1:0XeVdL0cBw+8i5Hqy3lVeP9IyD/LFTq02ExvHM6rzEM=
+github.com/metacubex/tls v0.1.7 h1:7YW+7z2xGH1bozSg04q3gKNd7GBSiTSXIrQY2SMnfoE=
+github.com/metacubex/tls v0.1.7/go.mod h1:0XeVdL0cBw+8i5Hqy3lVeP9IyD/LFTq02ExvHM6rzEM=
 github.com/metacubex/utls v1.8.7 h1:Cp+yWkNTFkSihETgGWq34hlVFds5HpYWVOR1xovUVTs=
 github.com/metacubex/utls v1.8.7/go.mod h1:kncGGVhFaoGn5M3pFe3SXhZCzsbCJayNOH4UEqTKTko=
 github.com/metacubex/wireguard-go v0.0.0-20250820062549-a6cecdd7f57f h1:FGBPRb1zUabhPhDrlKEjQ9lgIwQ6cHL4x8M9lrERhbk=

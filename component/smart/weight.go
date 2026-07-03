@@ -60,6 +60,7 @@ type ModelInput struct {
 	// 连接特征
 	IsUDP                      bool      // 是否UDP连接
 	IsTCP                      bool      // 是否TCP连接
+	ConnectionFailed           bool      // 本次连接是否失败（用于区分是复用还是连接失败）
 	LossRate                   float64   // 单次连接丢包率 0.0~1.0, 0=无丢包/不支持/UDP
 	CumulLossRate              float64   // 历史累计丢包率 cumulRetrans/cumulSent
 
@@ -123,22 +124,27 @@ func CalculateWeight(input *ModelInput, priorityFactor float64) (float64, bool) 
 
 	// 6. 基础指标计算
 	if connectTime == 0 {
-		connectTime = 2000
+		if !input.ConnectionFailed {
+			connectTime = 1
+		} else {
+			connectTime = 2000
+		}
 	}
 
 	if latency == 0 {
-		latency = 2000
+		if !input.ConnectionFailed {
+			latency = 1
+		} else {
+			latency = 2000
+		}
 	}
 
 	successRate := decayedSuccess / decayedTotal
 	connectScore := math.Exp(-float64(connectTime)/1500.0) * timeFactor
 	latencyScore := math.Exp(-float64(latency)/1500.0) * timeFactor
 
-	connectScore = math.Min(0.8, connectScore)
-	latencyScore = math.Min(0.8, latencyScore)
-
-	connectScore = math.Max(0.3, connectScore)
-	latencyScore = math.Max(0.3, latencyScore)
+	connectScore = math.Min(0.8, math.Max(0.3, connectScore))
+	latencyScore = math.Min(0.8, math.Max(0.3, latencyScore))
 
 	// 7. UDP协议调整
 	if isUDP {
@@ -194,9 +200,6 @@ func CalculateWeight(input *ModelInput, priorityFactor float64) (float64, bool) 
 		qualityBonus += 0.1
 	}
 	if connectTime > 0 && connectTime < 10 {
-		qualityBonus += 0.1
-	}
-	if successRate > 0.95 {
 		qualityBonus += 0.1
 	}
 	if (scene == sceneStreaming || scene == sceneTransfer) && downloadMB > 20 {

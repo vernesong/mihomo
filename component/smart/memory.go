@@ -26,10 +26,8 @@ var (
 
 type (
 	UnwrapMap struct {
-		TCP    []string  `json:"tcp,omitempty"`
-		UDP    []string  `json:"udp,omitempty"`
-		RefTCP string    `json:"ref_tcp,omitempty"`
-		RefUDP string    `json:"ref_udp,omitempty"`
+		Proxies []string `json:"proxies,omitempty"`
+		Ref     string   `json:"ref,omitempty"`
 	}
 
 	NodesWithWeights struct {
@@ -69,7 +67,7 @@ func InitCache() {
 
 	unwrapCache = lru.New[string, UnwrapMap](
 		lru.WithSize[string, UnwrapMap](globalCacheParams.MaxTargets / 4),
-		lru.WithAge[string, UnwrapMap](600),
+		lru.WithAge[string, UnwrapMap](1800),
 	)
 
 	recordCache = lru.New[string, *AtomicStatsRecord](
@@ -213,7 +211,7 @@ func (s *Store) GetPrefetchResult(group, config string, target string, asnNumber
 	return nil, nil
 }
 
-func (s *Store) StoreUnwrapResult(group, config string, target string, asnNumber string, isUDP bool, proxies []C.Proxy) {
+func (s *Store) StoreUnwrapResult(group, config string, target string, asnNumber string, proxies []C.Proxy) {
 	if target == "" || len(proxies) == 0 {
 		return
 	}
@@ -229,71 +227,35 @@ func (s *Store) StoreUnwrapResult(group, config string, target string, asnNumber
 		asnKey := FormatDBKey(config, group, asnNumber)
 		if value, found := unwrapCache.Get(asnKey); found {
 			um := value
-			if isUDP {
-				if len(um.UDP) == 0 {
-					um.UDP = names
-					unwrapCache.Set(asnKey, um)
-				}
-			} else {
-				if len(um.TCP) == 0 {
-					um.TCP = names
-					unwrapCache.Set(asnKey, um)
-				}
+			if len(um.Proxies) == 0 {
+				um.Proxies = names
+				unwrapCache.Set(asnKey, um)
 			}
 		} else {
-			var um UnwrapMap
-			if isUDP {
-				um.UDP = names
-			} else {
-				um.TCP = names
-			}
-			unwrapCache.Set(asnKey, um)
+			unwrapCache.Set(asnKey, UnwrapMap{Proxies: names})
 		}
 
 		if value, found := unwrapCache.Get(targetKey); found {
 			um := value
-			if isUDP {
-				if um.RefUDP == "" {
-					um.RefUDP = asnKey
-					unwrapCache.Set(targetKey, um)
-				}
-			} else {
-				if um.RefTCP == "" {
-					um.RefTCP = asnKey
-					unwrapCache.Set(targetKey, um)
-				}
+			if um.Ref == "" {
+				um.Ref = asnKey
+				unwrapCache.Set(targetKey, um)
 			}
 		} else {
-			var um UnwrapMap
-			if isUDP {
-				um.RefUDP = asnKey
-			} else {
-				um.RefTCP = asnKey
-			}
-			unwrapCache.Set(targetKey, um)
+			unwrapCache.Set(targetKey, UnwrapMap{Ref: asnKey})
 		}
 	} else {
 		if value, found := unwrapCache.Get(targetKey); found {
 			um := value
-			if isUDP {
-				um.UDP = names
-			} else {
-				um.TCP = names
-			}
+			um.Proxies = names
 			unwrapCache.Set(targetKey, um)
 		} else {
-			var um UnwrapMap
-			if isUDP {
-				um.UDP = names
-			} else {
-				um.TCP = names
-			}
-			unwrapCache.Set(targetKey, um)
+			unwrapCache.Set(targetKey, UnwrapMap{Proxies: names})
 		}
 	}
 }
 
-func (s *Store) GetUnwrapResult(group, config, target, asnNumber string, isUDP bool) []string {
+func (s *Store) GetUnwrapResult(group, config, target, asnNumber string) []string {
 	if target == "" {
 		return nil
 	}
@@ -302,46 +264,26 @@ func (s *Store) GetUnwrapResult(group, config, target, asnNumber string, isUDP b
 
 	if value, found := unwrapCache.Get(targetKey); found {
 		um := value
-		var refKey string
-		if isUDP {
-			refKey = um.RefUDP
-		} else {
-			refKey = um.RefTCP
-		}
-		if refKey != "" {
-			if refValue, found := unwrapCache.Get(refKey); found {
-				refUm := refValue
-				if isUDP {
-					return refUm.UDP
-				} else {
-					return refUm.TCP
-				}
+		if um.Ref != "" {
+			if refValue, found := unwrapCache.Get(um.Ref); found {
+				return refValue.Proxies
 			}
-		} else {
-			if isUDP {
-				return um.UDP
-			} else {
-				return um.TCP
-			}
+		} else if len(um.Proxies) > 0 {
+			return um.Proxies
 		}
 	}
 
 	if asnNumber != "" && !CdnASNs[asnNumber] {
 		asnKey := FormatDBKey(config, group, asnNumber)
 		if value, found := unwrapCache.Get(asnKey); found {
-			um := value
-			if isUDP {
-				return um.UDP
-			} else {
-				return um.TCP
-			}
+			return value.Proxies
 		}
 	}
 
 	return nil
 }
 
-func (s *Store) DeleteUnwrapResult(group, config string, target string, asnNumber string, isUDP bool) {
+func (s *Store) DeleteUnwrapResult(group, config string, target string, asnNumber string) {
 	if target == "" {
 		return
 	}
@@ -350,14 +292,9 @@ func (s *Store) DeleteUnwrapResult(group, config string, target string, asnNumbe
 
 	if value, found := unwrapCache.Get(targetKey); found {
 		um := value
-		if isUDP {
-			um.UDP = nil
-			um.RefUDP = ""
-		} else {
-			um.TCP = nil
-			um.RefTCP = ""
-		}
-		if len(um.TCP) == 0 && len(um.UDP) == 0 && um.RefTCP == "" && um.RefUDP == "" {
+		um.Proxies = nil
+		um.Ref = ""
+		if len(um.Proxies) == 0 && um.Ref == "" {
 			unwrapCache.Delete(targetKey)
 		} else {
 			unwrapCache.Set(targetKey, um)
@@ -368,12 +305,8 @@ func (s *Store) DeleteUnwrapResult(group, config string, target string, asnNumbe
 		asnKey := FormatDBKey(config, group, asnNumber)
 		if value, found := unwrapCache.Get(asnKey); found {
 			um := value
-			if isUDP {
-				um.UDP = nil
-			} else {
-				um.TCP = nil
-			}
-			if len(um.TCP) == 0 && len(um.UDP) == 0 {
+			um.Proxies = nil
+			if len(um.Proxies) == 0 {
 				unwrapCache.Delete(asnKey)
 			} else {
 				unwrapCache.Set(asnKey, um)
@@ -437,7 +370,7 @@ func (s *Store) AdjustCacheParameters() {
 
 	cacheSize := globalCacheParams.MaxTargets / 4
 	targetCache = lru.ResetLRU(targetCache, cacheSize, lru.WithAge[string, string](300))
-	unwrapCache = lru.ResetLRU(unwrapCache, cacheSize, lru.WithAge[string, UnwrapMap](600))
+	unwrapCache = lru.ResetLRU(unwrapCache, cacheSize, lru.WithAge[string, UnwrapMap](1800))
 	recordCache = lru.ResetLRU(recordCache, cacheSize, lru.WithAge[string, *AtomicStatsRecord](300))
 	dbResultCache = lru.ResetLRU(dbResultCache, cacheSize, lru.WithAge[string, map[string][]byte](300))
 	blockedNodesCache = lru.ResetLRU(blockedNodesCache, cacheSize, lru.WithAge[string, map[string]bool](300))

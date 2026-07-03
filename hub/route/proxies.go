@@ -46,7 +46,7 @@ func parseProxyName(next http.Handler) http.Handler {
 func findProxyByName(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name := r.Context().Value(CtxKeyProxyName).(string)
-		proxies := proxiesWithProviders()
+		proxies := tunnel.Proxies()
 		proxy, exist := proxies[name]
 		if !exist {
 			render.Status(r, http.StatusNotFound)
@@ -60,7 +60,7 @@ func findProxyByName(next http.Handler) http.Handler {
 }
 
 func getProxies(w http.ResponseWriter, r *http.Request) {
-	proxies := proxiesWithProviders()
+	proxies := tunnel.Proxies()
 	render.JSON(w, r, render.M{
 		"proxies": proxies,
 	})
@@ -157,22 +157,4 @@ func unfixedProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	render.Status(r, http.StatusBadRequest)
 	render.JSON(w, r, ErrBadRequest)
-}
-
-// proxiesWithProviders merges all proxies from tunnel
-//
-// Deprecated: This function is poorly implemented and should not be called by any new code.
-// It is left here only to ensure the compatibility of the output of the existing RESTful API.
-func proxiesWithProviders() map[string]C.Proxy {
-	allProxies := make(map[string]C.Proxy)
-	for name, proxy := range tunnel.Proxies() {
-		allProxies[name] = proxy
-	}
-	for _, p := range tunnel.Providers() {
-		for _, proxy := range p.Proxies() {
-			name := proxy.Name()
-			allProxies[name] = proxy
-		}
-	}
-	return allProxies
 }

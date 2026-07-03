@@ -10,53 +10,58 @@ import (
 	"github.com/metacubex/mihomo/common/structure"
 	C "github.com/metacubex/mihomo/constant"
 	obfs "github.com/metacubex/mihomo/transport/simple-obfs"
+	shadowtls "github.com/metacubex/mihomo/transport/sing-shadowtls"
 	"github.com/metacubex/mihomo/transport/snell"
 )
 
 type Snell struct {
 	*Base
-	option     *SnellOption
-	psk        []byte
-	pool       *snell.Pool
-	obfsOption *simpleObfsOption
-	version    int
-	reuse      bool
+	option          *SnellOption
+	psk             []byte
+	pool            *snell.Pool
+	obfsOption      *simpleObfsOption
+	shadowTLSOption *shadowtls.ShadowTLSOption
+	version         int
+	reuse           bool
 }
 
 type SnellOption struct {
 	BasicOption
-	Name     string         `proxy:"name"`
-	Server   string         `proxy:"server"`
-	Port     int            `proxy:"port"`
-	Psk      string         `proxy:"psk"`
-	UDP      bool           `proxy:"udp,omitempty"`
-	Version  int            `proxy:"version,omitempty"`
-	Reuse    bool           `proxy:"reuse,omitempty"`
-	ObfsOpts map[string]any `proxy:"obfs-opts,omitempty"`
+	Name              string         `proxy:"name"`
+	Server            string         `proxy:"server"`
+	Port              int            `proxy:"port"`
+	Psk               string         `proxy:"psk"`
+	UDP               bool           `proxy:"udp,omitempty"`
+	Version           int            `proxy:"version,omitempty"`
+	Reuse             bool           `proxy:"reuse,omitempty"`
+	ObfsOpts          map[string]any `proxy:"obfs-opts,omitempty"`
+	ClientFingerprint string         `proxy:"client-fingerprint,omitempty"`
 }
 
-type streamOption struct {
-	psk        []byte
-	version    int
-	addr       string
-	obfsOption *simpleObfsOption
-}
-
-func snellStreamConn(c net.Conn, option streamOption) *snell.Snell {
-	switch option.obfsOption.Mode {
+func (s *Snell) streamConnContext(ctx context.Context, c net.Conn) (*snell.Snell, error) {
+	var err error
+	switch s.obfsOption.Mode {
 	case "tls":
-		c = obfs.NewTLSObfs(c, option.obfsOption.Host)
+		c = obfs.NewTLSObfs(c, s.obfsOption.Host)
 	case "http":
-		_, port, _ := net.SplitHostPort(option.addr)
-		c = obfs.NewHTTPObfs(c, option.obfsOption.Host, port)
+		_, port, _ := net.SplitHostPort(s.addr)
+		c = obfs.NewHTTPObfs(c, s.obfsOption.Host, port)
+	case shadowtls.Mode:
+		c, err = shadowtls.NewShadowTLS(ctx, c, s.shadowTLSOption)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return snell.StreamConn(c, option.psk, option.version)
+	return snell.StreamConn(c, s.psk, s.version), nil
 }
 
 // StreamConnContext implements C.ProxyAdapter
 func (s *Snell) StreamConnContext(ctx context.Context, c net.Conn, metadata *C.Metadata) (net.Conn, error) {
-	c = snellStreamConn(c, streamOption{s.psk, s.version, s.addr, s.obfsOption})
-	err := s.writeHeaderContext(ctx, c, metadata)
+	c, err := s.streamConnContext(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	err = s.writeHeaderContext(ctx, c, metadata)
 	return c, err
 }
 
@@ -155,9 +160,34 @@ func NewSnell(option SnellOption) (*Snell, error) {
 		return nil, fmt.Errorf("snell %s initialize obfs error: %w", addr, err)
 	}
 
+	var shadowTLSOpt *shadowtls.ShadowTLSOption
 	switch obfsOption.Mode {
 	case "tls", "http", "":
 		break
+	case shadowtls.Mode:
+		opt := &shadowTLSOption{
+			Version: 2,
+		}
+		if err := decoder.Decode(option.ObfsOpts, opt); err != nil {
+			return nil, fmt.Errorf("snell %s initialize shadow-tls-plugin error: %w", addr, err)
+		}
+
+		shadowTLSOpt = &shadowtls.ShadowTLSOption{
+			Password:          opt.Password,
+			Host:              opt.Host,
+			Fingerprint:       opt.Fingerprint,
+			Certificate:       opt.Certificate,
+			PrivateKey:        opt.PrivateKey,
+			ClientFingerprint: option.ClientFingerprint,
+			SkipCertVerify:    opt.SkipCertVerify,
+			Version:           opt.Version,
+		}
+
+		if opt.ALPN != nil { // structure's Decode will ensure value not nil when input has value even it was set an empty array
+			shadowTLSOpt.ALPN = opt.ALPN
+		} else {
+			shadowTLSOpt.ALPN = shadowtls.DefaultALPN
+		}
 	default:
 		return nil, fmt.Errorf("snell %s obfs mode error: %s", addr, obfsOption.Mode)
 	}
@@ -194,11 +224,12 @@ func NewSnell(option SnellOption) (*Snell, error) {
 			RoutingMark:  option.RoutingMark,
 			Prefer:       option.IPVersion,
 		}),
-		option:     &option,
-		psk:        psk,
-		obfsOption: obfsOption,
-		version:    option.Version,
-		reuse:      reuse,
+		option:          &option,
+		psk:             psk,
+		obfsOption:      obfsOption,
+		shadowTLSOption: shadowTLSOpt,
+		version:         option.Version,
+		reuse:           reuse,
 	}
 	s.dialer = option.NewDialer(s.DialOptions())
 
@@ -209,7 +240,7 @@ func NewSnell(option SnellOption) (*Snell, error) {
 				return nil, err
 			}
 
-			return snellStreamConn(c, streamOption{psk, option.Version, addr, obfsOption}), nil
+			return s.streamConnContext(ctx, c)
 		})
 	}
 	return s, nil
