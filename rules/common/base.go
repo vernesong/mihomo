@@ -52,7 +52,7 @@ func ParseRulePayload(ruleRaw string, needTarget bool) (tp, payload, target stri
 		case "MATCH":
 			// MATCH doesn't contain payload and params
 			target = item[1]
-		case "NOT", "OR", "AND", "SUB-RULE", "DOMAIN-REGEX", "PROCESS-NAME-REGEX", "PROCESS-PATH-REGEX":
+		case "NOT", "OR", "AND", "SUB-RULE", "DOMAIN-REGEX", "URL-REGEX", "PROCESS-NAME-REGEX", "PROCESS-PATH-REGEX":
 			// some type of rules that has comma in payload and don't need params
 			if needTarget {
 				l := len(item)

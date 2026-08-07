@@ -40,6 +40,7 @@ const (
 	AND
 	OR
 	NOT
+	URLRegex
 )
 
 type RuleType int
@@ -136,6 +137,8 @@ func (rt RuleType) String() string {
 		return "OR"
 	case NOT:
 		return "NOT"
+	case URLRegex:
+		return "URLRegex"
 	default:
 		return "Unknown"
 	}

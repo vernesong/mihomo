@@ -1,6 +1,7 @@
 package mitm
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"sync"
@@ -17,6 +18,8 @@ type Handler interface {
 }
 
 type NopHandler struct{}
+
+type requestURLContextKey struct{}
 
 func (NopHandler) HandleRequest(*Session) (*http.Request, *http.Response) {
 	return nil, nil
@@ -51,6 +54,9 @@ func (s *Session) Metadata() *C.Metadata {
 
 func (s *Session) SetRequest(request *http.Request) {
 	s.request = request
+	if s.metadata != nil {
+		s.metadata.URL = fullRequestURL(request)
+	}
 }
 
 func (s *Session) SetResponse(response *http.Response) {
@@ -113,9 +119,39 @@ func NewResponse(code int, body io.Reader, request *http.Request) *http.Response
 }
 
 func newSession(request *http.Request, metadata *C.Metadata) *Session {
+	sessionMetadata := metadata.Clone()
+	sessionMetadata.URL = fullRequestURL(request)
 	return &Session{
 		request:  request,
-		metadata: metadata.Clone(),
+		metadata: sessionMetadata,
 		props:    make(map[string]any),
 	}
+}
+
+// RequestURLFromContext returns the absolute URL associated with an upstream MITM dial.
+func RequestURLFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	requestURL, _ := ctx.Value(requestURLContextKey{}).(string)
+	return requestURL
+}
+
+func withRequestURL(ctx context.Context, requestURL string) context.Context {
+	return context.WithValue(ctx, requestURLContextKey{}, requestURL)
+}
+
+func fullRequestURL(request *http.Request) string {
+	if request == nil || request.URL == nil {
+		return ""
+	}
+	requestURL := *request.URL
+	if requestURL.Scheme == "" {
+		requestURL.Scheme = "https"
+	}
+	if requestURL.Host == "" {
+		requestURL.Host = request.Host
+	}
+	requestURL.Fragment = ""
+	return requestURL.String()
 }

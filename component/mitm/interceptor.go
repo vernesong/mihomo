@@ -57,7 +57,7 @@ func (i *Interceptor) Handle(conn *N.BufferedConn, metadata *C.Metadata, dial Di
 		serverName = metadata.RuleHost()
 	}
 	serverName = normalizeCertificateHost(serverName)
-	if !i.config.MatchHostname(serverName) {
+	if !i.config.MatchHostnamePort(serverName, metadata.DstPort) {
 		return false, nil
 	}
 
@@ -66,10 +66,7 @@ func (i *Interceptor) Handle(conn *N.BufferedConn, metadata *C.Metadata, dial Di
 	metadata.DstIP = netip.Addr{}
 	metadata.DNSMode = C.DNSNormal
 
-	transport := i.newTransport(dial)
-	defer transport.CloseIdleConnections()
-
-	proxy := i.newReverseProxy(transport, metadata)
+	proxy := i.newReverseProxy(dial, metadata)
 	server := &http.Server{
 		Handler:   proxy,
 		TLSConfig: i.config.authority.tlsConfig(serverName, i.config.H2),
@@ -166,9 +163,9 @@ func sniffServerName(conn *N.BufferedConn) (string, bool) {
 
 type sessionContextKey struct{}
 
-func (i *Interceptor) newReverseProxy(transport *http.Transport, metadata *C.Metadata) http.Handler {
+func (i *Interceptor) newReverseProxy(dial DialContext, metadata *C.Metadata) http.Handler {
 	reverseProxy := &httputil.ReverseProxy{
-		Transport: transport,
+		Transport: &requestRoundTripper{interceptor: i, dial: dial},
 		Rewrite: func(proxyRequest *httputil.ProxyRequest) {
 			if proxyRequest.Out.URL.Scheme == "" {
 				proxyRequest.Out.URL.Scheme = "https"
@@ -232,7 +229,52 @@ func (i *Interceptor) newReverseProxy(transport *http.Transport, metadata *C.Met
 	})
 }
 
-func (i *Interceptor) newTransport(dial DialContext) *http.Transport {
+type requestRoundTripper struct {
+	interceptor *Interceptor
+	dial        DialContext
+}
+
+func (t *requestRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	requestURL := fullRequestURL(request)
+	// A fresh transport ensures every URL gets an independent routing decision.
+	// Close its pool with the response body so it cannot leak an idle connection.
+	transport := t.interceptor.newTransport(t.dial, requestURL)
+	response, err := transport.RoundTrip(request)
+	if err != nil {
+		transport.CloseIdleConnections()
+		return nil, err
+	}
+	if response.Body == nil {
+		transport.CloseIdleConnections()
+		return response, nil
+	}
+	response.Body = &closeIdleResponseBody{
+		ReadCloser: response.Body,
+		closeIdle:  transport.CloseIdleConnections,
+	}
+	return response, nil
+}
+
+type closeIdleResponseBody struct {
+	io.ReadCloser
+	closeIdle func()
+	closeOnce sync.Once
+}
+
+func (b *closeIdleResponseBody) Write(buffer []byte) (int, error) {
+	if writer, ok := b.ReadCloser.(io.Writer); ok {
+		return writer.Write(buffer)
+	}
+	return 0, io.ErrClosedPipe
+}
+
+func (b *closeIdleResponseBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.closeOnce.Do(b.closeIdle)
+	return err
+}
+
+func (i *Interceptor) newTransport(dial DialContext, requestURL string) *http.Transport {
 	nextProtos := []string{"http/1.1"}
 	if i.config.H2 {
 		nextProtos = []string{"h2", "http/1.1"}
@@ -244,8 +286,10 @@ func (i *Interceptor) newTransport(dial DialContext) *http.Transport {
 	}
 
 	return &http.Transport{
-		Proxy:                 nil,
-		DialContext:           dial,
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return dial(withRequestURL(ctx, requestURL), network, address)
+		},
 		ForceAttemptHTTP2:     i.config.H2,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
@@ -253,7 +297,7 @@ func (i *Interceptor) newTransport(dial DialContext) *http.Transport {
 		ExpectContinueTimeout: time.Second,
 		TLSClientConfig:       baseTLSConfig,
 		DialTLSContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			rawConn, err := dial(ctx, network, address)
+			rawConn, err := dial(withRequestURL(ctx, requestURL), network, address)
 			if err != nil {
 				return nil, err
 			}

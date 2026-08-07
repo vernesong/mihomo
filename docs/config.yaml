@@ -67,13 +67,14 @@ tls:
 # HTTPS 中间人代理配置；未配置时关闭
 # mitm:
 #   h2: false # 是否允许客户端和上游使用 HTTP/2
-#   hostname: # DOMAIN-WILDCARD 匹配语义
+#   hostname: # DOMAIN-WILDCARD 匹配语义；无端口时仅匹配 443，:端口 精确匹配，:0 匹配任意端口
 #     - example.com
-#     - "*.example.com"
+#     - "*.example.com:8443"
+#     - "*.example.net:0"
 #   hostname-exclude: # 优先级高于 hostname
 #     - api.example.com
 #     - "*.pinned.example.com"
-#   client-source-address: # SRC-IP-CIDR 匹配语义；默认 0.0.0.0/0
+#   client-source-address: # SRC-IP-CIDR 匹配语义；默认同时包含 0.0.0.0/0 和 ::/0
 #     - 0.0.0.0/0
 #     - ::/0
 #   passphrase: "password"
@@ -1950,6 +1951,7 @@ rules:
   - RULE-SET,rule1,REJECT
   - IP-ASN,1,PROXY
   - DOMAIN-REGEX,^abc,DIRECT
+  - URL-REGEX,^https?:\/\/update\.pan\.baidu\.com\/statistics,REJECT
   - DOMAIN-SUFFIX,baidu.com,DIRECT
   - DOMAIN-KEYWORD,google,ss1
   - DOMAIN-WILDCARD,test.*.mihomo.com,ss1
