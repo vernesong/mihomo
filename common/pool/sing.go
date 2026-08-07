@@ -1,7 +1,7 @@
 package pool
 
-import "github.com/sagernet/sing/common/buf"
+import "github.com/metacubex/sing/common/buf"
 
 func init() {
-	buf.DefaultAllocator = defaultAllocator
+	buf.DefaultAllocator = DefaultAllocator
 }

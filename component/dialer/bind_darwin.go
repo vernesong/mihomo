@@ -6,7 +6,7 @@ import (
 	"net/netip"
 	"syscall"
 
-	"github.com/Dreamacro/clash/component/iface"
+	"github.com/metacubex/mihomo/component/iface"
 
 	"golang.org/x/sys/unix"
 )
@@ -21,10 +21,10 @@ func bindControl(ifaceIdx int) controlFn {
 		var innerErr error
 		err = c.Control(func(fd uintptr) {
 			switch network {
-			case "tcp4", "udp4":
-				innerErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_BOUND_IF, ifaceIdx)
-			case "tcp6", "udp6":
+			case "tcp6", "udp6", "ip6":
 				innerErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF, ifaceIdx)
+			default:
+				innerErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_BOUND_IF, ifaceIdx)
 			}
 		})
 
@@ -46,7 +46,7 @@ func bindIfaceToDialer(ifaceName string, dialer *net.Dialer, _ string, _ netip.A
 	return nil
 }
 
-func bindIfaceToListenConfig(ifaceName string, lc *net.ListenConfig, _, address string) (string, error) {
+func bindIfaceToListenConfig(ifaceName string, lc *net.ListenConfig, _, address string, rAddrPort netip.AddrPort) (string, error) {
 	ifaceObj, err := iface.ResolveInterface(ifaceName)
 	if err != nil {
 		return "", err

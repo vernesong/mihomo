@@ -3,11 +3,19 @@ package resolver
 import (
 	"errors"
 	"net/netip"
+	"os"
+	"strconv"
 	"strings"
+	_ "unsafe"
 
-	"github.com/Dreamacro/clash/common/utils"
-	"github.com/Dreamacro/clash/component/trie"
-	"github.com/zhangyunhao116/fastrand"
+	"github.com/metacubex/mihomo/component/resolver/hosts"
+	"github.com/metacubex/mihomo/component/trie"
+	"github.com/metacubex/randv2"
+)
+
+var (
+	DisableSystemHosts, _ = strconv.ParseBool(os.Getenv("DISABLE_SYSTEM_HOSTS"))
+	UseSystemHosts        bool
 )
 
 type Hosts struct {
@@ -22,26 +30,33 @@ func NewHosts(hosts *trie.DomainTrie[HostValue]) Hosts {
 
 // Return the search result and whether to match the parameter `isDomain`
 func (h *Hosts) Search(domain string, isDomain bool) (*HostValue, bool) {
-	value := h.DomainTrie.Search(domain)
-	if value == nil {
-		return nil, false
-	}
-	hostValue := value.Data()
-	for {
-		if isDomain && hostValue.IsDomain {
-			return &hostValue, true
-		} else {
-			if node := h.DomainTrie.Search(hostValue.Domain); node != nil {
-				hostValue = node.Data()
+	if value := h.DomainTrie.Search(domain); value != nil {
+		hostValue := value.Data()
+		for {
+			if isDomain && hostValue.IsDomain {
+				return &hostValue, true
 			} else {
-				break
+				if node := h.DomainTrie.Search(hostValue.Domain); node != nil {
+					hostValue = node.Data()
+				} else {
+					break
+				}
 			}
 		}
+		if isDomain == hostValue.IsDomain {
+			return &hostValue, true
+		}
+
+		return &hostValue, false
 	}
-	if isDomain == hostValue.IsDomain {
-		return &hostValue, true
+
+	if !isDomain && !DisableSystemHosts && UseSystemHosts {
+		addr, _ := hosts.LookupStaticHost(domain)
+		if hostValue, err := NewHostValue(addr); err == nil {
+			return &hostValue, true
+		}
 	}
-	return &hostValue, false
+	return nil, false
 }
 
 type HostValue struct {
@@ -50,37 +65,35 @@ type HostValue struct {
 	Domain   string
 }
 
-func NewHostValue(value any) (HostValue, error) {
+func NewHostValue(value []string) (HostValue, error) {
 	isDomain := true
-	ips := make([]netip.Addr, 0)
+	ips := make([]netip.Addr, 0, len(value))
 	domain := ""
-	if valueArr, err := utils.ToStringSlice(value); err != nil {
-		return HostValue{}, err
-	} else {
-		if len(valueArr) > 1 {
+	switch len(value) {
+	case 0:
+		return HostValue{}, errors.New("value is empty")
+	case 1:
+		host := value[0]
+		if ip, err := netip.ParseAddr(host); err == nil {
+			ips = append(ips, ip.Unmap())
 			isDomain = false
-			for _, str := range valueArr {
-				if ip, err := netip.ParseAddr(str); err == nil {
-					ips = append(ips, ip)
-				} else {
-					return HostValue{}, err
-				}
-			}
-		} else if len(valueArr) == 1 {
-			host := valueArr[0]
-			if ip, err := netip.ParseAddr(host); err == nil {
-				ips = append(ips, ip)
-				isDomain = false
+		} else {
+			domain = host
+		}
+	default: // > 1
+		isDomain = false
+		for _, str := range value {
+			if ip, err := netip.ParseAddr(str); err == nil {
+				ips = append(ips, ip.Unmap())
 			} else {
-				domain = host
+				return HostValue{}, err
 			}
 		}
 	}
 	if isDomain {
 		return NewHostValueByDomain(domain)
-	} else {
-		return NewHostValueByIPs(ips)
 	}
+	return NewHostValueByIPs(ips)
 }
 
 func NewHostValueByIPs(ips []netip.Addr) (HostValue, error) {
@@ -97,7 +110,7 @@ func NewHostValueByDomain(domain string) (HostValue, error) {
 	domain = strings.Trim(domain, ".")
 	item := strings.Split(domain, ".")
 	if len(item) < 2 {
-		return HostValue{}, errors.New("invaild domain")
+		return HostValue{}, errors.New("invalid domain")
 	}
 	return HostValue{
 		IsDomain: true,
@@ -109,5 +122,5 @@ func (hv HostValue) RandIP() (netip.Addr, error) {
 	if hv.IsDomain {
 		return netip.Addr{}, errors.New("value type is error")
 	}
-	return hv.IPs[fastrand.Intn(len(hv.IPs))], nil
+	return hv.IPs[randv2.IntN(len(hv.IPs))], nil
 }

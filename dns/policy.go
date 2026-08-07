@@ -1,30 +1,34 @@
 package dns
 
-type Policy struct {
-	data []dnsClient
+import (
+	"github.com/metacubex/mihomo/component/trie"
+	C "github.com/metacubex/mihomo/constant"
+)
+
+type dnsPolicy interface {
+	Match(domain string) []dnsClient
 }
 
-func (p *Policy) GetData() []dnsClient {
-	return p.data
+type domainTriePolicy struct {
+	*trie.DomainTrie[[]dnsClient]
 }
 
-func (p *Policy) Compare(p2 *Policy) int {
-	if p2 == nil {
-		return 1
+func (p domainTriePolicy) Match(domain string) []dnsClient {
+	record := p.DomainTrie.Search(domain)
+	if record != nil {
+		return record.Data()
 	}
-	l1 := len(p.data)
-	l2 := len(p2.data)
-	if l1 == l2 {
-		return 0
-	}
-	if l1 > l2 {
-		return 1
-	}
-	return -1
+	return nil
 }
 
-func NewPolicy(data []dnsClient) *Policy {
-	return &Policy{
-		data: data,
+type domainMatcherPolicy struct {
+	matcher    C.DomainMatcher
+	dnsClients []dnsClient
+}
+
+func (p domainMatcherPolicy) Match(domain string) []dnsClient {
+	if p.matcher.MatchDomain(domain) {
+		return p.dnsClients
 	}
+	return nil
 }

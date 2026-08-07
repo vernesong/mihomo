@@ -2,66 +2,142 @@ package vmess
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"net"
 
-	tlsC "github.com/Dreamacro/clash/component/tls"
+	"github.com/metacubex/mihomo/component/ca"
+	"github.com/metacubex/mihomo/component/ech"
+	tlsC "github.com/metacubex/mihomo/component/tls"
+	"github.com/metacubex/mihomo/transport/jls"
+	"github.com/metacubex/mihomo/transport/restls"
+	"github.com/metacubex/mihomo/transport/shadowtls"
+	"github.com/metacubex/mihomo/transport/tlsmirror"
+
+	"github.com/metacubex/tls"
 )
 
 type TLSConfig struct {
 	Host              string
 	SkipCertVerify    bool
+	NameCertVerify    string
 	FingerPrint       string
+	Certificate       string
+	PrivateKey        string
 	ClientFingerprint string
 	NextProtos        []string
+	ECH               *ech.Config
+	ShadowTLS         *shadowtls.Config
+	Restls            *restls.Config
+	JLS               *jls.Config
 	Reality           *tlsC.RealityConfig
+	TLSMirror         *tlsmirror.Config
+	TLSMirrorDialer   tlsmirror.EnrollmentDialer
+}
+
+func (cfg *TLSConfig) ToStdConfig() (*tls.Config, error) {
+	return ca.GetTLSConfig(ca.Option{
+		TLSConfig: &tls.Config{
+			ServerName:         cfg.Host,
+			InsecureSkipVerify: cfg.SkipCertVerify,
+			NextProtos:         cfg.NextProtos,
+		},
+		Fingerprint:    cfg.FingerPrint,
+		NameCertVerify: cfg.NameCertVerify,
+		Certificate:    cfg.Certificate,
+		PrivateKey:     cfg.PrivateKey,
+	})
 }
 
 func StreamTLSConn(ctx context.Context, conn net.Conn, cfg *TLSConfig) (net.Conn, error) {
-	tlsConfig := &tls.Config{
-		ServerName:         cfg.Host,
-		InsecureSkipVerify: cfg.SkipCertVerify,
-		NextProtos:         cfg.NextProtos,
+	if cfg.ShadowTLS != nil {
+		alpn := cfg.NextProtos
+		if alpn == nil {
+			alpn = shadowtls.DefaultALPN
+		}
+		return shadowtls.NewShadowTLS(ctx, conn, &shadowtls.ShadowTLSOption{
+			Password:          cfg.ShadowTLS.Password,
+			Host:              cfg.Host,
+			Fingerprint:       cfg.FingerPrint,
+			Certificate:       cfg.Certificate,
+			PrivateKey:        cfg.PrivateKey,
+			ClientFingerprint: cfg.ClientFingerprint,
+			SkipCertVerify:    cfg.SkipCertVerify,
+			NameCertVerify:    cfg.NameCertVerify,
+			Version:           cfg.ShadowTLS.Version,
+			ALPN:              alpn,
+		})
+	}
+	if cfg.Restls != nil {
+		restlsConfig := cfg.Restls.Clone()
+		restlsConfig.ServerName = cfg.Host
+		restlsConfig.NextProtos = cfg.NextProtos
+		restlsConfig.InsecureSkipVerify = cfg.SkipCertVerify
+		if cfg.FingerPrint != "" {
+			if err := restls.SetFingerprint(restlsConfig, cfg.FingerPrint, cfg.NameCertVerify); err != nil {
+				return nil, err
+			}
+		} else if cfg.NameCertVerify != "" {
+			restls.SetNameCertVerify(restlsConfig, cfg.NameCertVerify)
+		}
+		return restls.NewRestls(ctx, conn, restlsConfig)
+	}
+	if cfg.JLS != nil {
+		return jls.NewClient(ctx, conn, &jls.ClientConfig{
+			Config:            *cfg.JLS,
+			ServerName:        cfg.Host,
+			ALPN:              cfg.NextProtos,
+			ClientFingerprint: cfg.ClientFingerprint,
+		})
+	}
+	if cfg.TLSMirror != nil {
+		return tlsmirror.Dial(ctx, conn, tlsmirror.ClientConfig{
+			Config:             *cfg.TLSMirror,
+			ServerName:         cfg.Host,
+			SkipCertVerify:     cfg.SkipCertVerify,
+			NameCertVerify:     cfg.NameCertVerify,
+			ALPN:               cfg.NextProtos,
+			Fingerprint:        cfg.FingerPrint,
+			Certificate:        cfg.Certificate,
+			PrivateKey:         cfg.PrivateKey,
+			ClientFingerprint:  cfg.ClientFingerprint,
+			ForwardAddressHint: cfg.Host,
+			ECH:                cfg.ECH,
+			EnrollmentDialer:   cfg.TLSMirrorDialer,
+		})
 	}
 
-	if len(cfg.FingerPrint) == 0 {
-		tlsConfig = tlsC.GetGlobalTLSConfig(tlsConfig)
-	} else {
-		var err error
-		if tlsConfig, err = tlsC.GetSpecifiedFingerprintTLSConfig(tlsConfig, cfg.FingerPrint); err != nil {
+	tlsConfig, err := cfg.ToStdConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	if clientFingerprint, ok := tlsC.GetFingerprint(cfg.ClientFingerprint); ok {
+		if cfg.Reality != nil {
+			return tlsC.GetRealityConn(ctx, conn, clientFingerprint, tlsConfig.ServerName, cfg.Reality)
+		}
+		tlsConfig := tlsC.UConfig(tlsConfig)
+		err = cfg.ECH.ClientHandleUTLS(ctx, tlsConfig)
+		if err != nil {
 			return nil, err
 		}
-	}
-
-	if len(cfg.ClientFingerprint) != 0 {
-		if cfg.Reality == nil {
-			utlsConn, valid := GetUTLSConn(conn, cfg.ClientFingerprint, tlsConfig)
-			if valid {
-				err := utlsConn.(*tlsC.UConn).HandshakeContext(ctx)
-				return utlsConn, err
-			}
-		} else {
-			return tlsC.GetRealityConn(ctx, conn, cfg.ClientFingerprint, tlsConfig, cfg.Reality)
+		tlsConn := tlsC.UClient(conn, tlsConfig, clientFingerprint)
+		err = tlsConn.HandshakeContext(ctx)
+		if err != nil {
+			return nil, err
 		}
+		return tlsConn, nil
 	}
 	if cfg.Reality != nil {
 		return nil, errors.New("REALITY is based on uTLS, please set a client-fingerprint")
 	}
 
-	tlsConn := tls.Client(conn, tlsConfig)
-
-	err := tlsConn.HandshakeContext(ctx)
-	return tlsConn, err
-}
-
-func GetUTLSConn(conn net.Conn, ClientFingerprint string, tlsConfig *tls.Config) (net.Conn, bool) {
-
-	if fingerprint, exists := tlsC.GetFingerprint(ClientFingerprint); exists {
-		utlsConn := tlsC.UClient(conn, tlsConfig, fingerprint)
-
-		return utlsConn, true
+	err = cfg.ECH.ClientHandle(ctx, tlsConfig)
+	if err != nil {
+		return nil, err
 	}
 
-	return nil, false
+	tlsConn := tls.Client(conn, tlsConfig)
+
+	err = tlsConn.HandshakeContext(ctx)
+	return tlsConn, err
 }

@@ -9,7 +9,11 @@ import (
 // Handle stream close properly
 // Ref: https://github.com/libp2p/go-libp2p-quic-transport/blob/master/stream.go
 type wrappedQUICStream struct {
-	Stream quic.Stream
+	Stream *quic.Stream
+}
+
+func (s *wrappedQUICStream) Upstream() any {
+	return s.Stream
 }
 
 func (s *wrappedQUICStream) StreamID() quic.StreamID {

@@ -3,11 +3,11 @@ package geodata
 import (
 	"strings"
 
-	"github.com/Dreamacro/clash/component/geodata/router"
+	"github.com/metacubex/mihomo/component/geodata/router"
 )
 
 type AttributeList struct {
-	matcher []AttributeMatcher
+	matcher []BooleanMatcher
 }
 
 func (al *AttributeList) Match(domain *router.Domain) bool {
@@ -21,6 +21,14 @@ func (al *AttributeList) Match(domain *router.Domain) bool {
 
 func (al *AttributeList) IsEmpty() bool {
 	return len(al.matcher) == 0
+}
+
+func (al *AttributeList) String() string {
+	matcher := make([]string, len(al.matcher))
+	for i, match := range al.matcher {
+		matcher[i] = string(match)
+	}
+	return strings.Join(matcher, ",")
 }
 
 func parseAttrs(attrs []string) *AttributeList {

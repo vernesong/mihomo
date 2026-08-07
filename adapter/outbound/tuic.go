@@ -2,35 +2,33 @@ package outbound
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/tls"
-	"encoding/hex"
-	"encoding/pem"
-	"errors"
 	"fmt"
 	"math"
 	"net"
-	"os"
 	"strconv"
 	"time"
 
-	"github.com/Dreamacro/clash/component/dialer"
-	"github.com/Dreamacro/clash/component/proxydialer"
-	"github.com/Dreamacro/clash/component/resolver"
-	tlsC "github.com/Dreamacro/clash/component/tls"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/transport/tuic"
+	"github.com/metacubex/mihomo/component/ca"
+	"github.com/metacubex/mihomo/component/ech"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/transport/tuic"
+	"github.com/metacubex/mihomo/transport/tuic/common"
 
 	"github.com/gofrs/uuid/v5"
 	"github.com/metacubex/quic-go"
-	M "github.com/sagernet/sing/common/metadata"
-	"github.com/sagernet/sing/common/uot"
+	M "github.com/metacubex/sing/common/metadata"
+	"github.com/metacubex/sing/common/uot"
+	"github.com/metacubex/tls"
 )
 
 type Tuic struct {
 	*Base
 	option *TuicOption
 	client *tuic.PoolClient
+
+	quicConfig *quic.Config
+	tlsConfig  *tls.Config
+	echConfig  *ech.Config
 }
 
 type TuicOption struct {
@@ -51,31 +49,29 @@ type TuicOption struct {
 	DisableSni            bool     `proxy:"disable-sni,omitempty"`
 	MaxUdpRelayPacketSize int      `proxy:"max-udp-relay-packet-size,omitempty"`
 
-	FastOpen             bool   `proxy:"fast-open,omitempty"`
-	MaxOpenStreams       int    `proxy:"max-open-streams,omitempty"`
-	CWND                 int    `proxy:"cwnd,omitempty"`
-	SkipCertVerify       bool   `proxy:"skip-cert-verify,omitempty"`
-	Fingerprint          string `proxy:"fingerprint,omitempty"`
-	CustomCA             string `proxy:"ca,omitempty"`
-	CustomCAString       string `proxy:"ca-str,omitempty"`
-	ReceiveWindowConn    int    `proxy:"recv-window-conn,omitempty"`
-	ReceiveWindow        int    `proxy:"recv-window,omitempty"`
-	DisableMTUDiscovery  bool   `proxy:"disable-mtu-discovery,omitempty"`
-	MaxDatagramFrameSize int    `proxy:"max-datagram-frame-size,omitempty"`
-	SNI                  string `proxy:"sni,omitempty"`
+	FastOpen             bool       `proxy:"fast-open,omitempty"`
+	MaxOpenStreams       int        `proxy:"max-open-streams,omitempty"`
+	CWND                 int        `proxy:"cwnd,omitempty"`
+	BBRProfile           string     `proxy:"bbr-profile,omitempty"`
+	SkipCertVerify       bool       `proxy:"skip-cert-verify,omitempty"`
+	NameCertVerify       string     `proxy:"name-cert-verify,omitempty"`
+	Fingerprint          string     `proxy:"fingerprint,omitempty"`
+	Certificate          string     `proxy:"certificate,omitempty"`
+	PrivateKey           string     `proxy:"private-key,omitempty"`
+	ReceiveWindowConn    int        `proxy:"recv-window-conn,omitempty"`
+	ReceiveWindow        int        `proxy:"recv-window,omitempty"`
+	DisableMTUDiscovery  bool       `proxy:"disable-mtu-discovery,omitempty"`
+	MaxDatagramFrameSize int        `proxy:"max-datagram-frame-size,omitempty"`
+	SNI                  string     `proxy:"sni,omitempty"`
+	ECHOpts              ECHOptions `proxy:"ech-opts,omitempty"`
 
 	UDPOverStream        bool `proxy:"udp-over-stream,omitempty"`
 	UDPOverStreamVersion int  `proxy:"udp-over-stream-version,omitempty"`
 }
 
 // DialContext implements C.ProxyAdapter
-func (t *Tuic) DialContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (C.Conn, error) {
-	return t.DialContextWithDialer(ctx, dialer.NewDialer(t.Base.DialOptions(opts...)...), metadata)
-}
-
-// DialContextWithDialer implements C.ProxyAdapter
-func (t *Tuic) DialContextWithDialer(ctx context.Context, dialer C.Dialer, metadata *C.Metadata) (C.Conn, error) {
-	conn, err := t.client.DialContextWithDialer(ctx, metadata, dialer, t.dialWithDialer)
+func (t *Tuic) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {
+	conn, err := t.client.DialContext(ctx, metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -83,116 +79,73 @@ func (t *Tuic) DialContextWithDialer(ctx context.Context, dialer C.Dialer, metad
 }
 
 // ListenPacketContext implements C.ProxyAdapter
-func (t *Tuic) ListenPacketContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (_ C.PacketConn, err error) {
-	return t.ListenPacketWithDialer(ctx, dialer.NewDialer(t.Base.DialOptions(opts...)...), metadata)
-}
+func (t *Tuic) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (_ C.PacketConn, err error) {
+	if err = t.ResolveUDP(ctx, metadata); err != nil {
+		return nil, err
+	}
 
-// ListenPacketWithDialer implements C.ProxyAdapter
-func (t *Tuic) ListenPacketWithDialer(ctx context.Context, dialer C.Dialer, metadata *C.Metadata) (_ C.PacketConn, err error) {
 	if t.option.UDPOverStream {
 		uotDestination := uot.RequestDestination(uint8(t.option.UDPOverStreamVersion))
 		uotMetadata := *metadata
 		uotMetadata.Host = uotDestination.Fqdn
 		uotMetadata.DstPort = uotDestination.Port
-		c, err := t.DialContextWithDialer(ctx, dialer, &uotMetadata)
+		c, err := t.DialContext(ctx, &uotMetadata)
 		if err != nil {
 			return nil, err
 		}
 
 		// tuic uos use stream-oriented udp with a special address, so we need a net.UDPAddr
-		if !metadata.Resolved() {
-			ip, err := resolver.ResolveIP(ctx, metadata.Host)
-			if err != nil {
-				return nil, errors.New("can't resolve ip")
-			}
-			metadata.DstIP = ip
-		}
 
 		destination := M.SocksaddrFromNet(metadata.UDPAddr())
 		if t.option.UDPOverStreamVersion == uot.LegacyVersion {
-			return newPacketConn(uot.NewConn(c, uot.Request{Destination: destination}), t), nil
+			return NewPacketConn(uot.NewConn(c, uot.Request{Destination: destination}), t), nil
 		} else {
-			return newPacketConn(uot.NewLazyConn(c, uot.Request{Destination: destination}), t), nil
+			return NewPacketConn(uot.NewLazyConn(c, uot.Request{Destination: destination}), t), nil
 		}
 	}
-	pc, err := t.client.ListenPacketWithDialer(ctx, metadata, dialer, t.dialWithDialer)
+	pc, err := t.client.ListenPacket(ctx, metadata)
 	if err != nil {
 		return nil, err
 	}
-	return newPacketConn(pc, t), nil
+	return NewPacketConn(pc, t), nil
 }
 
-// SupportWithDialer implements C.ProxyAdapter
-func (t *Tuic) SupportWithDialer() C.NetWork {
-	return C.ALLNet
+func (t *Tuic) dial(ctx context.Context) (quicConn *quic.Conn, err error) {
+	_, quicConn, err = common.DialQuic(ctx, t.addr, t.DialOptions(), t.dialer, t.tlsConfig, t.quicConfig, common.DialQuicOption{Early: t.option.ReduceRtt})
+	if err != nil {
+		return nil, err
+	}
+	common.SetCongestionController(quicConn, t.option.CongestionController, t.option.CWND, t.option.BBRProfile)
+	return quicConn, nil
 }
 
-func (t *Tuic) dialWithDialer(ctx context.Context, dialer C.Dialer) (transport *quic.Transport, addr net.Addr, err error) {
-	if len(t.option.DialerProxy) > 0 {
-		dialer, err = proxydialer.NewByName(t.option.DialerProxy, dialer)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-	udpAddr, err := resolveUDPAddrWithPrefer(ctx, "udp", t.addr, t.prefer)
-	if err != nil {
-		return nil, nil, err
-	}
-	addr = udpAddr
-	var pc net.PacketConn
-	pc, err = dialer.ListenPacket(ctx, "udp", "", udpAddr.AddrPort())
-	if err != nil {
-		return nil, nil, err
-	}
-	transport = &quic.Transport{Conn: pc}
-	transport.SetCreatedConn(true) // auto close conn
-	transport.SetSingleUse(true)   // auto close transport
-	return
+// ProxyInfo implements C.ProxyAdapter
+func (t *Tuic) ProxyInfo() C.ProxyInfo {
+	info := t.Base.ProxyInfo()
+	info.DialerProxy = t.option.DialerProxy
+	return info
 }
 
 func NewTuic(option TuicOption) (*Tuic, error) {
 	addr := net.JoinHostPort(option.Server, strconv.Itoa(option.Port))
 	serverName := option.Server
-	tlsConfig := &tls.Config{
-		ServerName:         serverName,
-		InsecureSkipVerify: option.SkipCertVerify,
-		MinVersion:         tls.VersionTLS13,
-	}
 	if option.SNI != "" {
-		tlsConfig.ServerName = option.SNI
+		serverName = option.SNI
 	}
 
-	var bs []byte
-	var err error
-	if len(option.CustomCA) > 0 {
-		bs, err = os.ReadFile(option.CustomCA)
-		if err != nil {
-			return nil, fmt.Errorf("tuic %s load ca error: %w", addr, err)
-		}
-	} else if option.CustomCAString != "" {
-		bs = []byte(option.CustomCAString)
-	}
-
-	if len(bs) > 0 {
-		block, _ := pem.Decode(bs)
-		if block == nil {
-			return nil, fmt.Errorf("CA cert is not PEM")
-		}
-
-		fpBytes := sha256.Sum256(block.Bytes)
-		if len(option.Fingerprint) == 0 {
-			option.Fingerprint = hex.EncodeToString(fpBytes[:])
-		}
-	}
-
-	if len(option.Fingerprint) != 0 {
-		var err error
-		tlsConfig, err = tlsC.GetSpecifiedFingerprintTLSConfig(tlsConfig, option.Fingerprint)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		tlsConfig = tlsC.GetGlobalTLSConfig(tlsConfig)
+	tlsConfig, err := ca.GetTLSConfig(ca.Option{
+		TLSConfig: &tls.Config{
+			ServerName:         serverName,
+			InsecureSkipVerify: option.SkipCertVerify,
+			MinVersion:         tls.VersionTLS13,
+		},
+		Fingerprint:    option.Fingerprint,
+		NameCertVerify: option.NameCertVerify,
+		Certificate:    option.Certificate,
+		PrivateKey:     option.PrivateKey,
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	if option.ALPN != nil { // structure's Decode will ensure value not nil when input has value even it was set an empty array
@@ -272,6 +225,11 @@ func NewTuic(option TuicOption) (*Tuic, error) {
 		tlsConfig.InsecureSkipVerify = true // tls: either ServerName or InsecureSkipVerify must be specified in the tls.Config
 	}
 
+	echConfig, err := option.ECHOpts.Parse()
+	if err != nil {
+		return nil, err
+	}
+
 	switch option.UDPOverStreamVersion {
 	case uot.Version, uot.LegacyVersion:
 	case 0:
@@ -281,18 +239,23 @@ func NewTuic(option TuicOption) (*Tuic, error) {
 	}
 
 	t := &Tuic{
-		Base: &Base{
-			name:   option.Name,
-			addr:   addr,
-			tp:     C.Tuic,
-			udp:    true,
-			tfo:    option.FastOpen,
-			iface:  option.Interface,
-			rmark:  option.RoutingMark,
-			prefer: C.NewDNSPrefer(option.IPVersion),
-		},
-		option: &option,
+		Base: NewBase(BaseOption{
+			Name:         option.Name,
+			Addr:         addr,
+			Type:         C.Tuic,
+			ProviderName: option.ProviderName,
+			UDP:          true,
+			TFO:          option.FastOpen,
+			Interface:    option.Interface,
+			RoutingMark:  option.RoutingMark,
+			Prefer:       option.IPVersion,
+		}),
+		option:     &option,
+		quicConfig: quicConfig,
+		tlsConfig:  tlsConfig,
+		echConfig:  echConfig,
 	}
+	t.dialer = option.NewDialer(t.DialOptions())
 
 	clientMaxOpenStreams := int64(option.MaxOpenStreams)
 
@@ -308,35 +271,29 @@ func NewTuic(option TuicOption) (*Tuic, error) {
 	if len(option.Token) > 0 {
 		tkn := tuic.GenTKN(option.Token)
 		clientOption := &tuic.ClientOptionV4{
-			TlsConfig:             tlsConfig,
-			QuicConfig:            quicConfig,
 			Token:                 tkn,
 			UdpRelayMode:          udpRelayMode,
-			CongestionController:  option.CongestionController,
-			ReduceRtt:             option.ReduceRtt,
 			RequestTimeout:        time.Duration(option.RequestTimeout) * time.Millisecond,
 			MaxUdpRelayPacketSize: option.MaxUdpRelayPacketSize,
 			FastOpen:              option.FastOpen,
 			MaxOpenStreams:        clientMaxOpenStreams,
-			CWND:                  option.CWND,
 		}
 
-		t.client = tuic.NewPoolClientV4(clientOption)
+		t.client = tuic.NewPoolClientV4(clientOption, t.dial)
 	} else {
+		maxUdpRelayPacketSize := option.MaxUdpRelayPacketSize
+		if maxUdpRelayPacketSize > tuic.MaxFragSizeV5 {
+			maxUdpRelayPacketSize = tuic.MaxFragSizeV5
+		}
 		clientOption := &tuic.ClientOptionV5{
-			TlsConfig:             tlsConfig,
-			QuicConfig:            quicConfig,
 			Uuid:                  uuid.FromStringOrNil(option.UUID),
 			Password:              option.Password,
 			UdpRelayMode:          udpRelayMode,
-			CongestionController:  option.CongestionController,
-			ReduceRtt:             option.ReduceRtt,
-			MaxUdpRelayPacketSize: option.MaxUdpRelayPacketSize,
+			MaxUdpRelayPacketSize: maxUdpRelayPacketSize,
 			MaxOpenStreams:        clientMaxOpenStreams,
-			CWND:                  option.CWND,
 		}
 
-		t.client = tuic.NewPoolClientV5(clientOption)
+		t.client = tuic.NewPoolClientV5(clientOption, t.dial)
 	}
 
 	return t, nil

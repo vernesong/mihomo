@@ -1,13 +1,13 @@
 package tunnel
 
 import (
+	"context"
 	"fmt"
 	"net"
 
-	"github.com/Dreamacro/clash/adapter/inbound"
-	N "github.com/Dreamacro/clash/common/net"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/transport/socks5"
+	"github.com/metacubex/mihomo/adapter/inbound"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/transport/socks5"
 )
 
 type Listener struct {
@@ -34,15 +34,12 @@ func (l *Listener) Close() error {
 	return l.listener.Close()
 }
 
-func (l *Listener) handleTCP(conn net.Conn, in chan<- C.ConnContext, additions ...inbound.Addition) {
-	N.TCPKeepAlive(conn)
-	ctx := inbound.NewSocket(l.target, conn, C.TUNNEL, additions...)
-	ctx.Metadata().SpecialProxy = l.proxy
-	in <- ctx
+func (l *Listener) handleTCP(conn net.Conn, tunnel C.Tunnel, additions ...inbound.Addition) {
+	tunnel.HandleTCPConn(inbound.NewSocket(l.target, conn, C.TUNNEL, additions...))
 }
 
-func New(addr, target, proxy string, in chan<- C.ConnContext, additions ...inbound.Addition) (*Listener, error) {
-	l, err := inbound.Listen("tcp", addr)
+func New(addr, target, proxy string, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {
+	l, err := lc.Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -59,6 +56,10 @@ func New(addr, target, proxy string, in chan<- C.ConnContext, additions ...inbou
 		addr:     addr,
 	}
 
+	if proxy != "" {
+		additions = append([]inbound.Addition{inbound.WithSpecialProxy(proxy)}, additions...)
+	}
+
 	go func() {
 		for {
 			c, err := l.Accept()
@@ -68,7 +69,7 @@ func New(addr, target, proxy string, in chan<- C.ConnContext, additions ...inbou
 				}
 				continue
 			}
-			go rl.handleTCP(c, in, additions...)
+			go rl.handleTCP(c, tunnel, additions...)
 		}
 	}()
 

@@ -5,126 +5,91 @@ import (
 	"errors"
 	"io"
 	"net"
-	"sync"
 
-	"github.com/Dreamacro/clash/common/buf"
-	N "github.com/Dreamacro/clash/common/net"
-	"github.com/Dreamacro/clash/transport/vless/vision"
+	"github.com/metacubex/mihomo/common/buf"
+	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/transport/vless/vision"
 
 	"github.com/gofrs/uuid/v5"
 	"google.golang.org/protobuf/proto"
 )
 
 type Conn struct {
-	N.ExtendedWriter
-	N.ExtendedReader
-	net.Conn
+	N.ExtendedConn
 	dst      *DstAddr
-	id       *uuid.UUID
+	id       uuid.UUID
 	addons   *Addons
 	received bool
-
-	handshakeMutex sync.Mutex
-	needHandshake  bool
-	err            error
+	sent     bool
 }
 
 func (vc *Conn) Read(b []byte) (int, error) {
-	if vc.received {
-		return vc.ExtendedReader.Read(b)
+	if !vc.received {
+		if err := vc.recvResponse(); err != nil {
+			return 0, err
+		}
+		vc.received = true
 	}
-
-	if err := vc.recvResponse(); err != nil {
-		return 0, err
-	}
-	vc.received = true
-	return vc.ExtendedReader.Read(b)
+	return vc.ExtendedConn.Read(b)
 }
 
 func (vc *Conn) ReadBuffer(buffer *buf.Buffer) error {
-	if vc.received {
-		return vc.ExtendedReader.ReadBuffer(buffer)
+	if !vc.received {
+		if err := vc.recvResponse(); err != nil {
+			return err
+		}
+		vc.received = true
 	}
-
-	if err := vc.recvResponse(); err != nil {
-		return err
-	}
-	vc.received = true
-	return vc.ExtendedReader.ReadBuffer(buffer)
+	return vc.ExtendedConn.ReadBuffer(buffer)
 }
 
 func (vc *Conn) Write(p []byte) (int, error) {
-	if vc.needHandshake {
-		vc.handshakeMutex.Lock()
-		if vc.needHandshake {
-			vc.needHandshake = false
-			if vc.sendRequest(p) {
-				vc.handshakeMutex.Unlock()
-				if vc.err != nil {
-					return 0, vc.err
-				}
-				return len(p), vc.err
-			}
-			if vc.err != nil {
-				vc.handshakeMutex.Unlock()
-				return 0, vc.err
-			}
+	if !vc.sent {
+		if err := vc.sendRequest(p); err != nil {
+			return 0, err
 		}
-		vc.handshakeMutex.Unlock()
+		vc.sent = true
+		return len(p), nil
 	}
 
-	return vc.ExtendedWriter.Write(p)
+	return vc.ExtendedConn.Write(p)
 }
 
 func (vc *Conn) WriteBuffer(buffer *buf.Buffer) error {
-	if vc.needHandshake {
-		vc.handshakeMutex.Lock()
-		if vc.needHandshake {
-			vc.needHandshake = false
-			if vc.sendRequest(buffer.Bytes()) {
-				vc.handshakeMutex.Unlock()
-				return vc.err
-			}
-			if vc.err != nil {
-				vc.handshakeMutex.Unlock()
-				return vc.err
-			}
+	if !vc.sent {
+		if err := vc.sendRequest(buffer.Bytes()); err != nil {
+			return err
 		}
-		vc.handshakeMutex.Unlock()
+		vc.sent = true
+		return nil
 	}
 
-	return vc.ExtendedWriter.WriteBuffer(buffer)
+	return vc.ExtendedConn.WriteBuffer(buffer)
 }
 
-func (vc *Conn) sendRequest(p []byte) bool {
+func (vc *Conn) sendRequest(p []byte) (err error) {
 	var addonsBytes []byte
 	if vc.addons != nil {
-		addonsBytes, vc.err = proto.Marshal(vc.addons)
-		if vc.err != nil {
-			return true
+		addonsBytes, err = proto.Marshal(vc.addons)
+		if err != nil {
+			return
 		}
 	}
 
-	var buffer *buf.Buffer
-	if vc.IsXTLSVisionEnabled() {
-		buffer = buf.New()
-		defer buffer.Release()
-	} else {
-		requestLen := 1  // protocol version
-		requestLen += 16 // UUID
-		requestLen += 1  // addons length
-		requestLen += len(addonsBytes)
-		requestLen += 1 // command
-		if !vc.dst.Mux {
-			requestLen += 2 // port
-			requestLen += 1 // addr type
-			requestLen += len(vc.dst.Addr)
-		}
-		requestLen += len(p)
-
-		buffer = buf.NewSize(requestLen)
-		defer buffer.Release()
+	requestLen := 1  // protocol version
+	requestLen += 16 // UUID
+	requestLen += 1  // addons length
+	requestLen += len(addonsBytes)
+	requestLen += 1 // command
+	if !vc.dst.Mux {
+		requestLen += 2 // port
+		requestLen += 1 // addr type
+		requestLen += len(vc.dst.Addr)
 	}
+	requestLen += len(p)
+
+	buffer := buf.NewSize(requestLen)
+	defer buffer.Release()
 
 	buf.Must(
 		buffer.WriteByte(Version),              // protocol version
@@ -151,15 +116,15 @@ func (vc *Conn) sendRequest(p []byte) bool {
 
 	buf.Must(buf.Error(buffer.Write(p)))
 
-	_, vc.err = vc.ExtendedWriter.Write(buffer.Bytes())
-	return true
+	_, err = vc.ExtendedConn.Write(buffer.Bytes())
+	return
 }
 
-func (vc *Conn) recvResponse() error {
+func (vc *Conn) recvResponse() (err error) {
 	var buffer [2]byte
-	_, vc.err = io.ReadFull(vc.ExtendedReader, buffer[:])
-	if vc.err != nil {
-		return vc.err
+	_, err = io.ReadFull(vc.ExtendedConn, buffer[:])
+	if err != nil {
+		return err
 	}
 
 	if buffer[0] != Version {
@@ -168,43 +133,44 @@ func (vc *Conn) recvResponse() error {
 
 	length := int64(buffer[1])
 	if length != 0 { // addon data length > 0
-		io.CopyN(io.Discard, vc.ExtendedReader, length) // just discard
+		io.CopyN(io.Discard, vc.ExtendedConn, length) // just discard
 	}
 
-	return nil
+	return
 }
 
 func (vc *Conn) Upstream() any {
-	return vc.Conn
+	return vc.ExtendedConn
+}
+
+func (vc *Conn) ReaderReplaceable() bool {
+	return vc.received
+}
+
+func (vc *Conn) WriterReplaceable() bool {
+	return vc.sent
 }
 
 func (vc *Conn) NeedHandshake() bool {
-	return vc.needHandshake
-}
-
-func (vc *Conn) IsXTLSVisionEnabled() bool {
-	return vc.addons != nil && vc.addons.Flow == XRV
+	return !vc.sent
 }
 
 // newConn return a Conn instance
 func newConn(conn net.Conn, client *Client, dst *DstAddr) (net.Conn, error) {
 	c := &Conn{
-		ExtendedReader: N.NewExtendedReader(conn),
-		ExtendedWriter: N.NewExtendedWriter(conn),
-		Conn:           conn,
-		id:             client.uuid,
-		dst:            dst,
-		needHandshake:  true,
+		ExtendedConn: N.NewExtendedConn(conn),
+		id:           client.uuid,
+		addons:       client.Addons,
+		dst:          dst,
 	}
 
 	if client.Addons != nil {
 		switch client.Addons.Flow {
 		case XRV:
-			visionConn, err := vision.NewConn(c, c.id)
+			visionConn, err := vision.NewConn(c, conn, c.id)
 			if err != nil {
 				return nil, err
 			}
-			c.addons = client.Addons
 			return visionConn, nil
 		}
 	}

@@ -1,6 +1,7 @@
 package structure
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -138,6 +139,49 @@ func TestStructure_Nest(t *testing.T) {
 	assert.Equal(t, s.BazOptional, goal)
 }
 
+func TestStructure_DoubleNest(t *testing.T) {
+	rawMap := map[string]any{
+		"bar": map[string]any{
+			"foo": 1,
+		},
+	}
+
+	goal := BazOptional{
+		Foo: 1,
+	}
+
+	s := &struct {
+		Bar struct {
+			BazOptional
+		} `test:"bar"`
+	}{}
+	err := decoder.Decode(rawMap, s)
+	assert.Nil(t, err)
+	assert.Equal(t, s.Bar.BazOptional, goal)
+}
+
+func TestStructure_Remain(t *testing.T) {
+	rawMap := map[string]any{
+		"foo":   1,
+		"bar":   "test",
+		"extra": false,
+	}
+
+	goal := &Baz{
+		Foo: 1,
+		Bar: "test",
+	}
+
+	s := &struct {
+		Baz
+		Remain map[string]any `test:",remain"`
+	}{}
+	err := decoder.Decode(rawMap, s)
+	assert.Nil(t, err)
+	assert.Equal(t, *goal, s.Baz)
+	assert.Equal(t, map[string]any{"extra": false}, s.Remain)
+}
+
 func TestStructure_SliceNilValue(t *testing.T) {
 	rawMap := map[string]any{
 		"foo": 1,
@@ -178,4 +222,173 @@ func TestStructure_SliceNilValueComplex(t *testing.T) {
 
 	err = decoder.Decode(rawMap, ss)
 	assert.NotNil(t, err)
+}
+
+func TestStructure_SliceCap(t *testing.T) {
+	rawMap := map[string]any{
+		"foo": []string{},
+	}
+
+	s := &struct {
+		Foo []string `test:"foo,omitempty"`
+		Bar []string `test:"bar,omitempty"`
+	}{}
+
+	err := decoder.Decode(rawMap, s)
+	assert.Nil(t, err)
+	assert.NotNil(t, s.Foo) // structure's Decode will ensure value not nil when input has value even it was set an empty array
+	assert.Nil(t, s.Bar)
+}
+
+func TestStructure_Base64(t *testing.T) {
+	rawMap := map[string]any{
+		"foo": "AQID",
+	}
+
+	s := &struct {
+		Foo []byte `test:"foo"`
+	}{}
+
+	err := decoder.Decode(rawMap, s)
+	assert.Nil(t, err)
+	assert.Equal(t, []byte{1, 2, 3}, s.Foo)
+}
+
+func TestStructure_Pointer(t *testing.T) {
+	rawMap := map[string]any{
+		"foo": "foo",
+	}
+
+	s := &struct {
+		Foo *string `test:"foo,omitempty"`
+		Bar *string `test:"bar,omitempty"`
+	}{}
+
+	err := decoder.Decode(rawMap, s)
+	assert.Nil(t, err)
+	assert.NotNil(t, s.Foo)
+	assert.Equal(t, "foo", *s.Foo)
+	assert.Nil(t, s.Bar)
+}
+
+func TestStructure_PointerStruct(t *testing.T) {
+	rawMap := map[string]any{
+		"foo": "foo",
+	}
+
+	s := &struct {
+		Foo *string `test:"foo,omitempty"`
+		Bar *Baz    `test:"bar,omitempty"`
+	}{}
+
+	err := decoder.Decode(rawMap, s)
+	assert.Nil(t, err)
+	assert.NotNil(t, s.Foo)
+	assert.Equal(t, "foo", *s.Foo)
+	assert.Nil(t, s.Bar)
+}
+
+type num struct {
+	a int
+}
+
+func (n *num) UnmarshalText(text []byte) (err error) {
+	n.a, err = strconv.Atoi(string(text))
+	return
+}
+
+func TestStructure_TextUnmarshaller(t *testing.T) {
+	rawMap := map[string]any{
+		"num":     "255",
+		"num_p":   "127",
+		"num_arr": []string{"1", "2", "3"},
+	}
+
+	s := &struct {
+		Num    num   `test:"num"`
+		NumP   *num  `test:"num_p"`
+		NumArr []num `test:"num_arr"`
+	}{}
+
+	err := decoder.Decode(rawMap, s)
+	assert.Nil(t, err)
+	assert.Equal(t, 255, s.Num.a)
+	assert.NotNil(t, s.NumP)
+	assert.Equal(t, s.NumP.a, 127)
+	assert.Equal(t, s.NumArr, []num{{1}, {2}, {3}})
+
+	// test WeaklyTypedInput
+	rawMap["num"] = 256
+	err = decoder.Decode(rawMap, s)
+	assert.NotNilf(t, err, "should throw error: %#v", s)
+	err = weakTypeDecoder.Decode(rawMap, s)
+	assert.Nil(t, err)
+	assert.Equal(t, 256, s.Num.a)
+
+	// test invalid input
+	rawMap["num_p"] = "abc"
+	err = decoder.Decode(rawMap, s)
+	assert.NotNilf(t, err, "should throw error: %#v", s)
+}
+
+func TestStructure_Null(t *testing.T) {
+	rawMap := map[string]any{
+		"opt": map[string]any{
+			"bar": nil,
+		},
+	}
+
+	s := struct {
+		Opt struct {
+			Bar string `test:"bar,optional"`
+		} `test:"opt,optional"`
+	}{}
+
+	err := decoder.Decode(rawMap, &s)
+	assert.Nil(t, err)
+	assert.Equal(t, s.Opt.Bar, "")
+}
+
+func TestStructure_Ignore(t *testing.T) {
+	rawMap := map[string]any{
+		"-": "newData",
+	}
+
+	s := struct {
+		MustIgnore string `test:"-"`
+	}{MustIgnore: "oldData"}
+
+	err := decoder.Decode(rawMap, &s)
+	assert.Nil(t, err)
+	assert.Equal(t, s.MustIgnore, "oldData")
+
+	// test omitempty
+	delete(rawMap, "-")
+	err = decoder.Decode(rawMap, &s)
+	assert.Nil(t, err)
+	assert.Equal(t, s.MustIgnore, "oldData")
+}
+
+func TestStructure_IgnoreInNest(t *testing.T) {
+	rawMap := map[string]any{
+		"-": "newData",
+	}
+
+	type TP struct {
+		MustIgnore string `test:"-"`
+	}
+
+	s := struct {
+		TP
+	}{TP{MustIgnore: "oldData"}}
+
+	err := decoder.Decode(rawMap, &s)
+	assert.Nil(t, err)
+	assert.Equal(t, s.MustIgnore, "oldData")
+
+	// test omitempty
+	delete(rawMap, "-")
+	err = decoder.Decode(rawMap, &s)
+	assert.Nil(t, err)
+	assert.Equal(t, s.MustIgnore, "oldData")
 }

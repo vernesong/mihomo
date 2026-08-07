@@ -3,12 +3,12 @@ package fakeip
 import (
 	"net/netip"
 
-	"github.com/Dreamacro/clash/common/cache"
+	"github.com/metacubex/mihomo/common/lru"
 )
 
 type memoryStore struct {
-	cacheIP   *cache.LruCache[string, netip.Addr]
-	cacheHost *cache.LruCache[netip.Addr, string]
+	cacheIP   *lru.LruCache[string, netip.Addr]
+	cacheHost *lru.LruCache[netip.Addr, string]
 }
 
 // GetByHost implements store.GetByHost
@@ -67,13 +67,14 @@ func (m *memoryStore) CloneTo(store store) {
 
 // FlushFakeIP implements store.FlushFakeIP
 func (m *memoryStore) FlushFakeIP() error {
-	_ = m.cacheIP.Clear()
-	return m.cacheHost.Clear()
+	m.cacheIP.Clear()
+	m.cacheHost.Clear()
+	return nil
 }
 
 func newMemoryStore(size int) *memoryStore {
 	return &memoryStore{
-		cacheIP:   cache.New[string, netip.Addr](cache.WithSize[string, netip.Addr](size)),
-		cacheHost: cache.New[netip.Addr, string](cache.WithSize[netip.Addr, string](size)),
+		cacheIP:   lru.New[string, netip.Addr](lru.WithSize[string, netip.Addr](size)),
+		cacheHost: lru.New[netip.Addr, string](lru.WithSize[netip.Addr, string](size)),
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"time"
 )
 
 type SessionStatus = byte
@@ -37,7 +38,6 @@ type Mux struct {
 	id     [2]byte
 	length [2]byte
 	status [2]byte
-	otb    []byte
 	remain int
 }
 
@@ -104,14 +104,8 @@ func (m *Mux) Read(b []byte) (int, error) {
 }
 
 func (m *Mux) Write(b []byte) (int, error) {
-	if m.otb != nil {
-		// create a sub connection
-		if _, err := m.Conn.Write(m.otb); err != nil {
-			return 0, err
-		}
-		m.otb = nil
-	}
-	m.buf.Reset()
+	defer m.buf.Reset() // reset must after write (keep the data fill in NewMux can be sent)
+
 	binary.Write(&m.buf, binary.BigEndian, uint16(4))
 	m.buf.Write(m.id[:])
 	m.buf.WriteByte(SessionStatusKeep)
@@ -123,15 +117,26 @@ func (m *Mux) Write(b []byte) (int, error) {
 }
 
 func (m *Mux) Close() error {
-	_, err := m.Conn.Write([]byte{0x0, 0x4, m.id[0], m.id[1], SessionStatusEnd, OptionNone})
-	if err != nil {
-		return err
+	errChan := make(chan error, 1)
+	t := time.AfterFunc(time.Second, func() { // maybe conn write too slowly, force close underlay conn after one second
+		errChan <- m.Conn.Close()
+	})
+	_, _ = m.Conn.Write([]byte{0x0, 0x4, m.id[0], m.id[1], SessionStatusEnd, OptionNone}) // ignore session end frame write error
+	if !t.Stop() {
+		// Stop does not wait for f to complete before returning, so we used a chan to know whether f is completed
+		return <-errChan
 	}
 	return m.Conn.Close()
 }
 
 func NewMux(conn net.Conn, option MuxOption) *Mux {
-	buf := &bytes.Buffer{}
+	mux := &Mux{
+		Conn: conn,
+		id:   option.ID,
+	}
+
+	// create a sub connection (in buf)
+	buf := &mux.buf
 
 	// fill empty length
 	buf.Write([]byte{0x0, 0x0})
@@ -165,9 +170,5 @@ func NewMux(conn net.Conn, option MuxOption) *Mux {
 	metadata := buf.Bytes()
 	binary.BigEndian.PutUint16(metadata[:2], uint16(len(metadata)-2))
 
-	return &Mux{
-		Conn: conn,
-		id:   option.ID,
-		otb:  metadata,
-	}
+	return mux
 }

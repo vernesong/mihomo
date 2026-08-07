@@ -2,24 +2,32 @@ package obfs
 
 import (
 	"context"
-	"crypto/tls"
 	"net"
-	"net/http"
 
-	tlsC "github.com/Dreamacro/clash/component/tls"
-	"github.com/Dreamacro/clash/transport/vmess"
+	"github.com/metacubex/mihomo/component/ca"
+	"github.com/metacubex/mihomo/component/ech"
+	"github.com/metacubex/mihomo/transport/vmess"
+
+	"github.com/metacubex/http"
+	"github.com/metacubex/tls"
 )
 
 // Option is options of websocket obfs
 type Option struct {
-	Host           string
-	Port           string
-	Path           string
-	Headers        map[string]string
-	TLS            bool
-	SkipCertVerify bool
-	Fingerprint    string
-	Mux            bool
+	Host                     string
+	Port                     string
+	Path                     string
+	Headers                  map[string]string
+	TLS                      bool
+	ECHConfig                *ech.Config
+	SkipCertVerify           bool
+	NameCertVerify           string
+	Fingerprint              string
+	Certificate              string
+	PrivateKey               string
+	Mux                      bool
+	V2rayHttpUpgrade         bool
+	V2rayHttpUpgradeFastOpen bool
 }
 
 // NewV2rayObfs return a HTTPObfs
@@ -30,26 +38,31 @@ func NewV2rayObfs(ctx context.Context, conn net.Conn, option *Option) (net.Conn,
 	}
 
 	config := &vmess.WebsocketConfig{
-		Host:    option.Host,
-		Port:    option.Port,
-		Path:    option.Path,
-		Headers: header,
+		Host:                     option.Host,
+		Port:                     option.Port,
+		Path:                     option.Path,
+		V2rayHttpUpgrade:         option.V2rayHttpUpgrade,
+		V2rayHttpUpgradeFastOpen: option.V2rayHttpUpgradeFastOpen,
+		ECHConfig:                option.ECHConfig,
+		Headers:                  header,
 	}
 
+	var err error
 	if option.TLS {
 		config.TLS = true
-		tlsConfig := &tls.Config{
-			ServerName:         option.Host,
-			InsecureSkipVerify: option.SkipCertVerify,
-			NextProtos:         []string{"http/1.1"},
-		}
-		if len(option.Fingerprint) == 0 {
-			config.TLSConfig = tlsC.GetGlobalTLSConfig(tlsConfig)
-		} else {
-			var err error
-			if config.TLSConfig, err = tlsC.GetSpecifiedFingerprintTLSConfig(tlsConfig, option.Fingerprint); err != nil {
-				return nil, err
-			}
+		config.TLSConfig, err = ca.GetTLSConfig(ca.Option{
+			TLSConfig: &tls.Config{
+				ServerName:         option.Host,
+				InsecureSkipVerify: option.SkipCertVerify,
+				NextProtos:         []string{"http/1.1"},
+			},
+			Fingerprint:    option.Fingerprint,
+			NameCertVerify: option.NameCertVerify,
+			Certificate:    option.Certificate,
+			PrivateKey:     option.PrivateKey,
+		})
+		if err != nil {
+			return nil, err
 		}
 
 		if host := config.Headers.Get("Host"); host != "" {
@@ -57,7 +70,6 @@ func NewV2rayObfs(ctx context.Context, conn net.Conn, option *Option) (net.Conn,
 		}
 	}
 
-	var err error
 	conn, err = vmess.StreamWebsocketConn(ctx, conn, config)
 	if err != nil {
 		return nil, err

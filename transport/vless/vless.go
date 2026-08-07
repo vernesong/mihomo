@@ -3,7 +3,7 @@ package vless
 import (
 	"net"
 
-	"github.com/Dreamacro/clash/common/utils"
+	"github.com/metacubex/mihomo/common/utils"
 
 	"github.com/gofrs/uuid/v5"
 )
@@ -42,7 +42,7 @@ type DstAddr struct {
 
 // Client is vless connection generator
 type Client struct {
-	uuid   *uuid.UUID
+	uuid   uuid.UUID
 	Addons *Addons
 }
 
@@ -51,15 +51,16 @@ func (c *Client) StreamConn(conn net.Conn, dst *DstAddr) (net.Conn, error) {
 	return newConn(conn, c, dst)
 }
 
+func (c *Client) PacketConn(conn net.Conn, rAddr net.Addr) net.PacketConn {
+	return &PacketConn{conn, rAddr}
+}
+
 // NewClient return Client instance
 func NewClient(uuidStr string, addons *Addons) (*Client, error) {
-	uid, err := utils.UUIDMap(uuidStr)
-	if err != nil {
-		return nil, err
-	}
+	uid := utils.UUIDMap(uuidStr)
 
 	return &Client{
-		uuid:   &uid,
+		uuid:   uid,
 		Addons: addons,
 	}, nil
 }

@@ -8,9 +8,9 @@ import (
 	"net/netip"
 	"strconv"
 
-	"github.com/Dreamacro/clash/common/utils"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/transport/socks5"
+	"github.com/metacubex/mihomo/common/utils"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/transport/socks5"
 
 	"github.com/metacubex/quic-go"
 )
@@ -423,13 +423,13 @@ func NewAddress(metadata *C.Metadata) Address {
 	var addrType byte
 	var addr []byte
 	switch metadata.AddrType() {
-	case socks5.AtypIPv4:
+	case C.AtypIPv4:
 		addrType = AtypIPv4
 		addr = metadata.DstIP.AsSlice()
-	case socks5.AtypIPv6:
+	case C.AtypIPv6:
 		addrType = AtypIPv6
 		addr = metadata.DstIP.AsSlice()
-	case socks5.AtypDomainName:
+	case C.AtypDomainName:
 		addrType = AtypDomainName
 		addr = make([]byte, len(metadata.Host)+1)
 		addr[0] = byte(len(metadata.Host))

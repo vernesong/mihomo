@@ -4,42 +4,30 @@ import (
 	"context"
 	"errors"
 	"net"
-	"runtime"
 	"sync"
 	"time"
 
-	"github.com/Dreamacro/clash/common/generics/list"
-	N "github.com/Dreamacro/clash/common/net"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/log"
+	N "github.com/metacubex/mihomo/common/net"
+	C "github.com/metacubex/mihomo/constant"
 
-	"github.com/metacubex/quic-go"
+	list "github.com/bahlo/generic-list-go"
 )
-
-type dialResult struct {
-	transport *quic.Transport
-	addr      net.Addr
-	err       error
-}
 
 type PoolClient struct {
 	newClientOptionV4 *ClientOptionV4
 	newClientOptionV5 *ClientOptionV5
-	dialResultMap     map[C.Dialer]dialResult
-	dialResultMutex   *sync.Mutex
-	tcpClients        *list.List[Client]
-	tcpClientsMutex   *sync.Mutex
-	udpClients        *list.List[Client]
-	udpClientsMutex   *sync.Mutex
+
+	dialFn          DialFunc
+	tcpClients      list.List[Client]
+	tcpClientsMutex sync.Mutex
+	udpClients      list.List[Client]
+	udpClientsMutex sync.Mutex
 }
 
-func (t *PoolClient) DialContextWithDialer(ctx context.Context, metadata *C.Metadata, dialer C.Dialer, dialFn DialFunc) (net.Conn, error) {
-	newDialFn := func(ctx context.Context, dialer C.Dialer) (transport *quic.Transport, addr net.Addr, err error) {
-		return t.dial(ctx, dialer, dialFn)
-	}
-	conn, err := t.getClient(false, dialer).DialContextWithDialer(ctx, metadata, dialer, newDialFn)
+func (t *PoolClient) DialContext(ctx context.Context, metadata *C.Metadata) (net.Conn, error) {
+	conn, err := t.getClient(false).DialContext(ctx, metadata)
 	if errors.Is(err, TooManyOpenStreams) {
-		conn, err = t.newClient(false, dialer).DialContextWithDialer(ctx, metadata, dialer, newDialFn)
+		conn, err = t.newClient(false).DialContext(ctx, metadata)
 	}
 	if err != nil {
 		return nil, err
@@ -47,13 +35,10 @@ func (t *PoolClient) DialContextWithDialer(ctx context.Context, metadata *C.Meta
 	return N.NewRefConn(conn, t), err
 }
 
-func (t *PoolClient) ListenPacketWithDialer(ctx context.Context, metadata *C.Metadata, dialer C.Dialer, dialFn DialFunc) (net.PacketConn, error) {
-	newDialFn := func(ctx context.Context, dialer C.Dialer) (transport *quic.Transport, addr net.Addr, err error) {
-		return t.dial(ctx, dialer, dialFn)
-	}
-	pc, err := t.getClient(true, dialer).ListenPacketWithDialer(ctx, metadata, dialer, newDialFn)
+func (t *PoolClient) ListenPacket(ctx context.Context, metadata *C.Metadata) (net.PacketConn, error) {
+	pc, err := t.getClient(true).ListenPacket(ctx, metadata)
 	if errors.Is(err, TooManyOpenStreams) {
-		pc, err = t.newClient(true, dialer).ListenPacketWithDialer(ctx, metadata, dialer, newDialFn)
+		pc, err = t.newClient(true).ListenPacket(ctx, metadata)
 	}
 	if err != nil {
 		return nil, err
@@ -61,58 +46,21 @@ func (t *PoolClient) ListenPacketWithDialer(ctx context.Context, metadata *C.Met
 	return N.NewRefPacketConn(pc, t), nil
 }
 
-func (t *PoolClient) dial(ctx context.Context, dialer C.Dialer, dialFn DialFunc) (transport *quic.Transport, addr net.Addr, err error) {
-	t.dialResultMutex.Lock()
-	dr, ok := t.dialResultMap[dialer]
-	t.dialResultMutex.Unlock()
-	if ok {
-		return dr.transport, dr.addr, dr.err
-	}
-
-	transport, addr, err = dialFn(ctx, dialer)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if _, ok := transport.Conn.(*net.UDPConn); ok { // only cache the system's UDPConn
-		transport.SetSingleUse(false) // don't close transport in each dial
-		dr.transport, dr.addr, dr.err = transport, addr, err
-
-		t.dialResultMutex.Lock()
-		t.dialResultMap[dialer] = dr
-		t.dialResultMutex.Unlock()
-	}
-
-	return transport, addr, err
-}
-
-func (t *PoolClient) forceClose() {
-	t.dialResultMutex.Lock()
-	defer t.dialResultMutex.Unlock()
-	for key := range t.dialResultMap {
-		transport := t.dialResultMap[key].transport
-		if transport != nil {
-			_ = transport.Close()
-		}
-		delete(t.dialResultMap, key)
-	}
-}
-
-func (t *PoolClient) newClient(udp bool, dialer C.Dialer) (client Client) {
-	clients := t.tcpClients
-	clientsMutex := t.tcpClientsMutex
+func (t *PoolClient) newClient(udp bool) (client Client) {
+	clients := &t.tcpClients
+	clientsMutex := &t.tcpClientsMutex
 	if udp {
-		clients = t.udpClients
-		clientsMutex = t.udpClientsMutex
+		clients = &t.udpClients
+		clientsMutex = &t.udpClientsMutex
 	}
 
 	clientsMutex.Lock()
 	defer clientsMutex.Unlock()
 
 	if t.newClientOptionV4 != nil {
-		client = NewClientV4(t.newClientOptionV4, udp, dialer)
+		client = NewClientV4(t.newClientOptionV4, udp, t.dialFn)
 	} else {
-		client = NewClientV5(t.newClientOptionV5, udp, dialer)
+		client = NewClientV5(t.newClientOptionV5, udp, t.dialFn)
 	}
 
 	client.SetLastVisited(time.Now())
@@ -121,12 +69,12 @@ func (t *PoolClient) newClient(udp bool, dialer C.Dialer) (client Client) {
 	return client
 }
 
-func (t *PoolClient) getClient(udp bool, dialer C.Dialer) Client {
-	clients := t.tcpClients
-	clientsMutex := t.tcpClientsMutex
+func (t *PoolClient) getClient(udp bool) Client {
+	clients := &t.tcpClients
+	clientsMutex := &t.tcpClientsMutex
 	if udp {
-		clients = t.udpClients
-		clientsMutex = t.udpClientsMutex
+		clients = &t.udpClients
+		clientsMutex = &t.udpClientsMutex
 	}
 	var bestClient Client
 
@@ -141,71 +89,50 @@ func (t *PoolClient) getClient(udp bool, dialer C.Dialer) Client {
 				it = next
 				continue
 			}
-			if client.DialerRef() == dialer {
-				if bestClient == nil {
+			if bestClient == nil {
+				bestClient = client
+			} else {
+				if client.OpenStreams() < bestClient.OpenStreams() {
 					bestClient = client
-				} else {
-					if client.OpenStreams() < bestClient.OpenStreams() {
-						bestClient = client
-					}
 				}
 			}
 			it = it.Next()
 		}
-	}()
-	for it := clients.Front(); it != nil; {
-		client := it.Value
-		if client != bestClient && client.OpenStreams() == 0 && time.Now().Sub(client.LastVisited()) > 30*time.Minute {
-			client.Close()
-			next := it.Next()
-			clients.Remove(it)
-			it = next
-			continue
+		for it := clients.Front(); it != nil; {
+			client := it.Value
+			if client != bestClient && client.OpenStreams() == 0 && time.Now().Sub(client.LastVisited()) > 30*time.Minute {
+				client.Close()
+				next := it.Next()
+				clients.Remove(it)
+				it = next
+				continue
+			}
+			it = it.Next()
 		}
-		it = it.Next()
-	}
+	}()
 
 	if bestClient == nil {
-		return t.newClient(udp, dialer)
+		return t.newClient(udp)
 	} else {
 		bestClient.SetLastVisited(time.Now())
 		return bestClient
 	}
 }
 
-func NewPoolClientV4(clientOption *ClientOptionV4) *PoolClient {
+func NewPoolClientV4(clientOption *ClientOptionV4, dialFn DialFunc) *PoolClient {
 	p := &PoolClient{
-		dialResultMap:   make(map[C.Dialer]dialResult),
-		dialResultMutex: &sync.Mutex{},
-		tcpClients:      list.New[Client](),
-		tcpClientsMutex: &sync.Mutex{},
-		udpClients:      list.New[Client](),
-		udpClientsMutex: &sync.Mutex{},
+		dialFn: dialFn,
 	}
 	newClientOption := *clientOption
 	p.newClientOptionV4 = &newClientOption
-	runtime.SetFinalizer(p, closeClientPool)
-	log.Debugln("New TuicV4 PoolClient at %p", p)
 	return p
 }
 
-func NewPoolClientV5(clientOption *ClientOptionV5) *PoolClient {
+func NewPoolClientV5(clientOption *ClientOptionV5, dialFn DialFunc) *PoolClient {
 	p := &PoolClient{
-		dialResultMap:   make(map[C.Dialer]dialResult),
-		dialResultMutex: &sync.Mutex{},
-		tcpClients:      list.New[Client](),
-		tcpClientsMutex: &sync.Mutex{},
-		udpClients:      list.New[Client](),
-		udpClientsMutex: &sync.Mutex{},
+		dialFn: dialFn,
 	}
 	newClientOption := *clientOption
 	p.newClientOptionV5 = &newClientOption
-	runtime.SetFinalizer(p, closeClientPool)
-	log.Debugln("New TuicV5 PoolClient at %p", p)
 	return p
-}
-
-func closeClientPool(client *PoolClient) {
-	log.Debugln("Close Tuic PoolClient at %p", client)
-	client.forceClose()
 }

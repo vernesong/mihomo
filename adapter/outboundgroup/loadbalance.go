@@ -9,19 +9,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Dreamacro/clash/adapter/outbound"
-	"github.com/Dreamacro/clash/common/cache"
-	"github.com/Dreamacro/clash/common/callback"
-	N "github.com/Dreamacro/clash/common/net"
-	"github.com/Dreamacro/clash/common/utils"
-	"github.com/Dreamacro/clash/component/dialer"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/constant/provider"
+	"github.com/metacubex/mihomo/common/callback"
+	"github.com/metacubex/mihomo/common/lru"
+	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/common/utils"
+	C "github.com/metacubex/mihomo/constant"
+	P "github.com/metacubex/mihomo/constant/provider"
 
 	"golang.org/x/net/publicsuffix"
 )
 
-type strategyFn = func(proxies []C.Proxy, metadata *C.Metadata, touch bool) C.Proxy
+type LoadBalanceOption struct {
+	Strategy string `group:"strategy,omitempty"`
+}
 
 type LoadBalance struct {
 	*GroupBase
@@ -31,14 +31,9 @@ type LoadBalance struct {
 	expectedStatus string
 }
 
-var errStrategy = errors.New("unsupported strategy")
+type strategyFn = func(proxies []C.Proxy, metadata *C.Metadata, touch bool) C.Proxy
 
-func parseStrategy(config map[string]any) string {
-	if strategy, ok := config["strategy"].(string); ok {
-		return strategy
-	}
-	return "consistent-hashing"
-}
+var errStrategy = errors.New("unsupported strategy")
 
 func getKey(metadata *C.Metadata) string {
 	if metadata == nil {
@@ -86,14 +81,14 @@ func jumpHash(key uint64, buckets int32) int32 {
 }
 
 // DialContext implements C.ProxyAdapter
-func (lb *LoadBalance) DialContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (c C.Conn, err error) {
+func (lb *LoadBalance) DialContext(ctx context.Context, metadata *C.Metadata) (c C.Conn, err error) {
 	proxy := lb.Unwrap(metadata, true)
-	c, err = proxy.DialContext(ctx, metadata, lb.Base.DialOptions(opts...)...)
+	c, err = proxy.DialContext(ctx, metadata)
 
 	if err == nil {
 		c.AppendToChains(lb)
 	} else {
-		lb.onDialFailed(proxy.Type(), err)
+		lb.onDialFailed(proxy.Type(), err, lb.healthCheck)
 	}
 
 	if N.NeedHandshake(c) {
@@ -101,7 +96,7 @@ func (lb *LoadBalance) DialContext(ctx context.Context, metadata *C.Metadata, op
 			if err == nil {
 				lb.onDialSuccess()
 			} else {
-				lb.onDialFailed(proxy.Type(), err)
+				lb.onDialFailed(proxy.Type(), err, lb.healthCheck)
 			}
 		})
 	}
@@ -110,7 +105,7 @@ func (lb *LoadBalance) DialContext(ctx context.Context, metadata *C.Metadata, op
 }
 
 // ListenPacketContext implements C.ProxyAdapter
-func (lb *LoadBalance) ListenPacketContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (pc C.PacketConn, err error) {
+func (lb *LoadBalance) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (pc C.PacketConn, err error) {
 	defer func() {
 		if err == nil {
 			pc.AppendToChains(lb)
@@ -118,7 +113,7 @@ func (lb *LoadBalance) ListenPacketContext(ctx context.Context, metadata *C.Meta
 	}()
 
 	proxy := lb.Unwrap(metadata, true)
-	return proxy.ListenPacketContext(ctx, metadata, lb.Base.DialOptions(opts...)...)
+	return proxy.ListenPacketContext(ctx, metadata)
 }
 
 // SupportUDP implements C.ProxyAdapter
@@ -150,7 +145,6 @@ func strategyRoundRobin(url string) strategyFn {
 		for ; i < length; i++ {
 			id := (idx + i) % length
 			proxy := proxies[id]
-			// if proxy.Alive() {
 			if proxy.AliveForTestUrl(url) {
 				i++
 				return proxy
@@ -169,7 +163,6 @@ func strategyConsistentHashing(url string) strategyFn {
 		for i := 0; i < maxRetry; i, key = i+1, key+1 {
 			idx := jumpHash(key, buckets)
 			proxy := proxies[idx]
-			// if proxy.Alive() {
 			if proxy.AliveForTestUrl(url) {
 				return proxy
 			}
@@ -177,7 +170,6 @@ func strategyConsistentHashing(url string) strategyFn {
 
 		// when availability is poor, traverse the entire list to get the available nodes
 		for _, proxy := range proxies {
-			// if proxy.Alive() {
 			if proxy.AliveForTestUrl(url) {
 				return proxy
 			}
@@ -190,24 +182,22 @@ func strategyConsistentHashing(url string) strategyFn {
 func strategyStickySessions(url string) strategyFn {
 	ttl := time.Minute * 10
 	maxRetry := 5
-	lruCache := cache.New[uint64, int](
-		cache.WithAge[uint64, int](int64(ttl.Seconds())),
-		cache.WithSize[uint64, int](1000))
+	lruCache := lru.New[uint64, int](
+		lru.WithAge[uint64, int](int64(ttl.Seconds())),
+		lru.WithSize[uint64, int](1000))
 	return func(proxies []C.Proxy, metadata *C.Metadata, touch bool) C.Proxy {
 		key := utils.MapHash(getKeyWithSrcAndDst(metadata))
 		length := len(proxies)
 		idx, has := lruCache.Get(key)
-		if !has {
+		if !has || idx >= length {
 			idx = int(jumpHash(key+uint64(time.Now().UnixNano()), int32(length)))
 		}
 
 		nowIdx := idx
 		for i := 1; i < maxRetry; i++ {
 			proxy := proxies[nowIdx]
-			// if proxy.Alive() {
 			if proxy.AliveForTestUrl(url) {
-				if nowIdx != idx {
-					lruCache.Delete(key)
+				if !has || nowIdx != idx {
 					lruCache.Set(key, nowIdx)
 				}
 
@@ -217,7 +207,6 @@ func strategyStickySessions(url string) strategyFn {
 			}
 		}
 
-		lruCache.Delete(key)
 		lruCache.Set(key, 0)
 		return proxies[0]
 	}
@@ -240,33 +229,49 @@ func (lb *LoadBalance) MarshalJSON() ([]byte, error) {
 		"all":            all,
 		"testUrl":        lb.testUrl,
 		"expectedStatus": lb.expectedStatus,
+		"hidden":         lb.Hidden(),
+		"icon":           lb.Icon(),
+		"emptyFallback":  lb.EmptyFallback().Name(),
 	})
 }
 
-func NewLoadBalance(option *GroupCommonOption, providers []provider.ProxyProvider, strategy string) (lb *LoadBalance, err error) {
+func (lb *LoadBalance) Providers() []P.ProxyProvider {
+	return lb.providers
+}
+
+func (lb *LoadBalance) Proxies() []C.Proxy {
+	return lb.GetProxies(false)
+}
+
+func (lb *LoadBalance) Now() string {
+	return ""
+}
+
+func NewLoadBalance(option GroupCommonOption, loadBalanceOption LoadBalanceOption, emptyFallback C.Proxy, providers []P.ProxyProvider) (lb *LoadBalance, err error) {
 	var strategyFn strategyFn
-	switch strategy {
-	case "consistent-hashing":
+	switch loadBalanceOption.Strategy {
+	case "", "consistent-hashing":
 		strategyFn = strategyConsistentHashing(option.URL)
 	case "round-robin":
 		strategyFn = strategyRoundRobin(option.URL)
 	case "sticky-sessions":
 		strategyFn = strategyStickySessions(option.URL)
 	default:
-		return nil, fmt.Errorf("%w: %s", errStrategy, strategy)
+		return nil, fmt.Errorf("%w: %s", errStrategy, loadBalanceOption.Strategy)
 	}
 	return &LoadBalance{
 		GroupBase: NewGroupBase(GroupBaseOption{
-			outbound.BaseOption{
-				Name:        option.Name,
-				Type:        C.LoadBalance,
-				Interface:   option.Interface,
-				RoutingMark: option.RoutingMark,
-			},
-			option.Filter,
-			option.ExcludeFilter,
-			option.ExcludeType,
-			providers,
+			Name:           option.Name,
+			Type:           C.LoadBalance,
+			Hidden:         option.Hidden,
+			Icon:           option.Icon,
+			Filter:         option.Filter,
+			ExcludeFilter:  option.ExcludeFilter,
+			ExcludeType:    option.ExcludeType,
+			TestTimeout:    option.TestTimeout,
+			MaxFailedTimes: option.MaxFailedTimes,
+			EmptyFallback:  emptyFallback,
+			Providers:      providers,
 		}),
 		strategyFn:     strategyFn,
 		disableUDP:     option.DisableUDP,

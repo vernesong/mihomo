@@ -3,8 +3,8 @@ package pool
 import (
 	"testing"
 
+	"github.com/metacubex/randv2"
 	"github.com/stretchr/testify/assert"
-	"github.com/zhangyunhao116/fastrand"
 )
 
 func TestAllocGet(t *testing.T) {
@@ -13,8 +13,8 @@ func TestAllocGet(t *testing.T) {
 	assert.Equal(t, 1, len(alloc.Get(1)))
 	assert.Equal(t, 2, len(alloc.Get(2)))
 	assert.Equal(t, 3, len(alloc.Get(3)))
-	assert.Equal(t, 4, cap(alloc.Get(3)))
-	assert.Equal(t, 4, cap(alloc.Get(4)))
+	assert.Equal(t, 64, cap(alloc.Get(3)))
+	assert.Equal(t, 64, cap(alloc.Get(4)))
 	assert.Equal(t, 1023, len(alloc.Get(1023)))
 	assert.Equal(t, 1024, cap(alloc.Get(1023)))
 	assert.Equal(t, 1024, len(alloc.Get(1024)))
@@ -43,6 +43,6 @@ func TestAllocPutThenGet(t *testing.T) {
 
 func BenchmarkMSB(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		msb(fastrand.Int())
+		msb(randv2.Int())
 	}
 }

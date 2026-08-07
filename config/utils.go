@@ -4,18 +4,13 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"strings"
+	"os"
+	"strconv"
 
-	"github.com/Dreamacro/clash/adapter/outboundgroup"
-	"github.com/Dreamacro/clash/common/structure"
+	"github.com/metacubex/mihomo/adapter/outboundgroup"
+	"github.com/metacubex/mihomo/common/structure"
+	C "github.com/metacubex/mihomo/constant"
 )
-
-func trimArr(arr []string) (r []string) {
-	for _, e := range arr {
-		r = append(r, strings.Trim(e, " "))
-	}
-	return
-}
 
 // Check if ProxyGroups form DAG(Directed Acyclic Graph), and sort all ProxyGroups by dependency order.
 // Meanwhile, record the original index in the config file.
@@ -149,7 +144,68 @@ func proxyGroupsDagSort(groupsConfig []map[string]any) error {
 	return fmt.Errorf("loop is detected in ProxyGroup, please check following ProxyGroups: %v", loopElements)
 }
 
+// validateDialerProxies checks if all dialer-proxy references are valid
+func validateDialerProxies(proxies map[string]C.Proxy) error {
+	graph := make(map[string]string) // proxy name -> dialer-proxy name
+
+	// collect all proxies with dialer-proxy configured
+	for name, proxy := range proxies {
+		dialerProxy := proxy.ProxyInfo().DialerProxy
+		if dialerProxy != "" {
+			// validate each dialer-proxy reference
+			_, exist := proxies[dialerProxy]
+			if !exist {
+				return fmt.Errorf("proxy [%s] dialer-proxy [%s] not found", name, dialerProxy)
+			}
+
+			// build dependency graph
+			graph[name] = dialerProxy
+		}
+	}
+
+	// perform depth-first search to detect cycles for each proxy
+	for name := range graph {
+		visited := make(map[string]bool, len(graph))
+		path := make([]string, 0, len(graph))
+		if validateDialerProxiesHasCycle(name, graph, visited, path) {
+			return fmt.Errorf("proxy [%s] has circular dialer-proxy dependency", name)
+		}
+	}
+
+	return nil
+}
+
+// validateDialerProxiesHasCycle performs DFS to detect if there's a cycle starting from current proxy
+func validateDialerProxiesHasCycle(current string, graph map[string]string, visited map[string]bool, path []string) bool {
+	// check if current is already in path (cycle detected)
+	for _, p := range path {
+		if p == current {
+			return true
+		}
+	}
+
+	// already visited and no cycle
+	if visited[current] {
+		return false
+	}
+
+	visited[current] = true
+	path = append(path, current)
+
+	// check dialer-proxy of current proxy
+	if dialerProxy, exists := graph[current]; exists {
+		if validateDialerProxiesHasCycle(dialerProxy, graph, visited, path) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func verifyIP6() bool {
+	if skip, _ := strconv.ParseBool(os.Getenv("SKIP_SYSTEM_IPV6_CHECK")); skip {
+		return true
+	}
 	if iAddrs, err := net.InterfaceAddrs(); err == nil {
 		for _, addr := range iAddrs {
 			if prefix, err := netip.ParsePrefix(addr.String()); err == nil {
@@ -158,6 +214,10 @@ func verifyIP6() bool {
 				}
 			}
 		}
+	} else {
+		// eg: Calling net.InterfaceAddrs() fails on Android SDK 30
+		// https://github.com/golang/go/issues/40569
+		return true // just ignore
 	}
 	return false
 }

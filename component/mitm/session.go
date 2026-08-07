@@ -1,0 +1,121 @@
+package mitm
+
+import (
+	"fmt"
+	"io"
+	"sync"
+
+	C "github.com/metacubex/mihomo/constant"
+
+	"github.com/metacubex/http"
+)
+
+type Handler interface {
+	HandleRequest(*Session) (*http.Request, *http.Response)
+	HandleResponse(*Session) *http.Response
+	HandleError(*Session, error)
+}
+
+type NopHandler struct{}
+
+func (NopHandler) HandleRequest(*Session) (*http.Request, *http.Response) {
+	return nil, nil
+}
+
+func (NopHandler) HandleResponse(*Session) *http.Response {
+	return nil
+}
+
+func (NopHandler) HandleError(*Session, error) {}
+
+type Session struct {
+	request  *http.Request
+	response *http.Response
+	metadata *C.Metadata
+
+	propsMutex sync.RWMutex
+	props      map[string]any
+}
+
+func (s *Session) Request() *http.Request {
+	return s.request
+}
+
+func (s *Session) Response() *http.Response {
+	return s.response
+}
+
+func (s *Session) Metadata() *C.Metadata {
+	return s.metadata
+}
+
+func (s *Session) SetRequest(request *http.Request) {
+	s.request = request
+}
+
+func (s *Session) SetResponse(response *http.Response) {
+	s.response = response
+}
+
+func (s *Session) GetProperties(key string) (any, bool) {
+	s.propsMutex.RLock()
+	defer s.propsMutex.RUnlock()
+	value, found := s.props[key]
+	return value, found
+}
+
+func (s *Session) SetProperties(key string, value any) {
+	s.propsMutex.Lock()
+	defer s.propsMutex.Unlock()
+	s.props[key] = value
+}
+
+func (s *Session) NewResponse(code int, body io.Reader) *http.Response {
+	return NewResponse(code, body, s.request)
+}
+
+func (s *Session) NewErrorResponse(err error) *http.Response {
+	response := NewResponse(http.StatusBadGateway, nil, s.request)
+	response.Header.Set("Warning", fmt.Sprintf(`199 "mihomo" %q`, err.Error()))
+	return response
+}
+
+func NewResponse(code int, body io.Reader, request *http.Request) *http.Response {
+	var responseBody io.ReadCloser = http.NoBody
+	contentLength := int64(0)
+	if body != nil {
+		if readCloser, ok := body.(io.ReadCloser); ok {
+			responseBody = readCloser
+		} else {
+			responseBody = io.NopCloser(body)
+		}
+		contentLength = -1
+	}
+
+	response := &http.Response{
+		StatusCode:    code,
+		Status:        fmt.Sprintf("%d %s", code, http.StatusText(code)),
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        make(http.Header),
+		Body:          responseBody,
+		ContentLength: contentLength,
+		Request:       request,
+	}
+	if request != nil {
+		response.Proto = request.Proto
+		response.ProtoMajor = request.ProtoMajor
+		response.ProtoMinor = request.ProtoMinor
+		response.Close = request.Close
+	}
+	return response
+}
+
+func newSession(request *http.Request, metadata *C.Metadata) *Session {
+	return &Session{
+		request:  request,
+		metadata: metadata.Clone(),
+		props:    make(map[string]any),
+	}
+}

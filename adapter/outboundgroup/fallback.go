@@ -6,14 +6,14 @@ import (
 	"errors"
 	"time"
 
-	"github.com/Dreamacro/clash/adapter/outbound"
-	"github.com/Dreamacro/clash/common/callback"
-	N "github.com/Dreamacro/clash/common/net"
-	"github.com/Dreamacro/clash/common/utils"
-	"github.com/Dreamacro/clash/component/dialer"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/constant/provider"
+	"github.com/metacubex/mihomo/common/callback"
+	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/common/utils"
+	C "github.com/metacubex/mihomo/constant"
+	P "github.com/metacubex/mihomo/constant/provider"
 )
+
+type FallbackOption struct{}
 
 type Fallback struct {
 	*GroupBase
@@ -29,13 +29,13 @@ func (f *Fallback) Now() string {
 }
 
 // DialContext implements C.ProxyAdapter
-func (f *Fallback) DialContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (C.Conn, error) {
+func (f *Fallback) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {
 	proxy := f.findAliveProxy(true)
-	c, err := proxy.DialContext(ctx, metadata, f.Base.DialOptions(opts...)...)
+	c, err := proxy.DialContext(ctx, metadata)
 	if err == nil {
 		c.AppendToChains(f)
 	} else {
-		f.onDialFailed(proxy.Type(), err)
+		f.onDialFailed(proxy.Type(), err, f.healthCheck)
 	}
 
 	if N.NeedHandshake(c) {
@@ -43,7 +43,7 @@ func (f *Fallback) DialContext(ctx context.Context, metadata *C.Metadata, opts .
 			if err == nil {
 				f.onDialSuccess()
 			} else {
-				f.onDialFailed(proxy.Type(), err)
+				f.onDialFailed(proxy.Type(), err, f.healthCheck)
 			}
 		})
 	}
@@ -52,9 +52,9 @@ func (f *Fallback) DialContext(ctx context.Context, metadata *C.Metadata, opts .
 }
 
 // ListenPacketContext implements C.ProxyAdapter
-func (f *Fallback) ListenPacketContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (C.PacketConn, error) {
+func (f *Fallback) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (C.PacketConn, error) {
 	proxy := f.findAliveProxy(true)
-	pc, err := proxy.ListenPacketContext(ctx, metadata, f.Base.DialOptions(opts...)...)
+	pc, err := proxy.ListenPacketContext(ctx, metadata)
 	if err == nil {
 		pc.AppendToChains(f)
 	}
@@ -84,11 +84,15 @@ func (f *Fallback) MarshalJSON() ([]byte, error) {
 		all = append(all, proxy.Name())
 	}
 	return json.Marshal(map[string]any{
-		"type":     f.Type().String(),
-		"now":      f.Now(),
-		"all":      all,
-		"testUrl":  f.testUrl,
-		"expected": f.expectedStatus,
+		"type":           f.Type().String(),
+		"now":            f.Now(),
+		"all":            all,
+		"testUrl":        f.testUrl,
+		"expectedStatus": f.expectedStatus,
+		"fixed":          f.selected,
+		"hidden":         f.Hidden(),
+		"icon":           f.Icon(),
+		"emptyFallback":  f.EmptyFallback().Name(),
 	})
 }
 
@@ -102,13 +106,11 @@ func (f *Fallback) findAliveProxy(touch bool) C.Proxy {
 	proxies := f.GetProxies(touch)
 	for _, proxy := range proxies {
 		if len(f.selected) == 0 {
-			// if proxy.Alive() {
 			if proxy.AliveForTestUrl(f.testUrl) {
 				return proxy
 			}
 		} else {
 			if proxy.Name() == f.selected {
-				// if proxy.Alive() {
 				if proxy.AliveForTestUrl(f.testUrl) {
 					return proxy
 				} else {
@@ -135,12 +137,11 @@ func (f *Fallback) Set(name string) error {
 	}
 
 	f.selected = name
-	// if !p.Alive() {
 	if !p.AliveForTestUrl(f.testUrl) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(5000))
 		defer cancel()
-		expectedStatus, _ := utils.NewIntRanges[uint16](f.expectedStatus)
-		_, _ = p.URLTest(ctx, f.testUrl, expectedStatus, C.ExtraHistory)
+		expectedStatus, _ := utils.NewUnsignedRanges[uint16](f.expectedStatus)
+		_, _ = p.URLTest(ctx, f.testUrl, expectedStatus)
 	}
 
 	return nil
@@ -150,22 +151,31 @@ func (f *Fallback) ForceSet(name string) {
 	f.selected = name
 }
 
-func NewFallback(option *GroupCommonOption, providers []provider.ProxyProvider) *Fallback {
+func (f *Fallback) Providers() []P.ProxyProvider {
+	return f.providers
+}
+
+func (f *Fallback) Proxies() []C.Proxy {
+	return f.GetProxies(false)
+}
+
+func NewFallback(option GroupCommonOption, fallbackOption FallbackOption, emptyFallback C.Proxy, providers []P.ProxyProvider) (*Fallback, error) {
 	return &Fallback{
 		GroupBase: NewGroupBase(GroupBaseOption{
-			outbound.BaseOption{
-				Name:        option.Name,
-				Type:        C.Fallback,
-				Interface:   option.Interface,
-				RoutingMark: option.RoutingMark,
-			},
-			option.Filter,
-			option.ExcludeFilter,
-			option.ExcludeType,
-			providers,
+			Name:           option.Name,
+			Type:           C.Fallback,
+			Hidden:         option.Hidden,
+			Icon:           option.Icon,
+			Filter:         option.Filter,
+			ExcludeFilter:  option.ExcludeFilter,
+			ExcludeType:    option.ExcludeType,
+			TestTimeout:    option.TestTimeout,
+			MaxFailedTimes: option.MaxFailedTimes,
+			EmptyFallback:  emptyFallback,
+			Providers:      providers,
 		}),
 		disableUDP:     option.DisableUDP,
 		testUrl:        option.URL,
 		expectedStatus: option.ExpectedStatus,
-	}
+	}, nil
 }

@@ -6,9 +6,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Dreamacro/clash/common/nnip"
-	"github.com/Dreamacro/clash/component/profile/cachefile"
-	"github.com/Dreamacro/clash/component/trie"
+	"github.com/metacubex/mihomo/component/profile/cachefile"
+
+	"go4.org/netipx"
 )
 
 const (
@@ -35,8 +35,7 @@ type Pool struct {
 	offset  netip.Addr
 	cycle   bool
 	mux     sync.Mutex
-	host    *trie.DomainTrie[struct{}]
-	ipnet   *netip.Prefix
+	ipnet   netip.Prefix
 	store   store
 }
 
@@ -64,14 +63,6 @@ func (p *Pool) LookBack(ip netip.Addr) (string, bool) {
 	return p.store.GetByIP(ip)
 }
 
-// ShouldSkipped return if domain should be skipped
-func (p *Pool) ShouldSkipped(domain string) bool {
-	if p.host == nil {
-		return false
-	}
-	return p.host.Search(domain) != nil
-}
-
 // Exist returns if given ip exists in fake-ip pool
 func (p *Pool) Exist(ip netip.Addr) bool {
 	p.mux.Lock()
@@ -91,7 +82,7 @@ func (p *Pool) Broadcast() netip.Addr {
 }
 
 // IPNet return raw ipnet
-func (p *Pool) IPNet() *netip.Prefix {
+func (p *Pool) IPNet() netip.Prefix {
 	return p.ipnet
 }
 
@@ -153,8 +144,7 @@ func (p *Pool) restoreState() {
 }
 
 type Options struct {
-	IPNet *netip.Prefix
-	Host  *trie.DomainTrie[struct{}]
+	IPNet netip.Prefix
 
 	// Size sets the maximum number of entries in memory
 	// and does not work if Persistence is true
@@ -171,7 +161,7 @@ func New(options Options) (*Pool, error) {
 		hostAddr = options.IPNet.Masked().Addr()
 		gateway  = hostAddr.Next()
 		first    = gateway.Next().Next().Next() // default start with 198.18.0.4
-		last     = nnip.UnMasked(*options.IPNet)
+		last     = netipx.PrefixLastIP(options.IPNet)
 	)
 
 	if !options.IPNet.IsValid() || !first.IsValid() || !first.Less(last) {
@@ -184,13 +174,10 @@ func New(options Options) (*Pool, error) {
 		last:    last,
 		offset:  first.Prev(),
 		cycle:   false,
-		host:    options.Host,
 		ipnet:   options.IPNet,
 	}
 	if options.Persistence {
-		pool.store = &cachefileStore{
-			cache: cachefile.Cache(),
-		}
+		pool.store = newCachefileStore(cachefile.Cache(), options.IPNet)
 	} else {
 		pool.store = newMemoryStore(options.Size)
 	}

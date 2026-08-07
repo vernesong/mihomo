@@ -4,51 +4,31 @@ import (
 	"net"
 	"sync"
 
-	C "github.com/Dreamacro/clash/constant"
-
-	"github.com/puzpuzpuz/xsync/v2"
+	"github.com/metacubex/mihomo/common/xsync"
+	C "github.com/metacubex/mihomo/constant"
 )
 
 type Table struct {
-	mapping *xsync.MapOf[string, *Entry]
-	lockMap *xsync.MapOf[string, *sync.Cond]
+	mapping xsync.Map[string, *entry]
 }
 
-type Entry struct {
-	PacketConn      C.PacketConn
-	WriteBackProxy  C.WriteBackProxy
-	LocalUDPConnMap *xsync.MapOf[string, *net.UDPConn]
-	LocalLockMap    *xsync.MapOf[string, *sync.Cond]
+type entry struct {
+	PacketSender    C.PacketSender
+	LocalUDPConnMap xsync.Map[string, *net.UDPConn]
+	LocalLockMap    xsync.Map[string, *sync.Cond]
 }
 
-func (t *Table) Set(key string, e C.PacketConn, w C.WriteBackProxy) {
-	t.mapping.Store(key, &Entry{
-		PacketConn:      e,
-		WriteBackProxy:  w,
-		LocalUDPConnMap: xsync.NewMapOf[*net.UDPConn](),
-		LocalLockMap:    xsync.NewMapOf[*sync.Cond](),
+func (t *Table) GetOrCreate(key string, maker func() C.PacketSender) (C.PacketSender, bool) {
+	item, loaded := t.mapping.LoadOrStoreFn(key, func() *entry {
+		return &entry{
+			PacketSender: maker(),
+		}
 	})
-}
-
-func (t *Table) Get(key string) (C.PacketConn, C.WriteBackProxy) {
-	entry, exist := t.getEntry(key)
-	if !exist {
-		return nil, nil
-	}
-	return entry.PacketConn, entry.WriteBackProxy
-}
-
-func (t *Table) GetOrCreateLock(key string) (*sync.Cond, bool) {
-	item, loaded := t.lockMap.LoadOrCompute(key, makeLock)
-	return item, loaded
+	return item.PacketSender, loaded
 }
 
 func (t *Table) Delete(key string) {
 	t.mapping.Delete(key)
-}
-
-func (t *Table) DeleteLock(lockKey string) {
-	t.lockMap.Delete(lockKey)
 }
 
 func (t *Table) GetForLocalConn(lAddr, rAddr string) *net.UDPConn {
@@ -85,7 +65,7 @@ func (t *Table) GetOrCreateLockForLocalConn(lAddr, key string) (*sync.Cond, bool
 	if !loaded {
 		return nil, false
 	}
-	item, loaded := entry.LocalLockMap.LoadOrCompute(key, makeLock)
+	item, loaded := entry.LocalLockMap.LoadOrStoreFn(key, makeLock)
 	return item, loaded
 }
 
@@ -105,7 +85,7 @@ func (t *Table) DeleteLockForLocalConn(lAddr, key string) {
 	entry.LocalLockMap.Delete(key)
 }
 
-func (t *Table) getEntry(key string) (*Entry, bool) {
+func (t *Table) getEntry(key string) (*entry, bool) {
 	return t.mapping.Load(key)
 }
 
@@ -115,8 +95,5 @@ func makeLock() *sync.Cond {
 
 // New return *Cache
 func New() *Table {
-	return &Table{
-		mapping: xsync.NewMapOf[*Entry](),
-		lockMap: xsync.NewMapOf[*sync.Cond](),
-	}
+	return &Table{}
 }

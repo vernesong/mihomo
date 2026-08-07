@@ -4,11 +4,12 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/Dreamacro/clash/common/net/packet"
-	"github.com/sagernet/sing/common/buf"
-	"github.com/sagernet/sing/common/bufio"
-	M "github.com/sagernet/sing/common/metadata"
-	N "github.com/sagernet/sing/common/network"
+	"github.com/metacubex/mihomo/common/net/packet"
+
+	"github.com/metacubex/sing/common/buf"
+	"github.com/metacubex/sing/common/bufio"
+	M "github.com/metacubex/sing/common/metadata"
+	N "github.com/metacubex/sing/common/network"
 )
 
 type SingPacketConn struct {
@@ -68,7 +69,7 @@ FOR:
 				c.netPacketConn.resultCh <- nil
 				break FOR
 			}
-		case <-c.netPacketConn.pipeDeadline.wait():
+		case <-c.netPacketConn.pipeDeadline.Wait():
 			return M.Socksaddr{}, os.ErrDeadlineExceeded
 		}
 	}
@@ -121,17 +122,18 @@ type singPacketReadWaiter struct {
 
 type singWaitReadResult singReadResult
 
-func (c *singPacketReadWaiter) InitializeReadWaiter(newBuffer func() *buf.Buffer) {
-	c.packetReadWaiter.InitializeReadWaiter(newBuffer)
+func (c *singPacketReadWaiter) InitializeReadWaiter(options N.ReadWaitOptions) (needCopy bool) {
+	return c.packetReadWaiter.InitializeReadWaiter(options)
 }
 
-func (c *singPacketReadWaiter) WaitReadPacket() (destination M.Socksaddr, err error) {
+func (c *singPacketReadWaiter) WaitReadPacket() (buffer *buf.Buffer, destination M.Socksaddr, err error) {
 FOR:
 	for {
 		select {
 		case result := <-c.netPacketConn.resultCh:
 			if result != nil {
 				if result, ok := result.(*singWaitReadResult); ok {
+					buffer = result.buffer
 					destination = result.destination
 					err = result.err
 					c.netPacketConn.resultCh <- nil // finish cache read
@@ -144,8 +146,8 @@ FOR:
 				c.netPacketConn.resultCh <- nil
 				break FOR
 			}
-		case <-c.netPacketConn.pipeDeadline.wait():
-			return M.Socksaddr{}, os.ErrDeadlineExceeded
+		case <-c.netPacketConn.pipeDeadline.Wait():
+			return nil, M.Socksaddr{}, os.ErrDeadlineExceeded
 		}
 	}
 
@@ -154,8 +156,7 @@ FOR:
 	} else if c.netPacketConn.deadline.Load().IsZero() {
 		c.netPacketConn.inRead.Store(true)
 		defer c.netPacketConn.inRead.Store(false)
-		destination, err = c.packetReadWaiter.WaitReadPacket()
-		return
+		return c.packetReadWaiter.WaitReadPacket()
 	}
 
 	<-c.netPacketConn.resultCh
@@ -165,8 +166,9 @@ FOR:
 }
 
 func (c *singPacketReadWaiter) pipeWaitReadPacket() {
-	destination, err := c.packetReadWaiter.WaitReadPacket()
+	buffer, destination, err := c.packetReadWaiter.WaitReadPacket()
 	result := &singWaitReadResult{}
+	result.buffer = buffer
 	result.destination = destination
 	result.err = err
 	c.netPacketConn.resultCh <- result

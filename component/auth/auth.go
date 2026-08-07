@@ -1,12 +1,13 @@
 package auth
 
-import (
-	"github.com/puzpuzpuz/xsync/v2"
-)
-
 type Authenticator interface {
 	Verify(user string, pass string) bool
 	Users() []string
+}
+
+type AuthStore interface {
+	Authenticator() Authenticator
+	SetAuthenticator(Authenticator)
 }
 
 type AuthUser struct {
@@ -15,12 +16,12 @@ type AuthUser struct {
 }
 
 type inMemoryAuthenticator struct {
-	storage   *xsync.MapOf[string, string]
+	storage   map[string]string
 	usernames []string
 }
 
 func (au *inMemoryAuthenticator) Verify(user string, pass string) bool {
-	realPass, ok := au.storage.Load(user)
+	realPass, ok := au.storage[user]
 	return ok && realPass == pass
 }
 
@@ -30,17 +31,21 @@ func NewAuthenticator(users []AuthUser) Authenticator {
 	if len(users) == 0 {
 		return nil
 	}
-
-	au := &inMemoryAuthenticator{storage: xsync.NewMapOf[string]()}
-	for _, user := range users {
-		au.storage.Store(user.User, user.Pass)
+	au := &inMemoryAuthenticator{
+		storage:   make(map[string]string),
+		usernames: make([]string, 0, len(users)),
 	}
-	usernames := make([]string, 0, len(users))
-	au.storage.Range(func(key string, value string) bool {
-		usernames = append(usernames, key)
-		return true
-	})
-	au.usernames = usernames
-
+	for _, user := range users {
+		au.storage[user.User] = user.Pass
+		au.usernames = append(au.usernames, user.User)
+	}
 	return au
 }
+
+var AlwaysValid Authenticator = alwaysValid{}
+
+type alwaysValid struct{}
+
+func (alwaysValid) Verify(string, string) bool { return true }
+
+func (alwaysValid) Users() []string { return nil }

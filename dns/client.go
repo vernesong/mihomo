@@ -2,93 +2,44 @@ package dns
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net"
-	"net/netip"
 	"strings"
+	"time"
 
-	"github.com/Dreamacro/clash/common/atomic"
-	"github.com/Dreamacro/clash/component/dialer"
-	"github.com/Dreamacro/clash/component/resolver"
-	tlsC "github.com/Dreamacro/clash/component/tls"
-	C "github.com/Dreamacro/clash/constant"
+	"github.com/metacubex/mihomo/component/resolver"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/log"
 
 	D "github.com/miekg/dns"
-	"github.com/zhangyunhao116/fastrand"
 )
 
 type client struct {
-	*D.Client
-	r            *Resolver
-	port         string
-	host         string
-	iface        *atomic.TypedValue[string]
-	proxyAdapter C.ProxyAdapter
-	proxyName    string
-	addr         string
+	port   string
+	host   string
+	dialer *dnsDialer
+	schema string
 }
 
 var _ dnsClient = (*client)(nil)
 
 // Address implements dnsClient
 func (c *client) Address() string {
-	if len(c.addr) != 0 {
-		return c.addr
-	}
-	schema := "udp"
-	if strings.HasPrefix(c.Client.Net, "tcp") {
-		schema = "tcp"
-		if strings.HasSuffix(c.Client.Net, "tls") {
-			schema = "tls"
-		}
-	}
-
-	c.addr = fmt.Sprintf("%s://%s", schema, net.JoinHostPort(c.host, c.port))
-	return c.addr
-}
-
-func (c *client) Exchange(m *D.Msg) (*D.Msg, error) {
-	return c.ExchangeContext(context.Background(), m)
+	return fmt.Sprintf("%s://%s", c.schema, net.JoinHostPort(c.host, c.port))
 }
 
 func (c *client) ExchangeContext(ctx context.Context, m *D.Msg) (*D.Msg, error) {
-	var (
-		ip  netip.Addr
-		err error
-	)
-	if c.r == nil {
-		// a default ip dns
-		if ip, err = netip.ParseAddr(c.host); err != nil {
-			return nil, fmt.Errorf("dns %s not a valid ip", c.host)
-		}
-	} else {
-		ips, err := resolver.LookupIPWithResolver(ctx, c.host, c.r)
-		if err != nil {
-			return nil, fmt.Errorf("use default dns resolve failed: %w", err)
-		} else if len(ips) == 0 {
-			return nil, fmt.Errorf("%w: %s", resolver.ErrIPNotFound, c.host)
-		}
-		ip = ips[fastrand.Intn(len(ips))]
-	}
-
 	network := "udp"
-	if strings.HasPrefix(c.Client.Net, "tcp") {
+	if c.schema != "udp" {
 		network = "tcp"
 	}
 
-	options := []dialer.Option{}
-	if c.iface != nil && c.iface.Load() != "" {
-		options = append(options, dialer.WithInterface(c.iface.Load()))
-	}
-
-	conn, err := getDialHandler(c.r, c.proxyAdapter, c.proxyName, options...)(ctx, network, net.JoinHostPort(ip.String(), c.port))
+	addr := net.JoinHostPort(c.host, c.port)
+	conn, err := c.dialer.DialContext(ctx, network, addr)
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		_ = conn.Close()
-	}()
+	defer conn.Close()
 
 	// miekg/dns ExchangeContext doesn't respond to context cancel.
 	// this is a workaround
@@ -98,16 +49,31 @@ func (c *client) ExchangeContext(ctx context.Context, m *D.Msg) (*D.Msg, error) 
 	}
 	ch := make(chan result, 1)
 	go func() {
-		if strings.HasSuffix(c.Client.Net, "tls") {
-			conn = tls.Client(conn, tlsC.GetGlobalTLSConfig(c.Client.TLSConfig))
+		dClient := &D.Client{
+			UDPSize: 4096,
+			Timeout: 5 * time.Second,
+		}
+		dConn := &D.Conn{
+			Conn:    conn,
+			UDPSize: dClient.UDPSize,
 		}
 
-		msg, _, err := c.Client.ExchangeWithConn(m, &D.Conn{
-			Conn:         conn,
-			UDPSize:      c.Client.UDPSize,
-			TsigSecret:   c.Client.TsigSecret,
-			TsigProvider: c.Client.TsigProvider,
-		})
+		msg, _, err := dClient.ExchangeWithConn(m, dConn)
+
+		// Resolvers MUST resend queries over TCP if they receive a truncated UDP response (with TC=1 set)!
+		if msg != nil && msg.Truncated && network == "udp" {
+			network = "tcp"
+			log.Debugln("[DNS] Truncated reply from %s:%s for %s over UDP, retrying over TCP", c.host, c.port, m.Question[0].String())
+			var tcpConn net.Conn
+			tcpConn, err = c.dialer.DialContext(ctx, network, addr)
+			if err != nil {
+				ch <- result{msg, err}
+				return
+			}
+			defer tcpConn.Close()
+			dConn.Conn = tcpConn
+			msg, _, err = dClient.ExchangeWithConn(m, dConn)
+		}
 
 		ch <- result{msg, err}
 	}()
@@ -118,4 +84,20 @@ func (c *client) ExchangeContext(ctx context.Context, m *D.Msg) (*D.Msg, error) 
 	case ret := <-ch:
 		return ret.msg, ret.err
 	}
+}
+
+func (c *client) ResetConnection() {}
+
+func newClient(addr string, resolver resolver.Resolver, netType string, params map[string]string, proxyAdapter C.ProxyAdapter, proxyName string) *client {
+	host, port, _ := net.SplitHostPort(addr)
+	c := &client{
+		port:   port,
+		host:   host,
+		dialer: newDNSDialer(resolver, proxyAdapter, proxyName),
+		schema: "udp",
+	}
+	if strings.HasPrefix(netType, "tcp") {
+		c.schema = "tcp"
+	}
+	return c
 }

@@ -1,18 +1,27 @@
 package inbound
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/log"
-
-	"github.com/Dreamacro/clash/listener/mixed"
-	"github.com/Dreamacro/clash/listener/socks"
+	C "github.com/metacubex/mihomo/constant"
+	LC "github.com/metacubex/mihomo/listener/config"
+	"github.com/metacubex/mihomo/listener/mixed"
+	"github.com/metacubex/mihomo/listener/socks"
+	"github.com/metacubex/mihomo/log"
 )
 
 type MixedOption struct {
 	BaseOption
-	UDP bool `inbound:"udp,omitempty"`
+	Users          AuthUsers     `inbound:"users,omitempty"`
+	UDP            bool          `inbound:"udp,omitempty"`
+	Certificate    string        `inbound:"certificate,omitempty"`
+	PrivateKey     string        `inbound:"private-key,omitempty"`
+	ClientAuthType string        `inbound:"client-auth-type,omitempty"`
+	ClientAuthCert string        `inbound:"client-auth-cert,omitempty"`
+	EchKey         string        `inbound:"ech-key,omitempty"`
+	RealityConfig  RealityConfig `inbound:"reality-config,omitempty"`
 }
 
 func (o MixedOption) Equal(config C.InboundConfig) bool {
@@ -22,8 +31,8 @@ func (o MixedOption) Equal(config C.InboundConfig) bool {
 type Mixed struct {
 	*Base
 	config *MixedOption
-	l      *mixed.Listener
-	lUDP   *socks.UDPListener
+	l      []*mixed.Listener
+	lUDP   []*socks.UDPListener
 	udp    bool
 }
 
@@ -46,20 +55,39 @@ func (m *Mixed) Config() C.InboundConfig {
 
 // Address implements constant.InboundListener
 func (m *Mixed) Address() string {
-	return m.l.Address()
+	var addrList []string
+	for _, l := range m.l {
+		addrList = append(addrList, l.Address())
+	}
+	return strings.Join(addrList, ",")
 }
 
 // Listen implements constant.InboundListener
-func (m *Mixed) Listen(tcpIn chan<- C.ConnContext, udpIn chan<- C.PacketAdapter, natTable C.NatTable) error {
-	var err error
-	m.l, err = mixed.New(m.RawAddress(), tcpIn, m.Additions()...)
-	if err != nil {
-		return err
-	}
-	if m.udp {
-		m.lUDP, err = socks.NewUDP(m.RawAddress(), udpIn, m.Additions()...)
+func (m *Mixed) Listen(tunnel C.Tunnel) error {
+	lc := m.ListenConfig()
+	for _, addr := range strings.Split(m.RawAddress(), ",") {
+		config := LC.AuthServer{
+			Enable:         true,
+			Listen:         addr,
+			AuthStore:      m.config.Users.GetAuthStore(),
+			Certificate:    m.config.Certificate,
+			PrivateKey:     m.config.PrivateKey,
+			ClientAuthType: m.config.ClientAuthType,
+			ClientAuthCert: m.config.ClientAuthCert,
+			EchKey:         m.config.EchKey,
+			RealityConfig:  m.config.RealityConfig.Build(),
+		}
+		l, err := mixed.NewWithConfig(config, lc, tunnel, m.Additions()...)
 		if err != nil {
 			return err
+		}
+		m.l = append(m.l, l)
+		if m.udp {
+			lUDP, err := socks.NewUDPWithConfig(config, lc, tunnel, m.Additions()...)
+			if err != nil {
+				return err
+			}
+			m.lUDP = append(m.lUDP, lUDP)
 		}
 	}
 	log.Infoln("Mixed(http+socks)[%s] proxy listening at: %s", m.Name(), m.Address())
@@ -68,22 +96,23 @@ func (m *Mixed) Listen(tcpIn chan<- C.ConnContext, udpIn chan<- C.PacketAdapter,
 
 // Close implements constant.InboundListener
 func (m *Mixed) Close() error {
-	var err error
-	if m.l != nil {
-		if tcpErr := m.l.Close(); tcpErr != nil {
-			err = tcpErr
+	var errs []error
+	for _, l := range m.l {
+		err := l.Close()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("close tcp listener %s err: %w", l.Address(), err))
 		}
 	}
-	if m.udp && m.lUDP != nil {
-		if udpErr := m.lUDP.Close(); udpErr != nil {
-			if err == nil {
-				err = udpErr
-			} else {
-				return fmt.Errorf("close tcp err: %s, close udp err: %s", err.Error(), udpErr.Error())
-			}
+	for _, l := range m.lUDP {
+		err := l.Close()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("close udp listener %s err: %w", l.Address(), err))
 		}
 	}
-	return err
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
 
 var _ C.InboundListener = (*Mixed)(nil)

@@ -4,15 +4,17 @@ import (
 	"context"
 	"errors"
 	"net"
-	"net/http"
 	"time"
 
-	"github.com/Dreamacro/clash/adapter/inbound"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/transport/socks5"
+	"github.com/metacubex/mihomo/adapter/inbound"
+	N "github.com/metacubex/mihomo/common/net"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/transport/socks5"
+
+	"github.com/metacubex/http"
 )
 
-func newClient(source net.Addr, in chan<- C.ConnContext, additions ...inbound.Addition) *http.Client {
+func newClient(srcConn net.Conn, tunnel C.Tunnel, additions []inbound.Addition) *http.Client { // additions using slice let caller can change its value (without size) after newClient return
 	return &http.Client{
 		Transport: &http.Transport{
 			// from http.DefaultTransport
@@ -20,6 +22,7 @@ func newClient(source net.Addr, in chan<- C.ConnContext, additions ...inbound.Ad
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
+			DisableCompression:    true, // prevents the Transport add "Accept-Encoding: gzip"
 			DialContext: func(context context.Context, network, address string) (net.Conn, error) {
 				if network != "tcp" && network != "tcp4" && network != "tcp6" {
 					return nil, errors.New("unsupported network " + network)
@@ -30,9 +33,9 @@ func newClient(source net.Addr, in chan<- C.ConnContext, additions ...inbound.Ad
 					return nil, socks5.ErrAddressNotSupported
 				}
 
-				left, right := net.Pipe()
+				left, right := N.Pipe()
 
-				in <- inbound.NewHTTP(dstAddr, source, right, additions...)
+				go tunnel.HandleTCPConn(inbound.NewHTTP(dstAddr, srcConn, right, additions...))
 
 				return left, nil
 			},

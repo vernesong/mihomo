@@ -1,9 +1,7 @@
 package core
 
 import (
-	"bytes"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -11,15 +9,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Dreamacro/clash/transport/hysteria/obfs"
-	"github.com/Dreamacro/clash/transport/hysteria/pmtud_fix"
-	"github.com/Dreamacro/clash/transport/hysteria/transport"
-	"github.com/Dreamacro/clash/transport/hysteria/utils"
+	"github.com/metacubex/mihomo/transport/hysteria/obfs"
+	"github.com/metacubex/mihomo/transport/hysteria/pmtud_fix"
+	"github.com/metacubex/mihomo/transport/hysteria/transport"
+	"github.com/metacubex/mihomo/transport/hysteria/utils"
 
-	"github.com/lunixbochs/struc"
 	"github.com/metacubex/quic-go"
 	"github.com/metacubex/quic-go/congestion"
-	"github.com/zhangyunhao116/fastrand"
+	"github.com/metacubex/randv2"
+	"github.com/metacubex/tls"
 )
 
 var (
@@ -41,7 +39,7 @@ type Client struct {
 	tlsConfig  *tls.Config
 	quicConfig *quic.Config
 
-	quicSession    quic.Connection
+	quicSession    *quic.Conn
 	reconnectMutex sync.Mutex
 	closed         bool
 
@@ -103,44 +101,36 @@ func (c *Client) connectToServer(dialer utils.PacketDialer) error {
 	return nil
 }
 
-func (c *Client) handleControlStream(qs quic.Connection, stream quic.Stream) (bool, string, error) {
-	// Send protocol version
-	_, err := stream.Write([]byte{protocolVersion})
-	if err != nil {
-		return false, "", err
-	}
+func (c *Client) handleControlStream(qs *quic.Conn, stream *quic.Stream) (bool, string, error) {
 	// Send client hello
-	err = struc.Pack(stream, &clientHello{
-		Rate: transmissionRate{
-			SendBPS: c.sendBPS,
-			RecvBPS: c.recvBPS,
-		},
-		Auth: c.auth,
+	err := WriteClientHello(stream, ClientHello{
+		SendBPS: c.sendBPS,
+		RecvBPS: c.recvBPS,
+		Auth:    c.auth,
 	})
 	if err != nil {
 		return false, "", err
 	}
 	// Receive server hello
-	var sh serverHello
-	err = struc.Unpack(stream, &sh)
+	sh, err := ReadServerHello(stream)
 	if err != nil {
 		return false, "", err
 	}
 	// Set the congestion accordingly
 	if sh.OK && c.congestionFactory != nil {
-		qs.SetCongestionControl(c.congestionFactory(sh.Rate.RecvBPS))
+		qs.SetCongestionControl(c.congestionFactory(sh.RecvBPS))
 	}
 	return sh.OK, sh.Message, nil
 }
 
-func (c *Client) handleMessage(qs quic.Connection) {
+func (c *Client) handleMessage(qs *quic.Conn) {
 	for {
-		msg, err := qs.ReceiveMessage(context.Background())
+		msg, err := qs.ReceiveDatagram(context.Background())
 		if err != nil {
 			break
 		}
 		var udpMsg udpMessage
-		err = struc.Unpack(bytes.NewBuffer(msg), &udpMsg)
+		err = udpMsg.Unpack(msg)
 		if err != nil {
 			continue
 		}
@@ -162,7 +152,7 @@ func (c *Client) handleMessage(qs quic.Connection) {
 	}
 }
 
-func (c *Client) openStreamWithReconnect(dialer utils.PacketDialer) (quic.Connection, quic.Stream, error) {
+func (c *Client) openStreamWithReconnect(dialer utils.PacketDialer) (*quic.Conn, *wrappedQUICStream, error) {
 	c.reconnectMutex.Lock()
 	defer c.reconnectMutex.Unlock()
 	if c.closed {
@@ -194,17 +184,13 @@ func (c *Client) openStreamWithReconnect(dialer utils.PacketDialer) (quic.Connec
 	return c.quicSession, &wrappedQUICStream{stream}, err
 }
 
-func (c *Client) DialTCP(addr string, dialer utils.PacketDialer) (net.Conn, error) {
-	host, port, err := utils.SplitHostPort(addr)
-	if err != nil {
-		return nil, err
-	}
+func (c *Client) DialTCP(host string, port uint16, dialer utils.PacketDialer) (net.Conn, error) {
 	session, stream, err := c.openStreamWithReconnect(dialer)
 	if err != nil {
 		return nil, err
 	}
 	// Send request
-	err = struc.Pack(stream, &clientRequest{
+	err = WriteClientRequest(stream, ClientRequest{
 		UDP:  false,
 		Host: host,
 		Port: port,
@@ -217,8 +203,8 @@ func (c *Client) DialTCP(addr string, dialer utils.PacketDialer) (net.Conn, erro
 	// and defer the response handling to the first Read() call
 	if !c.fastOpen {
 		// Read response
-		var sr serverResponse
-		err = struc.Unpack(stream, &sr)
+		var sr *ServerResponse
+		sr, err = ReadServerResponse(stream)
 		if err != nil {
 			_ = stream.Close()
 			return nil, err
@@ -243,16 +229,16 @@ func (c *Client) DialUDP(dialer utils.PacketDialer) (UDPConn, error) {
 		return nil, err
 	}
 	// Send request
-	err = struc.Pack(stream, &clientRequest{
-		UDP: true,
+	err = WriteClientRequest(stream, ClientRequest{
+		UDP: false,
 	})
 	if err != nil {
 		_ = stream.Close()
 		return nil, err
 	}
 	// Read response
-	var sr serverResponse
-	err = struc.Unpack(stream, &sr)
+	var sr *ServerResponse
+	sr, err = ReadServerResponse(stream)
 	if err != nil {
 		_ = stream.Close()
 		return nil, err
@@ -293,22 +279,29 @@ func (c *Client) DialUDP(dialer utils.PacketDialer) (UDPConn, error) {
 func (c *Client) Close() error {
 	c.reconnectMutex.Lock()
 	defer c.reconnectMutex.Unlock()
-	err := c.quicSession.CloseWithError(closeErrorCodeGeneric, "")
+	var err error
+	if c.quicSession != nil {
+		err = c.quicSession.CloseWithError(closeErrorCodeGeneric, "")
+	}
 	c.closed = true
 	return err
 }
 
 type quicConn struct {
-	Orig             quic.Stream
+	Orig             *wrappedQUICStream
 	PseudoLocalAddr  net.Addr
 	PseudoRemoteAddr net.Addr
 	Established      bool
 }
 
+func (w *quicConn) Upstream() any {
+	return w.Orig
+}
+
 func (w *quicConn) Read(b []byte) (n int, err error) {
 	if !w.Established {
-		var sr serverResponse
-		err := struc.Unpack(w.Orig, &sr)
+		var sr *ServerResponse
+		sr, err = ReadServerResponse(w.Orig)
 		if err != nil {
 			_ = w.Close()
 			return 0, err
@@ -361,8 +354,8 @@ type UDPConn interface {
 }
 
 type quicPktConn struct {
-	Session      quic.Connection
-	Stream       quic.Stream
+	Session      *quic.Conn
+	Stream       *wrappedQUICStream
 	CloseFunc    func()
 	UDPSessionID uint32
 	MsgCh        <-chan *udpMessage
@@ -402,18 +395,15 @@ func (c *quicPktConn) WriteTo(p []byte, addr string) error {
 		Data:      p,
 	}
 	// try no frag first
-	var msgBuf bytes.Buffer
-	_ = struc.Pack(&msgBuf, &msg)
-	err = c.Session.SendMessage(msgBuf.Bytes())
+	err = c.Session.SendDatagram(msg.Pack())
 	if err != nil {
-		if errSize, ok := err.(quic.ErrMessageTooLarge); ok {
+		var errSize *quic.DatagramTooLargeError
+		if errors.As(err, &errSize) {
 			// need to frag
-			msg.MsgID = uint16(fastrand.Intn(0xFFFF)) + 1 // msgID must be > 0 when fragCount > 1
-			fragMsgs := fragUDPMessage(msg, int(errSize))
+			msg.MsgID = uint16(randv2.IntN(0xFFFF)) + 1 // msgID must be > 0 when fragCount > 1
+			fragMsgs := fragUDPMessage(msg, int(errSize.MaxDatagramPayloadSize))
 			for _, fragMsg := range fragMsgs {
-				msgBuf.Reset()
-				_ = struc.Pack(&msgBuf, &fragMsg)
-				err = c.Session.SendMessage(msgBuf.Bytes())
+				err = c.Session.SendDatagram(fragMsg.Pack())
 				if err != nil {
 					return err
 				}

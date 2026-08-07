@@ -3,9 +3,10 @@ package mmdb
 import (
 	"fmt"
 	"net"
+	"strings"
 
+	"github.com/metacubex/mihomo/log"
 	"github.com/oschwald/maxminddb-golang"
-	"github.com/sagernet/sing/common"
 )
 
 type geoip2Country struct {
@@ -14,12 +15,26 @@ type geoip2Country struct {
 	} `maxminddb:"country"`
 }
 
-type Reader struct {
+type IPReader struct {
 	*maxminddb.Reader
 	databaseType
 }
 
-func (r Reader) LookupCode(ipAddress net.IP) []string {
+type ASNReader struct {
+	*maxminddb.Reader
+}
+
+type GeoLite2 struct {
+	AutonomousSystemNumber       uint32 `maxminddb:"autonomous_system_number"`
+	AutonomousSystemOrganization string `maxminddb:"autonomous_system_organization"`
+}
+
+type IPInfo struct {
+	ASN  string `maxminddb:"asn"`
+	Name string `maxminddb:"name"`
+}
+
+func (r IPReader) LookupCode(ipAddress net.IP) []string {
 	switch r.databaseType {
 	case typeMaxmind:
 		var country geoip2Country
@@ -27,7 +42,7 @@ func (r Reader) LookupCode(ipAddress net.IP) []string {
 		if country.Country.IsoCode == "" {
 			return []string{}
 		}
-		return []string{country.Country.IsoCode}
+		return []string{strings.ToLower(country.Country.IsoCode)}
 
 	case typeSing:
 		var code string
@@ -44,13 +59,31 @@ func (r Reader) LookupCode(ipAddress net.IP) []string {
 		case string:
 			return []string{record}
 		case []any: // lookup returned type of slice is []any
-			return common.Map(record, func(it any) string {
-				return it.(string)
-			})
+			result := make([]string, 0, len(record))
+			for _, item := range record {
+				result = append(result, item.(string))
+			}
+			return result
 		}
 		return []string{}
 
 	default:
 		panic(fmt.Sprint("unknown geoip database type:", r.databaseType))
 	}
+}
+
+func (r ASNReader) LookupASN(ip net.IP) (string, string) {
+	switch r.Metadata.DatabaseType {
+	case "GeoLite2-ASN", "DBIP-ASN-Lite (compat=GeoLite2-ASN)":
+		var result GeoLite2
+		_ = r.Lookup(ip, &result)
+		return fmt.Sprint(result.AutonomousSystemNumber), result.AutonomousSystemOrganization
+	case "ipinfo generic_asn_free.mmdb":
+		var result IPInfo
+		_ = r.Lookup(ip, &result)
+		return result.ASN[2:], result.Name
+	default:
+		log.Warnln("Unsupported ASN type: %s", r.Metadata.DatabaseType)
+	}
+	return "", ""
 }

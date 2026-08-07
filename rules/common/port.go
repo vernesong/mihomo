@@ -3,12 +3,12 @@ package common
 import (
 	"fmt"
 
-	"github.com/Dreamacro/clash/common/utils"
-	C "github.com/Dreamacro/clash/constant"
+	"github.com/metacubex/mihomo/common/utils"
+	C "github.com/metacubex/mihomo/constant"
 )
 
 type Port struct {
-	*Base
+	Base
 	adapter    string
 	port       string
 	ruleType   C.RuleType
@@ -19,7 +19,7 @@ func (p *Port) RuleType() C.RuleType {
 	return p.ruleType
 }
 
-func (p *Port) Match(metadata *C.Metadata) (bool, string) {
+func (p *Port) Match(metadata *C.Metadata, helper C.RuleMatchHelper) (bool, string) {
 	targetPort := metadata.DstPort
 	switch p.ruleType {
 	case C.InPort:
@@ -39,7 +39,7 @@ func (p *Port) Payload() string {
 }
 
 func NewPort(port string, adapter string, ruleType C.RuleType) (*Port, error) {
-	portRanges, err := utils.NewIntRanges[uint16](port)
+	portRanges, err := utils.NewUnsignedRanges[uint16](port)
 	if err != nil {
 		return nil, fmt.Errorf("%w, %w", errPayload, err)
 	}
@@ -49,7 +49,7 @@ func NewPort(port string, adapter string, ruleType C.RuleType) (*Port, error) {
 	}
 
 	return &Port{
-		Base:       &Base{},
+		Base:       Base{},
 		adapter:    adapter,
 		port:       port,
 		ruleType:   ruleType,

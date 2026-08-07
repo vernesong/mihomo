@@ -5,64 +5,61 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/sha512"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"net"
-	"net/http"
-	"reflect"
 	"strings"
 	"time"
-	"unsafe"
 
-	"github.com/Dreamacro/clash/common/utils"
-	"github.com/Dreamacro/clash/log"
-	"github.com/Dreamacro/clash/ntp"
+	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/ntp"
 
-	utls "github.com/sagernet/utls"
-	"github.com/zhangyunhao116/fastrand"
-	"golang.org/x/crypto/chacha20poly1305"
-	"golang.org/x/crypto/curve25519"
+	"github.com/metacubex/http"
+	"github.com/metacubex/randv2"
+	utls "github.com/metacubex/utls"
 	"golang.org/x/crypto/hkdf"
-	"golang.org/x/net/http2"
 )
 
 const RealityMaxShortIDLen = 8
 
 type RealityConfig struct {
-	PublicKey [curve25519.ScalarSize]byte
+	PublicKey *ecdh.PublicKey
 	ShortID   [RealityMaxShortIDLen]byte
+
+	SupportX25519MLKEM768 bool
 }
 
-//go:linkname aesgcmPreferred crypto/tls.aesgcmPreferred
-func aesgcmPreferred(ciphers []uint16) bool
-
-func GetRealityConn(ctx context.Context, conn net.Conn, ClientFingerprint string, tlsConfig *tls.Config, realityConfig *RealityConfig) (net.Conn, error) {
-	if fingerprint, exists := GetFingerprint(ClientFingerprint); exists {
+func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHelloID, serverName string, realityConfig *RealityConfig) (net.Conn, error) {
+	for retry := 0; ; retry++ {
 		verifier := &realityVerifier{
-			serverName: tlsConfig.ServerName,
+			serverName: serverName,
 		}
 		uConfig := &utls.Config{
-			ServerName:             tlsConfig.ServerName,
+			Time:                   ntp.Now,
+			ServerName:             serverName,
 			InsecureSkipVerify:     true,
 			SessionTicketsDisabled: true,
-			VerifyPeerCertificate:  verifier.VerifyPeerCertificate,
+			VerifyConnection:       verifier.VerifyConnection,
 		}
-		clientID := utls.ClientHelloID{
-			Client:  fingerprint.Client,
-			Version: fingerprint.Version,
-			Seed:    fingerprint.Seed,
-		}
-		uConn := utls.UClient(conn, uConfig, clientID)
+
+		uConn := utls.UClient(conn, uConfig, fingerprint)
 		verifier.UConn = uConn
 		err := uConn.BuildHandshakeState()
 		if err != nil {
 			return nil, err
+		}
+
+		if !realityConfig.SupportX25519MLKEM768 { // for X25519MLKEM768 does not work properly with the old reality server
+			err = BuildRemovedX25519MLKEM768HandshakeState(uConn)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		hello := uConn.HandshakeState.Hello
@@ -80,7 +77,29 @@ func GetRealityConn(ctx context.Context, conn net.Conn, ClientFingerprint string
 
 		//log.Debugln("REALITY hello.sessionId[:16]: %v", hello.SessionId[:16])
 
-		authKey := uConn.HandshakeState.State13.EcdheParams.SharedKey(realityConfig.PublicKey[:])
+		keyShareKeys := uConn.HandshakeState.State13.KeyShareKeys
+		if keyShareKeys == nil {
+			// WTF???
+			if retry > 2 {
+				return nil, errors.New("nil keyShareKeys")
+			}
+			continue // retry
+		}
+		ecdheKey := keyShareKeys.Ecdhe
+		if ecdheKey == nil {
+			ecdheKey = keyShareKeys.MlkemEcdhe
+		}
+		if ecdheKey == nil {
+			// WTF???
+			if retry > 2 {
+				return nil, errors.New("nil ecdheKey")
+			}
+			continue // retry
+		}
+		authKey, err := ecdheKey.ECDH(realityConfig.PublicKey)
+		if err != nil {
+			return nil, err
+		}
 		if authKey == nil {
 			return nil, errors.New("nil auth_key")
 		}
@@ -89,13 +108,8 @@ func GetRealityConn(ctx context.Context, conn net.Conn, ClientFingerprint string
 		if err != nil {
 			return nil, err
 		}
-		var aeadCipher cipher.AEAD
-		if aesgcmPreferred(hello.CipherSuites) {
-			aesBlock, _ := aes.NewCipher(authKey)
-			aeadCipher, _ = cipher.NewGCM(aesBlock)
-		} else {
-			aeadCipher, _ = chacha20poly1305.New(authKey)
-		}
+		aesBlock, _ := aes.NewCipher(authKey)
+		aeadCipher, _ := cipher.NewGCM(aesBlock)
 		aeadCipher.Seal(hello.SessionId[:0], hello.Random[20:], hello.SessionId[:16], hello.Raw)
 		copy(hello.Raw[39:], hello.SessionId)
 		//log.Debugln("REALITY hello.sessionId: %v", hello.SessionId)
@@ -109,33 +123,43 @@ func GetRealityConn(ctx context.Context, conn net.Conn, ClientFingerprint string
 		log.Debugln("REALITY Authentication: %v, AEAD: %T", verifier.verified, aeadCipher)
 
 		if !verifier.verified {
-			go realityClientFallback(uConn, uConfig.ServerName, clientID)
+			go realityClientFallback(uConn, uConfig.ServerName, fingerprint)
 			return nil, errors.New("REALITY authentication failed")
 		}
 
 		return uConn, nil
 	}
-	return nil, errors.New("unknown uTLS fingerprint")
 }
 
 func realityClientFallback(uConn net.Conn, serverName string, fingerprint utls.ClientHelloID) {
 	defer uConn.Close()
+	// use h2c mode to disallow the net/http fallback to http1.1
+	//
+	// Note that this usage is only applicable to our own net/http fork.
+	// The standard library also needs to mask the tls.Conn type for the conn returned by DialTLSContext
+	// see: https://github.com/golang/go/issues/79293#issuecomment-4426393534
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
 	client := http.Client{
-		Transport: &http2.Transport{
-			DialTLSContext: func(ctx context.Context, network, addr string, config *tls.Config) (net.Conn, error) {
+		Transport: &http.Transport{
+			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return uConn, nil
 			},
+			Protocols: protocols,
 		},
 	}
-	request, _ := http.NewRequest("GET", "https://"+serverName, nil)
+	request, err := http.NewRequest("GET", "https://"+serverName, nil)
+	if err != nil {
+		return
+	}
 	request.Header.Set("User-Agent", fingerprint.Client)
-	request.AddCookie(&http.Cookie{Name: "padding", Value: strings.Repeat("0", fastrand.Intn(32)+30)})
+	request.AddCookie(&http.Cookie{Name: "padding", Value: strings.Repeat("0", randv2.IntN(32)+30)})
 	response, err := client.Do(request)
 	if err != nil {
 		return
 	}
 	//_, _ = io.Copy(io.Discard, response.Body)
-	time.Sleep(time.Duration(5+fastrand.Int63n(10)) * time.Second)
+	time.Sleep(time.Duration(5+randv2.IntN(10)) * time.Second)
 	response.Body.Close()
 	client.CloseIdleConnections()
 }
@@ -147,11 +171,9 @@ type realityVerifier struct {
 	verified   bool
 }
 
-var pOffset = utils.MustOK(reflect.TypeOf((*utls.Conn)(nil)).Elem().FieldByName("peerCertificates")).Offset
-
-func (c *realityVerifier) VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-	//p, _ := reflect.TypeOf(c.Conn).Elem().FieldByName("peerCertificates")
-	certs := *(*[]*x509.Certificate)(unsafe.Add(unsafe.Pointer(c.Conn), pOffset))
+func (c *realityVerifier) VerifyConnection(state utls.ConnectionState) error {
+	log.Debugln("REALITY localAddr: %v is using X25519MLKEM768 for TLS' communication: %v", c.RemoteAddr(), c.HandshakeState.ServerHello.ServerShare.Group == utls.X25519MLKEM768)
+	certs := state.PeerCertificates
 	if pub, ok := certs[0].PublicKey.(ed25519.PublicKey); ok {
 		h := hmac.New(sha512.New, c.authKey)
 		h.Write(pub)
@@ -163,6 +185,7 @@ func (c *realityVerifier) VerifyPeerCertificate(rawCerts [][]byte, verifiedChain
 	opts := x509.VerifyOptions{
 		DNSName:       c.serverName,
 		Intermediates: x509.NewCertPool(),
+		CurrentTime:   ntp.Now(),
 	}
 	for _, cert := range certs[1:] {
 		opts.Intermediates.AddCert(cert)

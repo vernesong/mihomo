@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	L "github.com/sagernet/sing/common/logger"
+	L "github.com/metacubex/sing/common/logger"
 )
 
 type singLogger struct{}
@@ -65,4 +65,17 @@ func (l singLogger) Panic(args ...any) {
 	Fatalln(fmt.Sprint(args...))
 }
 
+type singInfoToDebugLogger struct {
+	singLogger
+}
+
+func (l singInfoToDebugLogger) InfoContext(ctx context.Context, args ...any) {
+	Debugln(fmt.Sprint(args...))
+}
+
+func (l singInfoToDebugLogger) Info(args ...any) {
+	Debugln(fmt.Sprint(args...))
+}
+
 var SingLogger L.ContextLogger = singLogger{}
+var SingInfoToDebugLogger L.ContextLogger = singInfoToDebugLogger{}

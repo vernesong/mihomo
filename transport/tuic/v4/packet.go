@@ -5,23 +5,23 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Dreamacro/clash/common/atomic"
-	N "github.com/Dreamacro/clash/common/net"
-	"github.com/Dreamacro/clash/common/pool"
-	"github.com/Dreamacro/clash/transport/tuic/common"
+	"github.com/metacubex/mihomo/common/atomic"
+	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/common/pool"
+	"github.com/metacubex/mihomo/transport/tuic/types"
 
 	"github.com/metacubex/quic-go"
 )
 
 type quicStreamPacketConn struct {
 	connId    uint32
-	quicConn  quic.Connection
+	quicConn  *quic.Conn
 	inputConn *N.BufferedConn
 
-	udpRelayMode          common.UdpRelayMode
+	udpRelayMode          types.UdpRelayMode
 	maxUdpRelayPacketSize int
 
-	deferQuicConnFn func(quicConn quic.Connection, err error)
+	deferQuicConnFn func(quicConn *quic.Conn, err error)
 	closeDeferFn    func()
 	writeClosed     *atomic.Bool
 
@@ -57,7 +57,7 @@ func (q *quicStreamPacketConn) close() (err error) {
 		if err != nil {
 			return
 		}
-		var stream quic.SendStream
+		var stream *quic.SendStream
 		stream, err = q.quicConn.OpenUniStream()
 		if err != nil {
 			return
@@ -122,8 +122,8 @@ func (q *quicStreamPacketConn) WaitReadFrom() (data []byte, put func(), addr net
 }
 
 func (q *quicStreamPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	if q.udpRelayMode != common.QUIC && len(p) > q.maxUdpRelayPacketSize {
-		return 0, quic.ErrMessageTooLarge(q.maxUdpRelayPacketSize)
+	if q.udpRelayMode != types.QUIC && len(p) > q.maxUdpRelayPacketSize {
+		return 0, &quic.DatagramTooLargeError{MaxDatagramPayloadSize: int64(q.maxUdpRelayPacketSize)}
 	}
 	if q.closed {
 		return 0, net.ErrClosed
@@ -148,8 +148,8 @@ func (q *quicStreamPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err erro
 		return
 	}
 	switch q.udpRelayMode {
-	case common.QUIC:
-		var stream quic.SendStream
+	case types.QUIC:
+		var stream *quic.SendStream
 		stream, err = q.quicConn.OpenUniStream()
 		if err != nil {
 			return
@@ -161,7 +161,7 @@ func (q *quicStreamPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err erro
 		}
 	default: // native
 		data := buf.Bytes()
-		err = q.quicConn.SendMessage(data)
+		err = q.quicConn.SendDatagram(data)
 		if err != nil {
 			return
 		}

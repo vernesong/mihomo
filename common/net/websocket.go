@@ -1,6 +1,8 @@
 package net
 
 import (
+	"crypto/sha1"
+	"encoding/base64"
 	"encoding/binary"
 	"math/bits"
 )
@@ -128,4 +130,14 @@ func MaskWebSocket(key uint32, b []byte) uint32 {
 	}
 
 	return key
+}
+
+func GetWebSocketSecAccept(secKey string) string {
+	const magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	const nonceSize = 24 // base64.StdEncoding.EncodedLen(nonceKeySize)
+	p := make([]byte, nonceSize+len(magic))
+	copy(p[:nonceSize], secKey)
+	copy(p[nonceSize:], magic)
+	sum := sha1.Sum(p)
+	return base64.StdEncoding.EncodeToString(sum[:])
 }

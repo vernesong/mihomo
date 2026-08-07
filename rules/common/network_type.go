@@ -2,19 +2,20 @@ package common
 
 import (
 	"fmt"
-	C "github.com/Dreamacro/clash/constant"
 	"strings"
+
+	C "github.com/metacubex/mihomo/constant"
 )
 
 type NetworkType struct {
-	*Base
+	Base
 	network C.NetWork
 	adapter string
 }
 
 func NewNetworkType(network, adapter string) (*NetworkType, error) {
 	ntType := NetworkType{
-		Base: &Base{},
+		Base: Base{},
 	}
 
 	ntType.adapter = adapter
@@ -34,7 +35,7 @@ func (n *NetworkType) RuleType() C.RuleType {
 	return C.Network
 }
 
-func (n *NetworkType) Match(metadata *C.Metadata) (bool, string) {
+func (n *NetworkType) Match(metadata *C.Metadata, helper C.RuleMatchHelper) (bool, string) {
 	return n.network == metadata.NetWork, n.adapter
 }
 
@@ -45,3 +46,5 @@ func (n *NetworkType) Adapter() string {
 func (n *NetworkType) Payload() string {
 	return n.network.String()
 }
+
+var _ C.Rule = (*NetworkType)(nil)

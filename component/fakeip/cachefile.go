@@ -3,50 +3,36 @@ package fakeip
 import (
 	"net/netip"
 
-	"github.com/Dreamacro/clash/component/profile/cachefile"
+	"github.com/metacubex/mihomo/component/profile/cachefile"
 )
 
 type cachefileStore struct {
-	cache *cachefile.CacheFile
+	cache *cachefile.FakeIpStore
 }
 
 // GetByHost implements store.GetByHost
 func (c *cachefileStore) GetByHost(host string) (netip.Addr, bool) {
-	elm := c.cache.GetFakeip([]byte(host))
-	if elm == nil {
-		return netip.Addr{}, false
-	}
-
-	if len(elm) == 4 {
-		return netip.AddrFrom4(*(*[4]byte)(elm)), true
-	} else {
-		return netip.AddrFrom16(*(*[16]byte)(elm)), true
-	}
+	return c.cache.GetByHost(host)
 }
 
 // PutByHost implements store.PutByHost
 func (c *cachefileStore) PutByHost(host string, ip netip.Addr) {
-	c.cache.PutFakeip([]byte(host), ip.AsSlice())
+	c.cache.PutByHost(host, ip)
 }
 
 // GetByIP implements store.GetByIP
 func (c *cachefileStore) GetByIP(ip netip.Addr) (string, bool) {
-	elm := c.cache.GetFakeip(ip.AsSlice())
-	if elm == nil {
-		return "", false
-	}
-	return string(elm), true
+	return c.cache.GetByIP(ip)
 }
 
 // PutByIP implements store.PutByIP
 func (c *cachefileStore) PutByIP(ip netip.Addr, host string) {
-	c.cache.PutFakeip(ip.AsSlice(), []byte(host))
+	c.cache.PutByIP(ip, host)
 }
 
 // DelByIP implements store.DelByIP
 func (c *cachefileStore) DelByIP(ip netip.Addr) {
-	addr := ip.AsSlice()
-	c.cache.DelFakeipPair(addr, c.cache.GetFakeip(addr))
+	c.cache.DelByIP(ip)
 }
 
 // Exist implements store.Exist
@@ -62,4 +48,12 @@ func (c *cachefileStore) CloneTo(store store) {}
 // FlushFakeIP implements store.FlushFakeIP
 func (c *cachefileStore) FlushFakeIP() error {
 	return c.cache.FlushFakeIP()
+}
+
+func newCachefileStore(cache *cachefile.CacheFile, prefix netip.Prefix) *cachefileStore {
+	if prefix.Addr().Is6() {
+		return &cachefileStore{cache.FakeIpStore6()}
+	} else {
+		return &cachefileStore{cache.FakeIpStore()}
+	}
 }

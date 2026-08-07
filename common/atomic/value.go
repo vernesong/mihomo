@@ -5,37 +5,50 @@ import (
 	"sync/atomic"
 )
 
-func DefaultValue[T any]() T {
-	var defaultValue T
-	return defaultValue
-}
-
 type TypedValue[T any] struct {
-	value atomic.Value
+	value atomic.Pointer[T]
 }
 
-func (t *TypedValue[T]) Load() T {
+func (t *TypedValue[T]) Load() (v T) {
+	v, _ = t.LoadOk()
+	return
+}
+
+func (t *TypedValue[T]) LoadOk() (v T, ok bool) {
 	value := t.value.Load()
 	if value == nil {
-		return DefaultValue[T]()
+		return
 	}
-	return value.(T)
+	return *value, true
 }
 
 func (t *TypedValue[T]) Store(value T) {
-	t.value.Store(value)
+	t.value.Store(&value)
 }
 
-func (t *TypedValue[T]) Swap(new T) T {
-	old := t.value.Swap(new)
+func (t *TypedValue[T]) Swap(new T) (v T) {
+	old := t.value.Swap(&new)
 	if old == nil {
-		return DefaultValue[T]()
+		return
 	}
-	return old.(T)
+	return *old
 }
 
 func (t *TypedValue[T]) CompareAndSwap(old, new T) bool {
-	return t.value.CompareAndSwap(old, new)
+	for {
+		currentP := t.value.Load()
+		var currentValue T
+		if currentP != nil {
+			currentValue = *currentP
+		}
+		// Compare old and current via runtime equality check.
+		if any(currentValue) != any(old) {
+			return false
+		}
+		if t.value.CompareAndSwap(currentP, &new) {
+			return true
+		}
+	}
 }
 
 func (t *TypedValue[T]) MarshalJSON() ([]byte, error) {
@@ -51,8 +64,36 @@ func (t *TypedValue[T]) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-func NewTypedValue[T any](t T) *TypedValue[T] {
-	v := &TypedValue[T]{}
+func (t *TypedValue[T]) MarshalYAML() (any, error) {
+	return t.Load(), nil
+}
+
+func (t *TypedValue[T]) UnmarshalYAML(unmarshal func(any) error) error {
+	var v T
+	if err := unmarshal(&v); err != nil {
+		return err
+	}
+	t.Store(v)
+	return nil
+}
+
+func NewTypedValue[T any](t T) (v TypedValue[T]) {
 	v.Store(t)
-	return v
+	return
+}
+
+// TypedValue[map[K]V]
+func (t *TypedValue[T]) Update(f func(old T) (new T)) {
+	for {
+		currentP := t.value.Load()
+		var old T
+		if currentP != nil {
+			old = *currentP
+		}
+
+		newValue := f(old)
+		if t.value.CompareAndSwap(currentP, &newValue) {
+			return
+		}
+	}
 }

@@ -4,16 +4,17 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
 	"sync"
-	"time"
 
-	"github.com/Dreamacro/clash/common/pool"
-	"github.com/Dreamacro/clash/log"
-	"github.com/Dreamacro/clash/transport/shadowsocks/core"
+	"github.com/metacubex/mihomo/common/pool"
+	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/ntp"
+	"github.com/metacubex/mihomo/transport/shadowsocks/core"
 
-	"github.com/zhangyunhao116/fastrand"
+	"github.com/metacubex/randv2"
 )
 
 type Base struct {
@@ -38,8 +39,8 @@ func (a *authData) next() *authData {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 	if a.connectionID > 0xff000000 || a.connectionID == 0 {
-		fastrand.Read(a.clientID[:])
-		a.connectionID = fastrand.Uint32() & 0xffffff
+		rand.Read(a.clientID[:])
+		a.connectionID = randv2.Uint32() & 0xffffff
 	}
 	a.connectionID++
 	copy(r.clientID[:], a.clientID[:])
@@ -48,7 +49,7 @@ func (a *authData) next() *authData {
 }
 
 func (a *authData) putAuthData(buf *bytes.Buffer) {
-	binary.Write(buf, binary.LittleEndian, uint32(time.Now().Unix()))
+	binary.Write(buf, binary.LittleEndian, uint32(ntp.Now().Unix()))
 	buf.Write(a.clientID[:])
 	binary.Write(buf, binary.LittleEndian, a.connectionID)
 }
@@ -56,7 +57,7 @@ func (a *authData) putAuthData(buf *bytes.Buffer) {
 func (a *authData) putEncryptedData(b *bytes.Buffer, userKey []byte, paddings [2]int, salt string) error {
 	encrypt := pool.Get(16)
 	defer pool.Put(encrypt)
-	binary.LittleEndian.PutUint32(encrypt, uint32(time.Now().Unix()))
+	binary.LittleEndian.PutUint32(encrypt, uint32(ntp.Now().Unix()))
 	copy(encrypt[4:], a.clientID[:])
 	binary.LittleEndian.PutUint32(encrypt[8:], a.connectionID)
 	binary.LittleEndian.PutUint16(encrypt[12:], uint16(paddings[0]))

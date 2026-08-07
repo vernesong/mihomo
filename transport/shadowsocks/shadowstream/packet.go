@@ -6,8 +6,8 @@ import (
 	"io"
 	"net"
 
-	N "github.com/Dreamacro/clash/common/net"
-	"github.com/Dreamacro/clash/common/pool"
+	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/common/pool"
 )
 
 // ErrShortPacket means the packet is too short to be a valid encrypted packet.
@@ -27,6 +27,18 @@ func Pack(dst, plaintext []byte, s Cipher) ([]byte, error) {
 	}
 	s.Encrypter(iv).XORKeyStream(dst[len(iv):], plaintext)
 	return dst[:len(iv)+len(plaintext)], nil
+}
+
+// UnpackInplace decrypts pkt using stream cipher s.
+// Returns a slice of pkt containing decrypted plaintext.
+// Note: The data in the input dst will be changed
+func UnpackInplace(pkt []byte, s Cipher) ([]byte, error) {
+	if len(pkt) < s.IVSize() {
+		return nil, ErrShortPacket
+	}
+	iv, dst := pkt[:s.IVSize()], pkt[s.IVSize():]
+	s.Decrypter(iv).XORKeyStream(dst, dst)
+	return dst, nil
 }
 
 // Unpack decrypts pkt using stream cipher s.
@@ -71,7 +83,7 @@ func (c *PacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	if err != nil {
 		return n, addr, err
 	}
-	bb, err := Unpack(b[c.IVSize():], b[:n], c.Cipher)
+	bb, err := UnpackInplace(b[:n], c.Cipher)
 	if err != nil {
 		return n, addr, err
 	}
@@ -84,7 +96,7 @@ func (c *PacketConn) WaitReadFrom() (data []byte, put func(), addr net.Addr, err
 	if err != nil {
 		return
 	}
-	data, err = Unpack(data[c.IVSize():], data, c)
+	data, err = UnpackInplace(data, c.Cipher)
 	if err != nil {
 		if put != nil {
 			put()

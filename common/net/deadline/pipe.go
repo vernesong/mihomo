@@ -9,24 +9,24 @@ import (
 	"time"
 )
 
-// pipeDeadline is an abstraction for handling timeouts.
-type pipeDeadline struct {
+// PipeDeadline is an abstraction for handling timeouts.
+type PipeDeadline struct {
 	mu     sync.Mutex // Guards timer and cancel
 	timer  *time.Timer
 	cancel chan struct{} // Must be non-nil
 }
 
-func makePipeDeadline() pipeDeadline {
-	return pipeDeadline{cancel: make(chan struct{})}
+func MakePipeDeadline() PipeDeadline {
+	return PipeDeadline{cancel: make(chan struct{})}
 }
 
-// set sets the point in time when the deadline will time out.
+// Set sets the point in time when the deadline will time out.
 // A timeout event is signaled by closing the channel returned by waiter.
 // Once a timeout has occurred, the deadline can be refreshed by specifying a
 // t value in the future.
 //
 // A zero value for t prevents timeout.
-func (d *pipeDeadline) set(t time.Time) {
+func (d *PipeDeadline) Set(t time.Time) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -61,8 +61,8 @@ func (d *pipeDeadline) set(t time.Time) {
 	}
 }
 
-// wait returns a channel that is closed when the deadline is exceeded.
-func (d *pipeDeadline) wait() chan struct{} {
+// Wait returns a channel that is closed when the deadline is exceeded.
+func (d *PipeDeadline) Wait() chan struct{} {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.cancel

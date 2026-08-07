@@ -20,7 +20,7 @@ import (
 	"github.com/metacubex/gopacket"
 	"github.com/metacubex/gopacket/layers"
 
-	"github.com/Dreamacro/clash/component/dialer"
+	"github.com/metacubex/mihomo/component/dialer"
 )
 
 var (
@@ -404,8 +404,14 @@ func Dial(network, address string) (*TCPConn, error) {
 
 	var lTcpAddr *net.TCPAddr
 	var lIpAddr *net.IPAddr
-	if ifaceName := dialer.DefaultInterface.Load(); len(ifaceName) > 0 {
-		rAddrPort := raddr.AddrPort()
+	rAddrPort := raddr.AddrPort()
+	ifaceName := dialer.DefaultInterface.Load()
+	if ifaceName == "" {
+		if finder := dialer.DefaultInterfaceFinder.Load(); finder != nil {
+			ifaceName = finder.FindInterfaceName(rAddrPort.Addr().Unmap())
+		}
+	}
+	if len(ifaceName) > 0 {
 		addr, err := dialer.LookupLocalAddrFromIfaceName(ifaceName, network, rAddrPort.Addr(), int(rAddrPort.Port()))
 		if err != nil {
 			return nil, err

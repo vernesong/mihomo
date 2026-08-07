@@ -1,17 +1,23 @@
 package dns
 
 import (
+	"errors"
 	"net/netip"
 
-	"github.com/Dreamacro/clash/common/cache"
-	"github.com/Dreamacro/clash/component/fakeip"
-	C "github.com/Dreamacro/clash/constant"
+	"github.com/metacubex/mihomo/common/lru"
+	"github.com/metacubex/mihomo/component/fakeip"
+	C "github.com/metacubex/mihomo/constant"
 )
 
 type ResolverEnhancer struct {
-	mode     C.DNSMode
-	fakePool *fakeip.Pool
-	mapping  *cache.LruCache[netip.Addr, string]
+	ipv6          bool
+	mode          C.DNSMode
+	fakeIPPool    *fakeip.Pool
+	fakeIPPool6   *fakeip.Pool
+	fakeIPSkipper *fakeip.Skipper
+	fakeIPTTL     int
+	mapping       *lru.LruCache[netip.Addr, string]
+	useHosts      bool
 }
 
 func (h *ResolverEnhancer) FakeIPEnabled() bool {
@@ -27,8 +33,16 @@ func (h *ResolverEnhancer) IsExistFakeIP(ip netip.Addr) bool {
 		return false
 	}
 
-	if pool := h.fakePool; pool != nil {
-		return pool.Exist(ip)
+	if pool := h.fakeIPPool; pool != nil {
+		if pool.Exist(ip) {
+			return true
+		}
+	}
+
+	if pool6 := h.fakeIPPool6; pool6 != nil {
+		if pool6.Exist(ip) {
+			return true
+		}
 	}
 
 	return false
@@ -39,8 +53,16 @@ func (h *ResolverEnhancer) IsFakeIP(ip netip.Addr) bool {
 		return false
 	}
 
-	if pool := h.fakePool; pool != nil {
-		return pool.IPNet().Contains(ip) && ip != pool.Gateway() && ip != pool.Broadcast()
+	if pool := h.fakeIPPool; pool != nil {
+		if pool.IPNet().Contains(ip) && ip != pool.Gateway() && ip != pool.Broadcast() {
+			return true
+		}
+	}
+
+	if pool6 := h.fakeIPPool6; pool6 != nil {
+		if pool6.IPNet().Contains(ip) && ip != pool6.Gateway() && ip != pool6.Broadcast() {
+			return true
+		}
 	}
 
 	return false
@@ -51,16 +73,30 @@ func (h *ResolverEnhancer) IsFakeBroadcastIP(ip netip.Addr) bool {
 		return false
 	}
 
-	if pool := h.fakePool; pool != nil {
-		return pool.Broadcast() == ip
+	if pool := h.fakeIPPool; pool != nil {
+		if pool.Broadcast() == ip {
+			return true
+		}
+	}
+
+	if pool6 := h.fakeIPPool6; pool6 != nil {
+		if pool6.Broadcast() == ip {
+			return true
+		}
 	}
 
 	return false
 }
 
 func (h *ResolverEnhancer) FindHostByIP(ip netip.Addr) (string, bool) {
-	if pool := h.fakePool; pool != nil {
+	if pool := h.fakeIPPool; pool != nil {
 		if host, existed := pool.LookBack(ip); existed {
+			return host, true
+		}
+	}
+
+	if pool6 := h.fakeIPPool6; pool6 != nil {
+		if host, existed := pool6.LookBack(ip); existed {
 			return host, true
 		}
 	}
@@ -81,8 +117,19 @@ func (h *ResolverEnhancer) InsertHostByIP(ip netip.Addr, host string) {
 }
 
 func (h *ResolverEnhancer) FlushFakeIP() error {
-	if h.fakePool != nil {
-		return h.fakePool.FlushFakeIP()
+	var errs []error
+	if pool := h.fakeIPPool; pool != nil {
+		if err := pool.FlushFakeIP(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if pool6 := h.fakeIPPool6; pool6 != nil {
+		if err := pool6.FlushFakeIP(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 	return nil
 }
@@ -92,29 +139,54 @@ func (h *ResolverEnhancer) PatchFrom(o *ResolverEnhancer) {
 		o.mapping.CloneTo(h.mapping)
 	}
 
-	if h.fakePool != nil && o.fakePool != nil {
-		h.fakePool.CloneFrom(o.fakePool)
+	if h.fakeIPPool != nil && o.fakeIPPool != nil {
+		h.fakeIPPool.CloneFrom(o.fakeIPPool)
+	}
+
+	if h.fakeIPPool6 != nil && o.fakeIPPool6 != nil {
+		h.fakeIPPool6.CloneFrom(o.fakeIPPool6)
 	}
 }
 
 func (h *ResolverEnhancer) StoreFakePoolState() {
-	if h.fakePool != nil {
-		h.fakePool.StoreState()
+	if h.fakeIPPool != nil {
+		h.fakeIPPool.StoreState()
+	}
+
+	if h.fakeIPPool6 != nil {
+		h.fakeIPPool6.StoreState()
 	}
 }
 
-func NewEnhancer(cfg Config) *ResolverEnhancer {
-	var fakePool *fakeip.Pool
-	var mapping *cache.LruCache[netip.Addr, string]
+type EnhancerConfig struct {
+	IPv6          bool
+	EnhancedMode  C.DNSMode
+	FakeIPPool    *fakeip.Pool
+	FakeIPPool6   *fakeip.Pool
+	FakeIPSkipper *fakeip.Skipper
+	FakeIPTTL     int
+	UseHosts      bool
+}
+
+func NewEnhancer(cfg EnhancerConfig) *ResolverEnhancer {
+	e := &ResolverEnhancer{
+		ipv6:     cfg.IPv6,
+		mode:     cfg.EnhancedMode,
+		useHosts: cfg.UseHosts,
+	}
 
 	if cfg.EnhancedMode != C.DNSNormal {
-		fakePool = cfg.Pool
-		mapping = cache.New(cache.WithSize[netip.Addr, string](4096))
+		e.fakeIPPool = cfg.FakeIPPool
+		if cfg.IPv6 {
+			e.fakeIPPool6 = cfg.FakeIPPool6
+		}
+		e.fakeIPSkipper = cfg.FakeIPSkipper
+		e.fakeIPTTL = cfg.FakeIPTTL
+		if e.fakeIPTTL < 1 {
+			e.fakeIPTTL = 1
+		}
+		e.mapping = lru.New(lru.WithSize[netip.Addr, string](4096))
 	}
 
-	return &ResolverEnhancer{
-		mode:     cfg.EnhancedMode,
-		fakePool: fakePool,
-		mapping:  mapping,
-	}
+	return e
 }

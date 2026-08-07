@@ -1,12 +1,14 @@
 package tproxy
 
 import (
+	"context"
 	"net"
 
-	"github.com/Dreamacro/clash/adapter/inbound"
-	N "github.com/Dreamacro/clash/common/net"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/transport/socks5"
+	"github.com/metacubex/mihomo/adapter/inbound"
+	"github.com/metacubex/mihomo/component/keepalive"
+	"github.com/metacubex/mihomo/component/mptcp"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/transport/socks5"
 )
 
 type Listener struct {
@@ -31,20 +33,26 @@ func (l *Listener) Close() error {
 	return l.listener.Close()
 }
 
-func (l *Listener) handleTProxy(conn net.Conn, in chan<- C.ConnContext, additions ...inbound.Addition) {
+func (l *Listener) handleTProxy(conn net.Conn, tunnel C.Tunnel, additions ...inbound.Addition) {
 	target := socks5.ParseAddrToSocksAddr(conn.LocalAddr())
-	N.TCPKeepAlive(conn)
-	in <- inbound.NewSocket(target, conn, C.TPROXY, additions...)
+	keepalive.TCPKeepAlive(conn)
+	// TProxy's conn.LocalAddr() is target address, so we set from l.listener
+	additions = append([]inbound.Addition{inbound.WithInAddr(l.listener.Addr())}, additions...)
+	tunnel.HandleTCPConn(inbound.NewSocket(target, conn, C.TPROXY, additions...))
 }
 
-func New(addr string, in chan<- C.ConnContext, additions ...inbound.Addition) (*Listener, error) {
+func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {
 	if len(additions) == 0 {
 		additions = []inbound.Addition{
 			inbound.WithInName("DEFAULT-TPROXY"),
 			inbound.WithSpecialRules(""),
 		}
 	}
-	l, err := net.Listen("tcp", addr)
+	// Golang will then enable mptcp support for listeners by default when the major version of go.mod is 1.24 or higher.
+	// This can cause tproxy to malfunction on certain Linux kernel versions, so we force to disable mptcp for tproxy.
+	lc := net.ListenConfig{}
+	mptcp.SetNetListenConfig(&lc, false)
+	l, err := lc.Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +82,7 @@ func New(addr string, in chan<- C.ConnContext, additions ...inbound.Addition) (*
 				}
 				continue
 			}
-			go rl.handleTProxy(c, in, additions...)
+			go rl.handleTProxy(c, tunnel, additions...)
 		}
 	}()
 

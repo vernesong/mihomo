@@ -4,47 +4,48 @@ import (
 	"os"
 	"time"
 
-	"github.com/Dreamacro/clash/common/atomic"
-
-	"github.com/puzpuzpuz/xsync/v2"
-	"github.com/shirou/gopsutil/v3/process"
+	"github.com/metacubex/mihomo/common/atomic"
+	"github.com/metacubex/mihomo/common/xsync"
+	"github.com/metacubex/mihomo/component/memory"
 )
 
 var DefaultManager *Manager
 
 func init() {
 	DefaultManager = &Manager{
-		connections:   xsync.NewMapOf[Tracker](),
 		uploadTemp:    atomic.NewInt64(0),
 		downloadTemp:  atomic.NewInt64(0),
 		uploadBlip:    atomic.NewInt64(0),
 		downloadBlip:  atomic.NewInt64(0),
 		uploadTotal:   atomic.NewInt64(0),
 		downloadTotal: atomic.NewInt64(0),
-		process:       &process.Process{Pid: int32(os.Getpid())},
+		pid:           int32(os.Getpid()),
 	}
 
 	go DefaultManager.handle()
 }
 
 type Manager struct {
-	connections   *xsync.MapOf[string, Tracker]
-	uploadTemp    *atomic.Int64
-	downloadTemp  *atomic.Int64
-	uploadBlip    *atomic.Int64
-	downloadBlip  *atomic.Int64
-	uploadTotal   *atomic.Int64
-	downloadTotal *atomic.Int64
-	process       *process.Process
+	connections   xsync.Map[string, Tracker]
+	smartTarget   xsync.Map[string, *xsync.Map[string, bool]]
+	uploadTemp    atomic.Int64
+	downloadTemp  atomic.Int64
+	uploadBlip    atomic.Int64
+	downloadBlip  atomic.Int64
+	uploadTotal   atomic.Int64
+	downloadTotal atomic.Int64
+	pid           int32
 	memory        uint64
 }
 
 func (m *Manager) Join(c Tracker) {
 	m.connections.Store(c.ID(), c)
+	m.joinSmartTarget(c)
 }
 
 func (m *Manager) Leave(c Tracker) {
 	m.connections.Delete(c.ID())
+	m.leaveSmartTarget(c)
 }
 
 func (m *Manager) Get(id string) (c Tracker) {
@@ -74,6 +75,10 @@ func (m *Manager) Now() (up int64, down int64) {
 	return m.uploadBlip.Load(), m.downloadBlip.Load()
 }
 
+func (m *Manager) Total() (up, down int64) {
+	return m.uploadTotal.Load(), m.downloadTotal.Load()
+}
+
 func (m *Manager) Memory() uint64 {
 	m.updateMemory()
 	return m.memory
@@ -94,7 +99,7 @@ func (m *Manager) Snapshot() *Snapshot {
 }
 
 func (m *Manager) updateMemory() {
-	stat, err := m.process.MemoryInfo()
+	stat, err := memory.GetMemoryInfo(m.pid)
 	if err != nil {
 		return
 	}
@@ -114,10 +119,8 @@ func (m *Manager) handle() {
 	ticker := time.NewTicker(time.Second)
 
 	for range ticker.C {
-		m.uploadBlip.Store(m.uploadTemp.Load())
-		m.uploadTemp.Store(0)
-		m.downloadBlip.Store(m.downloadTemp.Load())
-		m.downloadTemp.Store(0)
+		m.uploadBlip.Store(m.uploadTemp.Swap(0))
+		m.downloadBlip.Store(m.downloadTemp.Swap(0))
 	}
 }
 
@@ -127,3 +130,50 @@ type Snapshot struct {
 	Connections   []*TrackerInfo `json:"connections"`
 	Memory        uint64         `json:"memory"`
 }
+
+func (m *Manager) joinSmartTarget(c Tracker) {
+	info := c.Info()
+	target := info.Metadata.SmartTarget
+
+	if target == "" {
+		return
+	}
+
+	id := c.ID()
+
+	result, _ := m.smartTarget.LoadOrStoreFn(target, func() *xsync.Map[string, bool] {
+		return xsync.NewMap[string, bool]()
+	})
+	result.Store(id, true)
+}
+
+func (m *Manager) leaveSmartTarget(c Tracker) {
+	info := c.Info()
+	target := info.Metadata.SmartTarget
+
+	if target == "" {
+		return
+	}
+
+	id := c.ID()
+
+	m.smartTarget.Compute(target, func(result *xsync.Map[string, bool], loaded bool) (*xsync.Map[string, bool], xsync.ComputeOp) {
+		if loaded {
+			result.Delete(id)
+			if result.IsEmpty() {
+				return result, xsync.DeleteOp
+			}
+			return result, xsync.UpdateOp
+		}
+		return result, xsync.CancelOp
+	})
+}
+
+func (m *Manager) RangeSmartTarget(target string, fn func(id string) bool) {
+	if result, ok := m.smartTarget.Load(target); ok {
+		result.Range(func(id string, _ bool) bool {
+			return fn(id)
+		})
+	}
+}
+

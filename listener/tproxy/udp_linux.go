@@ -104,7 +104,14 @@ func getOrigDst(oob []byte) (netip.AddrPort, error) {
 	}
 
 	// retrieve the destination address from the SCM.
-	sa, err := unix.ParseOrigDstAddr(&scms[0])
+	var sa unix.Sockaddr
+	for i := range scms {
+		sa, err = unix.ParseOrigDstAddr(&scms[i])
+		if err == nil {
+			break
+		}
+	}
+
 	if err != nil {
 		return netip.AddrPort{}, fmt.Errorf("retrieve destination: %w", err)
 	}
@@ -121,4 +128,38 @@ func getOrigDst(oob []byte) (netip.AddrPort, error) {
 	}
 
 	return rAddr, nil
+}
+
+func getDSCP(oob []byte) (uint8, error) {
+	scms, err := unix.ParseSocketControlMessage(oob)
+	if err != nil {
+		return 0, fmt.Errorf("parse control message: %w", err)
+	}
+	var dscp uint8
+	for i := range scms {
+		dscp, err = parseDSCP(&scms[i])
+		if err == nil {
+			break
+		}
+	}
+
+	if err != nil {
+		return 0, fmt.Errorf("retrieve DSCP: %w", err)
+	}
+	return dscp, nil
+}
+
+func parseDSCP(m *unix.SocketControlMessage) (uint8, error) {
+	switch {
+	case m.Header.Level == unix.SOL_IP && m.Header.Type == unix.IP_TOS:
+		dscp := uint8(m.Data[0] >> 2)
+		return dscp, nil
+
+	case m.Header.Level == unix.SOL_IPV6 && m.Header.Type == unix.IPV6_TCLASS:
+		dscp := uint8(m.Data[0] >> 2)
+		return dscp, nil
+
+	default:
+		return 0, nil
+	}
 }

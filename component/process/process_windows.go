@@ -7,8 +7,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/Dreamacro/clash/common/nnip"
-	"github.com/Dreamacro/clash/log"
+	"github.com/metacubex/mihomo/log"
 
 	"golang.org/x/sys/windows"
 )
@@ -137,7 +136,8 @@ func (s *searcher) Search(b []byte, ip netip.Addr, port uint16) (uint32, error) 
 			continue
 		}
 
-		srcIP := nnip.IpToAddr(row[s.ip : s.ip+s.ipSize])
+		srcIP, _ := netip.AddrFromSlice(row[s.ip : s.ip+s.ipSize])
+		srcIP = srcIP.Unmap()
 		// windows binds an unbound udp socket to 0.0.0.0/[::] while first sendto
 		if ip != srcIP && (!srcIP.IsUnspecified() || s.tcpState != -1) {
 			continue
@@ -180,7 +180,7 @@ func newSearcher(isV4, isTCP bool) *searcher {
 func getTransportTable(fn uintptr, family int, class int) ([]byte, error) {
 	for size, buf := uint32(8), make([]byte, 8); ; {
 		ptr := unsafe.Pointer(&buf[0])
-		err, _, _ := syscall.SyscallN(fn, uintptr(ptr), uintptr(unsafe.Pointer(&size)), 0, uintptr(family), uintptr(class), 0)
+		err, _, _ := syscall.Syscall6(fn, 6, uintptr(ptr), uintptr(unsafe.Pointer(&size)), 0, uintptr(family), uintptr(class), 0)
 
 		switch err {
 		case 0:
@@ -215,13 +215,13 @@ func getExecPathFromPID(pid uint32) (string, error) {
 
 	buf := make([]uint16, syscall.MAX_LONG_PATH)
 	size := uint32(len(buf))
-	r1, _, err := syscall.SyscallN(
-		queryProcName,
+	r1, _, err := syscall.Syscall6(
+		queryProcName, 4,
 		uintptr(h),
-		uintptr(1),
+		uintptr(0),
 		uintptr(unsafe.Pointer(&buf[0])),
 		uintptr(unsafe.Pointer(&size)),
-	)
+		0, 0)
 	if r1 == 0 {
 		return "", err
 	}

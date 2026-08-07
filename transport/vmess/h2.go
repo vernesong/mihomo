@@ -2,18 +2,20 @@ package vmess
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
-	"net/http"
 	"net/url"
 
-	"github.com/zhangyunhao116/fastrand"
-	"golang.org/x/net/http2"
+	N "github.com/metacubex/mihomo/common/net"
+
+	"github.com/metacubex/http"
+	"github.com/metacubex/randv2"
 )
 
 type h2Conn struct {
 	net.Conn
-	*http2.ClientConn
+	*http.ClientConn
 	pwriter *io.PipeWriter
 	res     *http.Response
 	cfg     *H2Config
@@ -27,7 +29,10 @@ type H2Config struct {
 func (hc *h2Conn) establishConn() error {
 	preader, pwriter := io.Pipe()
 
-	host := hc.cfg.Hosts[fastrand.Intn(len(hc.cfg.Hosts))]
+	if len(hc.cfg.Hosts) == 0 {
+		return errors.New("hosts is empty")
+	}
+	host := hc.cfg.Hosts[randv2.IntN(len(hc.cfg.Hosts))]
 	path := hc.cfg.Path
 	// TODO: connect use VMess Host instead of H2 Host
 	req := http.Request{
@@ -90,27 +95,37 @@ func (hc *h2Conn) Close() error {
 			return err
 		}
 	}
-	ctx := context.Background()
-	if hc.res != nil {
-		ctx = hc.res.Request.Context()
-	}
-	if err := hc.ClientConn.Shutdown(ctx); err != nil {
-		return err
-	}
 	return hc.Conn.Close()
 }
 
-func StreamH2Conn(conn net.Conn, cfg *H2Config) (net.Conn, error) {
-	transport := &http2.Transport{}
+func StreamH2Conn(ctx context.Context, conn net.Conn, cfg *H2Config) (_ net.Conn, err error) {
+	if ctx.Done() != nil {
+		done := N.SetupContextForConn(ctx, conn)
+		defer done(&err)
+	}
 
-	cconn, err := transport.NewClientConn(conn)
+	// use h2c mode to disallow the net/http fallback to http1.1
+	//
+	// Note that this usage is only applicable to our own net/http fork.
+	// The standard library also needs to mask the tls.Conn type for the conn returned by DialTLSContext,
+	// see: https://github.com/golang/go/issues/79293#issuecomment-4426393534
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	transport := &http.Transport{
+		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return conn, nil
+		},
+		Protocols: protocols,
+	}
+
+	clientConn, err := transport.NewClientConn(ctx, "https", ":0")
 	if err != nil {
 		return nil, err
 	}
 
 	return &h2Conn{
 		Conn:       conn,
-		ClientConn: cconn,
+		ClientConn: clientConn,
 		cfg:        cfg,
 	}, nil
 }

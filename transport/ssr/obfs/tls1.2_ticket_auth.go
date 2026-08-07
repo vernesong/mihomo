@@ -3,15 +3,16 @@ package obfs
 import (
 	"bytes"
 	"crypto/hmac"
+	"crypto/rand"
 	"encoding/binary"
 	"net"
 	"strings"
-	"time"
 
-	"github.com/Dreamacro/clash/common/pool"
-	"github.com/Dreamacro/clash/transport/ssr/tools"
+	"github.com/metacubex/mihomo/common/pool"
+	"github.com/metacubex/mihomo/ntp"
+	"github.com/metacubex/mihomo/transport/ssr/tools"
 
-	"github.com/zhangyunhao116/fastrand"
+	"github.com/metacubex/randv2"
 )
 
 func init() {
@@ -26,7 +27,7 @@ type tls12Ticket struct {
 
 func newTLS12Ticket(b *Base) Obfs {
 	r := &tls12Ticket{Base: b, authData: &authData{}}
-	fastrand.Read(r.clientID[:])
+	rand.Read(r.clientID[:])
 	return r
 }
 
@@ -91,7 +92,7 @@ func (c *tls12TicketConn) Write(b []byte) (int, error) {
 		buf := pool.GetBuffer()
 		defer pool.PutBuffer(buf)
 		for len(b) > 2048 {
-			size := fastrand.Intn(4096) + 100
+			size := randv2.IntN(4096) + 100
 			if len(b) < size {
 				size = len(b)
 			}
@@ -181,7 +182,7 @@ func packData(buf *bytes.Buffer, data []byte) {
 }
 
 func (t *tls12Ticket) packAuthData(buf *bytes.Buffer) {
-	binary.Write(buf, binary.BigEndian, uint32(time.Now().Unix()))
+	binary.Write(buf, binary.BigEndian, uint32(ntp.Now().Unix()))
 	tools.AppendRandBytes(buf, 18)
 	buf.Write(t.hmacSHA1(buf.Bytes()[buf.Len()-22:])[:10])
 }
@@ -197,7 +198,7 @@ func packSNIData(buf *bytes.Buffer, u string) {
 }
 
 func (c *tls12TicketConn) packTicketBuf(buf *bytes.Buffer, u string) {
-	length := 16 * (fastrand.Intn(17) + 8)
+	length := 16 * (randv2.IntN(17) + 8)
 	buf.Write([]byte{0, 0x23})
 	binary.Write(buf, binary.BigEndian, uint16(length))
 	tools.AppendRandBytes(buf, length)
@@ -222,6 +223,6 @@ func (t *tls12Ticket) getHost() string {
 		host = ""
 	}
 	hosts := strings.Split(host, ",")
-	host = hosts[fastrand.Intn(len(hosts))]
+	host = hosts[randv2.IntN(len(hosts))]
 	return host
 }

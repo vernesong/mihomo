@@ -6,95 +6,120 @@ import (
 	"net"
 	"strconv"
 
-	N "github.com/Dreamacro/clash/common/net"
-	"github.com/Dreamacro/clash/common/structure"
-	"github.com/Dreamacro/clash/component/dialer"
-	"github.com/Dreamacro/clash/component/proxydialer"
-	C "github.com/Dreamacro/clash/constant"
-	obfs "github.com/Dreamacro/clash/transport/simple-obfs"
-	"github.com/Dreamacro/clash/transport/snell"
+	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/common/structure"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/transport/jls"
+	"github.com/metacubex/mihomo/transport/restls"
+	"github.com/metacubex/mihomo/transport/shadowtls"
+	obfs "github.com/metacubex/mihomo/transport/simple-obfs"
+	"github.com/metacubex/mihomo/transport/snell"
 )
 
 type Snell struct {
 	*Base
-	option     *SnellOption
-	psk        []byte
-	pool       *snell.Pool
-	obfsOption *simpleObfsOption
-	version    int
+	option          *SnellOption
+	psk             []byte
+	pool            *snell.Pool
+	obfsOption      *simpleObfsOption
+	shadowTLSOption *shadowtls.ShadowTLSOption
+	restlsConfig    *restls.Config
+	jlsConfig       *jls.ClientConfig
+	version         int
+	reuse           bool
 }
 
 type SnellOption struct {
 	BasicOption
-	Name     string         `proxy:"name"`
-	Server   string         `proxy:"server"`
-	Port     int            `proxy:"port"`
-	Psk      string         `proxy:"psk"`
-	UDP      bool           `proxy:"udp,omitempty"`
-	Version  int            `proxy:"version,omitempty"`
-	ObfsOpts map[string]any `proxy:"obfs-opts,omitempty"`
+	Name              string         `proxy:"name"`
+	Server            string         `proxy:"server"`
+	Port              int            `proxy:"port"`
+	Psk               string         `proxy:"psk"`
+	UDP               bool           `proxy:"udp,omitempty"`
+	Version           int            `proxy:"version,omitempty"`
+	Reuse             bool           `proxy:"reuse,omitempty"`
+	ObfsOpts          map[string]any `proxy:"obfs-opts,omitempty"`
+	ClientFingerprint string         `proxy:"client-fingerprint,omitempty"`
 }
 
-type streamOption struct {
-	psk        []byte
-	version    int
-	addr       string
-	obfsOption *simpleObfsOption
-}
-
-func streamConn(c net.Conn, option streamOption) *snell.Snell {
-	switch option.obfsOption.Mode {
+func (s *Snell) streamConnContext(ctx context.Context, c net.Conn) (*snell.Snell, error) {
+	var err error
+	switch s.obfsOption.Mode {
 	case "tls":
-		c = obfs.NewTLSObfs(c, option.obfsOption.Host)
+		c = obfs.NewTLSObfs(c, s.obfsOption.Host)
 	case "http":
-		_, port, _ := net.SplitHostPort(option.addr)
-		c = obfs.NewHTTPObfs(c, option.obfsOption.Host, port)
+		_, port, _ := net.SplitHostPort(s.addr)
+		c = obfs.NewHTTPObfs(c, s.obfsOption.Host, port)
+	case shadowtls.Mode:
+		c, err = shadowtls.NewShadowTLS(ctx, c, s.shadowTLSOption)
+		if err != nil {
+			return nil, err
+		}
+	case restls.Mode:
+		c, err = restls.NewRestls(ctx, c, s.restlsConfig)
+		if err != nil {
+			return nil, err
+		}
+	case jls.Mode:
+		c, err = jls.NewClient(ctx, c, s.jlsConfig)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return snell.StreamConn(c, option.psk, option.version)
+	return snell.StreamConn(c, s.psk, s.version), nil
 }
 
 // StreamConnContext implements C.ProxyAdapter
 func (s *Snell) StreamConnContext(ctx context.Context, c net.Conn, metadata *C.Metadata) (net.Conn, error) {
-	c = streamConn(c, streamOption{s.psk, s.version, s.addr, s.obfsOption})
-	if metadata.NetWork == C.UDP {
-		err := snell.WriteUDPHeader(c, s.version)
-		return c, err
+	c, err := s.streamConnContext(ctx, c)
+	if err != nil {
+		return nil, err
 	}
-	err := snell.WriteHeader(c, metadata.String(), uint(metadata.DstPort), s.version)
+	err = s.writeHeaderContext(ctx, c, metadata)
 	return c, err
 }
 
+func (s *Snell) writeHeaderContext(ctx context.Context, c net.Conn, metadata *C.Metadata) (err error) {
+	if ctx.Done() != nil {
+		done := N.SetupContextForConn(ctx, c)
+		defer done(&err)
+	}
+
+	if metadata.NetWork == C.UDP {
+		err = snell.WriteUDPHeader(c, s.version)
+		if err == nil && s.version >= snell.Version4 {
+			if sc, ok := c.(*snell.Snell); ok {
+				err = sc.ReadReply()
+			}
+		}
+		return
+	}
+	err = snell.WriteHeaderWithReuse(c, metadata.String(), uint(metadata.DstPort), s.version, s.reuse)
+	return
+}
+
 // DialContext implements C.ProxyAdapter
-func (s *Snell) DialContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (_ C.Conn, err error) {
-	if s.version == snell.Version2 && len(opts) == 0 {
+func (s *Snell) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, err error) {
+	if s.reuse {
 		c, err := s.pool.Get()
 		if err != nil {
 			return nil, err
 		}
 
-		if err = snell.WriteHeader(c, metadata.String(), uint(metadata.DstPort), s.version); err != nil {
-			c.Close()
+		if err = s.writeHeaderContext(ctx, c, metadata); err != nil {
+			_ = c.Close()
 			return nil, err
+		}
+		if pc, ok := c.(*snell.PoolConn); ok {
+			pc.MarkReusable()
 		}
 		return NewConn(c, s), err
 	}
 
-	return s.DialContextWithDialer(ctx, dialer.NewDialer(s.Base.DialOptions(opts...)...), metadata)
-}
-
-// DialContextWithDialer implements C.ProxyAdapter
-func (s *Snell) DialContextWithDialer(ctx context.Context, dialer C.Dialer, metadata *C.Metadata) (_ C.Conn, err error) {
-	if len(s.option.DialerProxy) > 0 {
-		dialer, err = proxydialer.NewByName(s.option.DialerProxy, dialer)
-		if err != nil {
-			return nil, err
-		}
-	}
-	c, err := dialer.DialContext(ctx, "tcp", s.addr)
+	c, err := s.dialer.DialContext(ctx, "tcp", s.addr)
 	if err != nil {
 		return nil, fmt.Errorf("%s connect error: %w", s.addr, err)
 	}
-	N.TCPKeepAlive(c)
 
 	defer func(c net.Conn) {
 		safeConnClose(c, err)
@@ -105,43 +130,38 @@ func (s *Snell) DialContextWithDialer(ctx context.Context, dialer C.Dialer, meta
 }
 
 // ListenPacketContext implements C.ProxyAdapter
-func (s *Snell) ListenPacketContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (C.PacketConn, error) {
-	return s.ListenPacketWithDialer(ctx, dialer.NewDialer(s.Base.DialOptions(opts...)...), metadata)
-}
-
-// ListenPacketWithDialer implements C.ProxyAdapter
-func (s *Snell) ListenPacketWithDialer(ctx context.Context, dialer C.Dialer, metadata *C.Metadata) (C.PacketConn, error) {
-	var err error
-	if len(s.option.DialerProxy) > 0 {
-		dialer, err = proxydialer.NewByName(s.option.DialerProxy, dialer)
-		if err != nil {
-			return nil, err
-		}
+func (s *Snell) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (_ C.PacketConn, err error) {
+	if err = s.ResolveUDP(ctx, metadata); err != nil {
+		return nil, err
 	}
-	c, err := dialer.DialContext(ctx, "tcp", s.addr)
+	c, err := s.dialer.DialContext(ctx, "tcp", s.addr)
 	if err != nil {
 		return nil, err
 	}
-	N.TCPKeepAlive(c)
-	c = streamConn(c, streamOption{s.psk, s.version, s.addr, s.obfsOption})
 
-	err = snell.WriteUDPHeader(c, s.version)
+	defer func(c net.Conn) {
+		safeConnClose(c, err)
+	}(c)
+
+	c, err = s.StreamConnContext(ctx, c, metadata)
 	if err != nil {
 		return nil, err
 	}
 
 	pc := snell.PacketConn(c)
-	return newPacketConn(pc, s), nil
-}
-
-// SupportWithDialer implements C.ProxyAdapter
-func (s *Snell) SupportWithDialer() C.NetWork {
-	return C.ALLNet
+	return NewPacketConn(pc, s), nil
 }
 
 // SupportUOT implements C.ProxyAdapter
 func (s *Snell) SupportUOT() bool {
 	return true
+}
+
+// ProxyInfo implements C.ProxyAdapter
+func (s *Snell) ProxyInfo() C.ProxyInfo {
+	info := s.Base.ProxyInfo()
+	info.DialerProxy = s.option.DialerProxy
+	return info
 }
 
 func NewSnell(option SnellOption) (*Snell, error) {
@@ -154,9 +174,69 @@ func NewSnell(option SnellOption) (*Snell, error) {
 		return nil, fmt.Errorf("snell %s initialize obfs error: %w", addr, err)
 	}
 
+	var shadowTLSOpt *shadowtls.ShadowTLSOption
+	var restlsConfig *restls.Config
+	var jlsConfig *jls.ClientConfig
 	switch obfsOption.Mode {
 	case "tls", "http", "":
 		break
+	case shadowtls.Mode:
+		opt := &shadowTLSOption{
+			Version: 2,
+		}
+		if err := decoder.Decode(option.ObfsOpts, opt); err != nil {
+			return nil, fmt.Errorf("snell %s initialize shadow-tls-plugin error: %w", addr, err)
+		}
+
+		shadowTLSOpt = &shadowtls.ShadowTLSOption{
+			Password:          opt.Password,
+			Host:              opt.Host,
+			Fingerprint:       opt.Fingerprint,
+			Certificate:       opt.Certificate,
+			PrivateKey:        opt.PrivateKey,
+			ClientFingerprint: option.ClientFingerprint,
+			SkipCertVerify:    opt.SkipCertVerify,
+			NameCertVerify:    opt.NameCertVerify,
+			Version:           opt.Version,
+		}
+
+		if opt.ALPN != nil { // structure's Decode will ensure value not nil when input has value even it was set an empty array
+			shadowTLSOpt.ALPN = opt.ALPN
+		} else {
+			shadowTLSOpt.ALPN = shadowtls.DefaultALPN
+		}
+	case restls.Mode:
+		opt := &restlsOption{}
+		if err := decoder.Decode(option.ObfsOpts, opt); err != nil {
+			return nil, fmt.Errorf("snell %s initialize restls-plugin error: %w", addr, err)
+		}
+
+		var err error
+		restlsConfig, err = restls.NewRestlsConfig(opt.Host, opt.Password, opt.VersionHint, opt.RestlsScript, option.ClientFingerprint)
+		if err != nil {
+			return nil, fmt.Errorf("snell %s initialize restls-plugin error: %w", addr, err)
+		}
+		restlsConfig.InsecureSkipVerify = opt.SkipCertVerify
+		if opt.Fingerprint != "" {
+			if err = restls.SetFingerprint(restlsConfig, opt.Fingerprint, opt.NameCertVerify); err != nil {
+				return nil, fmt.Errorf("snell %s initialize restls-plugin error: %w", addr, err)
+			}
+		} else if opt.NameCertVerify != "" {
+			restls.SetNameCertVerify(restlsConfig, opt.NameCertVerify)
+		}
+		restlsConfig.ForceTLS12 = opt.ForceTLS12
+	case jls.Mode:
+		opt := &jlsOption{}
+		if err := decoder.Decode(option.ObfsOpts, opt); err != nil {
+			return nil, fmt.Errorf("snell %s initialize jls-plugin error: %w", addr, err)
+		}
+
+		var err error
+		jlsConfig, err = jls.NewClientConfig(opt.Host, opt.Username, opt.Password, opt.ALPN)
+		if err != nil {
+			return nil, fmt.Errorf("snell %s initialize jls-plugin error: %w", addr, err)
+		}
+		jlsConfig.ClientFingerprint = option.ClientFingerprint
 	default:
 		return nil, fmt.Errorf("snell %s obfs mode error: %s", addr, obfsOption.Mode)
 	}
@@ -165,51 +245,53 @@ func NewSnell(option SnellOption) (*Snell, error) {
 	if option.Version == 0 {
 		option.Version = snell.DefaultSnellVersion
 	}
+	if option.Version == snell.Version5 {
+		// Snell v5 servers are backward-compatible with v4 clients.
+		option.Version = snell.Version4
+	}
+	reuse := option.Version == snell.Version2 || (option.Version == snell.Version4 && option.Reuse)
 	switch option.Version {
 	case snell.Version1, snell.Version2:
 		if option.UDP {
 			return nil, fmt.Errorf("snell version %d not support UDP", option.Version)
 		}
-	case snell.Version3:
+	case snell.Version3, snell.Version4:
 	default:
 		return nil, fmt.Errorf("snell version error: %d", option.Version)
 	}
 
 	s := &Snell{
-		Base: &Base{
-			name:   option.Name,
-			addr:   addr,
-			tp:     C.Snell,
-			udp:    option.UDP,
-			tfo:    option.TFO,
-			mpTcp:  option.MPTCP,
-			iface:  option.Interface,
-			rmark:  option.RoutingMark,
-			prefer: C.NewDNSPrefer(option.IPVersion),
-		},
-		option:     &option,
-		psk:        psk,
-		obfsOption: obfsOption,
-		version:    option.Version,
+		Base: NewBase(BaseOption{
+			Name:         option.Name,
+			Addr:         addr,
+			Type:         C.Snell,
+			ProviderName: option.ProviderName,
+			UDP:          option.UDP,
+			TFO:          option.TFO,
+			MPTCP:        option.MPTCP,
+			Interface:    option.Interface,
+			RoutingMark:  option.RoutingMark,
+			Prefer:       option.IPVersion,
+		}),
+		option:          &option,
+		psk:             psk,
+		obfsOption:      obfsOption,
+		shadowTLSOption: shadowTLSOpt,
+		restlsConfig:    restlsConfig,
+		jlsConfig:       jlsConfig,
+		version:         option.Version,
+		reuse:           reuse,
 	}
+	s.dialer = option.NewDialer(s.DialOptions())
 
-	if option.Version == snell.Version2 {
+	if s.reuse {
 		s.pool = snell.NewPool(func(ctx context.Context) (*snell.Snell, error) {
-			var err error
-			var cDialer C.Dialer = dialer.NewDialer(s.Base.DialOptions()...)
-			if len(s.option.DialerProxy) > 0 {
-				cDialer, err = proxydialer.NewByName(s.option.DialerProxy, cDialer)
-				if err != nil {
-					return nil, err
-				}
-			}
-			c, err := cDialer.DialContext(ctx, "tcp", addr)
+			c, err := s.dialer.DialContext(ctx, "tcp", addr)
 			if err != nil {
 				return nil, err
 			}
 
-			N.TCPKeepAlive(c)
-			return streamConn(c, streamOption{psk, option.Version, addr, obfsOption}), nil
+			return s.streamConnContext(ctx, c)
 		})
 	}
 	return s, nil

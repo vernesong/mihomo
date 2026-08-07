@@ -5,25 +5,24 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Dreamacro/clash/common/cache"
-	"github.com/Dreamacro/clash/common/nnip"
-	"github.com/Dreamacro/clash/component/fakeip"
-	R "github.com/Dreamacro/clash/component/resolver"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/context"
-	"github.com/Dreamacro/clash/log"
+	"github.com/metacubex/mihomo/common/lru"
+	"github.com/metacubex/mihomo/component/fakeip"
+	"github.com/metacubex/mihomo/component/resolver"
+	C "github.com/metacubex/mihomo/constant"
+	icontext "github.com/metacubex/mihomo/context"
+	"github.com/metacubex/mihomo/log"
 
 	D "github.com/miekg/dns"
 )
 
 type (
-	handler    func(ctx *context.DNSContext, r *D.Msg) (*D.Msg, error)
+	handler    func(ctx *icontext.DNSContext, r *D.Msg) (*D.Msg, error)
 	middleware func(next handler) handler
 )
 
-func withHosts(hosts R.Hosts, mapping *cache.LruCache[netip.Addr, string]) middleware {
+func withHosts(mapping *lru.LruCache[netip.Addr, string]) middleware {
 	return func(next handler) handler {
-		return func(ctx *context.DNSContext, r *D.Msg) (*D.Msg, error) {
+		return func(ctx *icontext.DNSContext, r *D.Msg) (*D.Msg, error) {
 			q := r.Question[0]
 
 			if !isIPRequest(q) {
@@ -37,7 +36,7 @@ func withHosts(hosts R.Hosts, mapping *cache.LruCache[netip.Addr, string]) middl
 				rr.Target = domain + "."
 				resp.Answer = append([]D.RR{rr}, resp.Answer...)
 			}
-			record, ok := hosts.Search(host, q.Qtype != D.TypeA && q.Qtype != D.TypeAAAA)
+			record, ok := resolver.DefaultHosts.Search(host, q.Qtype != D.TypeA && q.Qtype != D.TypeAAAA)
 			if !ok {
 				if record != nil && record.IsDomain {
 					// replace request domain
@@ -65,11 +64,10 @@ func withHosts(hosts R.Hosts, mapping *cache.LruCache[netip.Addr, string]) middl
 						if mapping != nil {
 							mapping.SetWithExpire(ipAddr, host, time.Now().Add(time.Second*10))
 						}
-					} else if q.Qtype == D.TypeAAAA {
+					} else if ipAddr.Is6() && q.Qtype == D.TypeAAAA {
 						rr := &D.AAAA{}
 						rr.Hdr = D.RR_Header{Name: q.Name, Rrtype: D.TypeAAAA, Class: D.ClassINET, Ttl: 10}
-						ip := ipAddr.As16()
-						rr.AAAA = ip[:]
+						rr.AAAA = ipAddr.AsSlice()
 						msg.Answer = append(msg.Answer, rr)
 						if mapping != nil {
 							mapping.SetWithExpire(ipAddr, host, time.Now().Add(time.Second*10))
@@ -84,12 +82,12 @@ func withHosts(hosts R.Hosts, mapping *cache.LruCache[netip.Addr, string]) middl
 			case D.TypeAAAA:
 				handleIPs()
 			case D.TypeCNAME:
-				handleCName(r, record.Domain)
+				handleCName(msg, record.Domain)
 			default:
 				return next(ctx, r)
 			}
 
-			ctx.SetType(context.DNSTypeHost)
+			ctx.SetType(icontext.DNSTypeHost)
 			msg.SetRcode(r, D.RcodeSuccess)
 			msg.Authoritative = true
 			msg.RecursionAvailable = true
@@ -98,9 +96,9 @@ func withHosts(hosts R.Hosts, mapping *cache.LruCache[netip.Addr, string]) middl
 	}
 }
 
-func withMapping(mapping *cache.LruCache[netip.Addr, string]) middleware {
+func withMapping(mapping *lru.LruCache[netip.Addr, string]) middleware {
 	return func(next handler) handler {
-		return func(ctx *context.DNSContext, r *D.Msg) (*D.Msg, error) {
+		return func(ctx *icontext.DNSContext, r *D.Msg) (*D.Msg, error) {
 			q := r.Question[0]
 
 			if !isIPRequest(q) {
@@ -120,14 +118,21 @@ func withMapping(mapping *cache.LruCache[netip.Addr, string]) middleware {
 
 				switch a := ans.(type) {
 				case *D.A:
-					ip = nnip.IpToAddr(a.A)
+					ip, _ = netip.AddrFromSlice(a.A)
 					ttl = a.Hdr.Ttl
 				case *D.AAAA:
-					ip = nnip.IpToAddr(a.AAAA)
+					ip, _ = netip.AddrFromSlice(a.AAAA)
 					ttl = a.Hdr.Ttl
 				default:
 					continue
 				}
+				if !ip.IsValid() {
+					continue
+				}
+				if !ip.IsGlobalUnicast() {
+					continue
+				}
+				ip = ip.Unmap()
 
 				if ttl < 1 {
 					ttl = 1
@@ -141,34 +146,47 @@ func withMapping(mapping *cache.LruCache[netip.Addr, string]) middleware {
 	}
 }
 
-func withFakeIP(fakePool *fakeip.Pool) middleware {
+func withFakeIP(skipper *fakeip.Skipper, fakePool *fakeip.Pool, fakePool6 *fakeip.Pool, fakeIPTTL int) middleware {
 	return func(next handler) handler {
-		return func(ctx *context.DNSContext, r *D.Msg) (*D.Msg, error) {
+		return func(ctx *icontext.DNSContext, r *D.Msg) (*D.Msg, error) {
 			q := r.Question[0]
 
 			host := strings.TrimRight(q.Name, ".")
-			if fakePool.ShouldSkipped(host) {
+			if skipper.ShouldSkipped(host) {
 				return next(ctx, r)
 			}
 
+			var rr D.RR
 			switch q.Qtype {
-			case D.TypeAAAA, D.TypeSVCB, D.TypeHTTPS:
+			case D.TypeA:
+				if fakePool == nil {
+					return handleMsgWithEmptyAnswer(r), nil
+				}
+				ip := fakePool.Lookup(host)
+				rr = &D.A{
+					Hdr: D.RR_Header{Name: q.Name, Rrtype: D.TypeA, Class: D.ClassINET, Ttl: dnsDefaultTTL},
+					A:   ip.AsSlice(),
+				}
+			case D.TypeAAAA:
+				if fakePool6 == nil {
+					return handleMsgWithEmptyAnswer(r), nil
+				}
+				ip := fakePool6.Lookup(host)
+				rr = &D.AAAA{
+					Hdr:  D.RR_Header{Name: q.Name, Rrtype: D.TypeAAAA, Class: D.ClassINET, Ttl: dnsDefaultTTL},
+					AAAA: ip.AsSlice(),
+				}
+			case D.TypeSVCB, D.TypeHTTPS:
 				return handleMsgWithEmptyAnswer(r), nil
-			}
-
-			if q.Qtype != D.TypeA {
+			default:
 				return next(ctx, r)
 			}
 
-			rr := &D.A{}
-			rr.Hdr = D.RR_Header{Name: q.Name, Rrtype: D.TypeA, Class: D.ClassINET, Ttl: dnsDefaultTTL}
-			ip := fakePool.Lookup(host)
-			rr.A = ip.AsSlice()
 			msg := r.Copy()
 			msg.Answer = []D.RR{rr}
 
-			ctx.SetType(context.DNSTypeFakeIP)
-			setMsgTTL(msg, 1)
+			ctx.SetType(icontext.DNSTypeFakeIP)
+			setMsgTTL(msg, uint32(fakeIPTTL))
 			msg.SetRcode(r, D.RcodeSuccess)
 			msg.Authoritative = true
 			msg.RecursionAvailable = true
@@ -178,14 +196,14 @@ func withFakeIP(fakePool *fakeip.Pool) middleware {
 	}
 }
 
-func withResolver(resolver *Resolver) handler {
-	return func(ctx *context.DNSContext, r *D.Msg) (*D.Msg, error) {
-		ctx.SetType(context.DNSTypeRaw)
+func withResolver(resolver resolver.Resolver, ipv6 bool) handler {
+	return func(ctx *icontext.DNSContext, r *D.Msg) (*D.Msg, error) {
+		ctx.SetType(icontext.DNSTypeRaw)
 
 		q := r.Question[0]
 
 		// return a empty AAAA msg when ipv6 disabled
-		if !resolver.ipv6 && q.Qtype == D.TypeAAAA {
+		if !ipv6 && q.Qtype == D.TypeAAAA {
 			return handleMsgWithEmptyAnswer(r), nil
 		}
 
@@ -212,20 +230,20 @@ func compose(middlewares []middleware, endpoint handler) handler {
 	return h
 }
 
-func NewHandler(resolver *Resolver, mapper *ResolverEnhancer) handler {
-	middlewares := []middleware{}
+func newHandler(resolver resolver.Resolver, mapper *ResolverEnhancer) handler {
+	var middlewares []middleware
 
-	if resolver.hosts != nil {
-		middlewares = append(middlewares, withHosts(R.NewHosts(resolver.hosts), mapper.mapping))
+	if mapper.useHosts {
+		middlewares = append(middlewares, withHosts(mapper.mapping))
 	}
 
 	if mapper.mode == C.DNSFakeIP {
-		middlewares = append(middlewares, withFakeIP(mapper.fakePool))
+		middlewares = append(middlewares, withFakeIP(mapper.fakeIPSkipper, mapper.fakeIPPool, mapper.fakeIPPool6, mapper.fakeIPTTL))
 	}
 
 	if mapper.mode != C.DNSNormal {
 		middlewares = append(middlewares, withMapping(mapper.mapping))
 	}
 
-	return compose(middlewares, withResolver(resolver))
+	return compose(middlewares, withResolver(resolver, mapper.ipv6))
 }

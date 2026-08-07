@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Dreamacro/clash/log"
-	"github.com/Dreamacro/clash/transport/hysteria/obfs"
+	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/transport/hysteria/obfs"
 
-	"github.com/zhangyunhao116/fastrand"
+	"github.com/metacubex/randv2"
 )
 
 const udpBufferSize = 65535
@@ -31,7 +31,7 @@ func NewObfsWeChatUDPConn(orig net.PacketConn, obfs obfs.Obfuscator) *ObfsWeChat
 		obfs:     obfs,
 		readBuf:  make([]byte, udpBufferSize),
 		writeBuf: make([]byte, udpBufferSize),
-		sn:       fastrand.Uint32() & 0xFFFF,
+		sn:       randv2.Uint32() & 0xFFFF,
 	}
 }
 

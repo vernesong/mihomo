@@ -3,21 +3,18 @@ package outbound
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
-
-	"io"
 	"net"
-	"net/http"
 	"strconv"
 
-	N "github.com/Dreamacro/clash/common/net"
-	"github.com/Dreamacro/clash/component/dialer"
-	"github.com/Dreamacro/clash/component/proxydialer"
-	tlsC "github.com/Dreamacro/clash/component/tls"
-	C "github.com/Dreamacro/clash/constant"
+	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/component/ca"
+	C "github.com/metacubex/mihomo/constant"
+
+	"github.com/metacubex/http"
+	"github.com/metacubex/tls"
 )
 
 type Http struct {
@@ -38,7 +35,10 @@ type HttpOption struct {
 	TLS            bool              `proxy:"tls,omitempty"`
 	SNI            string            `proxy:"sni,omitempty"`
 	SkipCertVerify bool              `proxy:"skip-cert-verify,omitempty"`
+	NameCertVerify string            `proxy:"name-cert-verify,omitempty"`
 	Fingerprint    string            `proxy:"fingerprint,omitempty"`
+	Certificate    string            `proxy:"certificate,omitempty"`
+	PrivateKey     string            `proxy:"private-key,omitempty"`
 	Headers        map[string]string `proxy:"headers,omitempty"`
 }
 
@@ -53,30 +53,18 @@ func (h *Http) StreamConnContext(ctx context.Context, c net.Conn, metadata *C.Me
 		}
 	}
 
-	if err := h.shakeHand(metadata, c); err != nil {
+	if err := h.shakeHandContext(ctx, c, metadata); err != nil {
 		return nil, err
 	}
 	return c, nil
 }
 
 // DialContext implements C.ProxyAdapter
-func (h *Http) DialContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (_ C.Conn, err error) {
-	return h.DialContextWithDialer(ctx, dialer.NewDialer(h.Base.DialOptions(opts...)...), metadata)
-}
-
-// DialContextWithDialer implements C.ProxyAdapter
-func (h *Http) DialContextWithDialer(ctx context.Context, dialer C.Dialer, metadata *C.Metadata) (_ C.Conn, err error) {
-	if len(h.option.DialerProxy) > 0 {
-		dialer, err = proxydialer.NewByName(h.option.DialerProxy, dialer)
-		if err != nil {
-			return nil, err
-		}
-	}
-	c, err := dialer.DialContext(ctx, "tcp", h.addr)
+func (h *Http) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, err error) {
+	c, err := h.dialer.DialContext(ctx, "tcp", h.addr)
 	if err != nil {
 		return nil, fmt.Errorf("%s connect error: %w", h.addr, err)
 	}
-	N.TCPKeepAlive(c)
 
 	defer func(c net.Conn) {
 		safeConnClose(c, err)
@@ -90,12 +78,19 @@ func (h *Http) DialContextWithDialer(ctx context.Context, dialer C.Dialer, metad
 	return NewConn(c, h), nil
 }
 
-// SupportWithDialer implements C.ProxyAdapter
-func (h *Http) SupportWithDialer() C.NetWork {
-	return C.TCP
+// ProxyInfo implements C.ProxyAdapter
+func (h *Http) ProxyInfo() C.ProxyInfo {
+	info := h.Base.ProxyInfo()
+	info.DialerProxy = h.option.DialerProxy
+	return info
 }
 
-func (h *Http) shakeHand(metadata *C.Metadata, rw io.ReadWriter) error {
+func (h *Http) shakeHandContext(ctx context.Context, c net.Conn, metadata *C.Metadata) (err error) {
+	if ctx.Done() != nil {
+		done := N.SetupContextForConn(ctx, c)
+		defer done(&err)
+	}
+
 	addr := metadata.RemoteAddress()
 	HeaderString := "CONNECT " + addr + " HTTP/1.1\r\n"
 	tempHeaders := map[string]string{
@@ -113,23 +108,19 @@ func (h *Http) shakeHand(metadata *C.Metadata, rw io.ReadWriter) error {
 		tempHeaders["Proxy-Authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(auth))
 	}
 
-	if metadata.Type == C.MITM {
-		tempHeaders["Origin-Request-Source-Address"] = metadata.SourceAddress()
-	}
-
 	for key, value := range tempHeaders {
 		HeaderString += key + ": " + value + "\r\n"
 	}
 
 	HeaderString += "\r\n"
 
-	_, err := rw.Write([]byte(HeaderString))
+	_, err = c.Write([]byte(HeaderString))
 
 	if err != nil {
 		return err
 	}
 
-	resp, err := http.ReadResponse(bufio.NewReader(rw), nil)
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
 
 	if err != nil {
 		return err
@@ -161,36 +152,39 @@ func NewHttp(option HttpOption) (*Http, error) {
 		if option.SNI != "" {
 			sni = option.SNI
 		}
-		if len(option.Fingerprint) == 0 {
-			tlsConfig = tlsC.GetGlobalTLSConfig(&tls.Config{
+		var err error
+		tlsConfig, err = ca.GetTLSConfig(ca.Option{
+			TLSConfig: &tls.Config{
 				InsecureSkipVerify: option.SkipCertVerify,
 				ServerName:         sni,
-			})
-		} else {
-			var err error
-			if tlsConfig, err = tlsC.GetSpecifiedFingerprintTLSConfig(&tls.Config{
-				InsecureSkipVerify: option.SkipCertVerify,
-				ServerName:         sni,
-			}, option.Fingerprint); err != nil {
-				return nil, err
-			}
+			},
+			Fingerprint:    option.Fingerprint,
+			NameCertVerify: option.NameCertVerify,
+			Certificate:    option.Certificate,
+			PrivateKey:     option.PrivateKey,
+		})
+		if err != nil {
+			return nil, err
 		}
 	}
 
-	return &Http{
-		Base: &Base{
-			name:   option.Name,
-			addr:   net.JoinHostPort(option.Server, strconv.Itoa(option.Port)),
-			tp:     C.Http,
-			tfo:    option.TFO,
-			mpTcp:  option.MPTCP,
-			iface:  option.Interface,
-			rmark:  option.RoutingMark,
-			prefer: C.NewDNSPrefer(option.IPVersion),
-		},
+	outbound := &Http{
+		Base: NewBase(BaseOption{
+			Name:         option.Name,
+			Addr:         net.JoinHostPort(option.Server, strconv.Itoa(option.Port)),
+			Type:         C.Http,
+			ProviderName: option.ProviderName,
+			TFO:          option.TFO,
+			MPTCP:        option.MPTCP,
+			Interface:    option.Interface,
+			RoutingMark:  option.RoutingMark,
+			Prefer:       option.IPVersion,
+		}),
 		user:      option.UserName,
 		pass:      option.Password,
 		tlsConfig: tlsConfig,
 		option:    &option,
-	}, nil
+	}
+	outbound.dialer = option.NewDialer(outbound.DialOptions())
+	return outbound, nil
 }

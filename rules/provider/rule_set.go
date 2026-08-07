@@ -1,31 +1,50 @@
 package provider
 
 import (
-	"fmt"
-	C "github.com/Dreamacro/clash/constant"
-	P "github.com/Dreamacro/clash/constant/provider"
-	"github.com/Dreamacro/clash/rules/common"
+	"net/netip"
+
+	C "github.com/metacubex/mihomo/constant"
+	P "github.com/metacubex/mihomo/constant/provider"
+	"github.com/metacubex/mihomo/rules/common"
 )
 
 type RuleSet struct {
-	*common.Base
-	ruleProviderName  string
-	adapter           string
-	ruleProvider      P.RuleProvider
-	noResolveIP       bool
-	shouldFindProcess bool
-}
-
-func (rs *RuleSet) ShouldFindProcess() bool {
-	return rs.shouldFindProcess || rs.getProviders().ShouldFindProcess()
+	common.Base
+	ruleProviderName string
+	adapter          string
+	isSrc            bool
+	noResolveIP      bool
 }
 
 func (rs *RuleSet) RuleType() C.RuleType {
 	return C.RuleSet
 }
 
-func (rs *RuleSet) Match(metadata *C.Metadata) (bool, string) {
-	return rs.getProviders().Match(metadata), rs.adapter
+func (rs *RuleSet) Match(metadata *C.Metadata, helper C.RuleMatchHelper) (bool, string) {
+	if provider, ok := rs.getProvider(); ok {
+		if rs.isSrc {
+			metadata.SwapSrcDst()
+			defer metadata.SwapSrcDst()
+
+			helper.ResolveIP = nil // src mode should not resolve ip
+		} else if rs.noResolveIP {
+			helper.ResolveIP = nil
+		}
+		return provider.Match(metadata, helper), rs.adapter
+	}
+	return false, ""
+}
+
+// MatchDomain implements C.DomainMatcher
+func (rs *RuleSet) MatchDomain(domain string) bool {
+	ok, _ := rs.Match(&C.Metadata{Host: domain}, C.RuleMatchHelper{})
+	return ok
+}
+
+// MatchIp implements C.IpMatcher
+func (rs *RuleSet) MatchIp(ip netip.Addr) bool {
+	ok, _ := rs.Match(&C.Metadata{DstIP: ip}, C.RuleMatchHelper{})
+	return ok
 }
 
 func (rs *RuleSet) Adapter() string {
@@ -33,31 +52,27 @@ func (rs *RuleSet) Adapter() string {
 }
 
 func (rs *RuleSet) Payload() string {
-	return rs.getProviders().Name()
+	return rs.ruleProviderName
 }
 
-func (rs *RuleSet) ShouldResolveIP() bool {
-	return !rs.noResolveIP && rs.getProviders().ShouldResolveIP()
-}
-func (rs *RuleSet) getProviders() P.RuleProvider {
-	if rs.ruleProvider == nil {
-		rp := RuleProviders()[rs.ruleProviderName]
-		rs.ruleProvider = rp
-	}
-
-	return rs.ruleProvider
+func (rs *RuleSet) ProviderNames() []string {
+	return []string{rs.ruleProviderName}
 }
 
-func NewRuleSet(ruleProviderName string, adapter string, noResolveIP bool) (*RuleSet, error) {
-	rp, ok := RuleProviders()[ruleProviderName]
-	if !ok {
-		return nil, fmt.Errorf("rule set %s not found", ruleProviderName)
-	}
-	return &RuleSet{
-		Base:             &common.Base{},
+func (rs *RuleSet) getProvider() (P.RuleProvider, bool) {
+	pp, ok := tunnel.RuleProviders()[rs.ruleProviderName]
+	return pp, ok
+}
+
+func NewRuleSet(ruleProviderName string, adapter string, isSrc bool, noResolveIP bool) (*RuleSet, error) {
+	rs := &RuleSet{
+		Base:             common.Base{},
 		ruleProviderName: ruleProviderName,
 		adapter:          adapter,
-		ruleProvider:     rp,
+		isSrc:            isSrc,
 		noResolveIP:      noResolveIP,
-	}, nil
+	}
+	return rs, nil
 }
+
+var _ C.Rule = (*RuleSet)(nil)

@@ -2,27 +2,33 @@ package route
 
 import (
 	"context"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/render"
-	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
-	"github.com/Dreamacro/clash/adapter"
-	"github.com/Dreamacro/clash/adapter/outboundgroup"
-	"github.com/Dreamacro/clash/common/utils"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/tunnel"
+	"github.com/metacubex/mihomo/adapter/outboundgroup"
+	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/profile/cachefile"
+	"github.com/metacubex/mihomo/component/smart"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/tunnel"
+
+	"github.com/metacubex/chi"
+	"github.com/metacubex/chi/render"
+	"github.com/metacubex/http"
 )
 
-func GroupRouter() http.Handler {
+func groupRouter() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/", getGroups)
+	r.Get("/weights", getAllGroupWeights)
 
 	r.Route("/{name}", func(r chi.Router) {
 		r.Use(parseProxyName, findProxyByName)
 		r.Get("/", getGroup)
 		r.Get("/delay", getGroupDelay)
+		r.Get("/weights", getGroupWeights)
 	})
 	return r
 }
@@ -30,7 +36,7 @@ func GroupRouter() http.Handler {
 func getGroups(w http.ResponseWriter, r *http.Request) {
 	var gs []C.Proxy
 	for _, p := range tunnel.Proxies() {
-		if _, ok := p.(*adapter.Proxy).ProxyAdapter.(C.Group); ok {
+		if _, ok := p.Adapter().(outboundgroup.ProxyGroup); ok {
 			gs = append(gs, p)
 		}
 	}
@@ -41,7 +47,7 @@ func getGroups(w http.ResponseWriter, r *http.Request) {
 
 func getGroup(w http.ResponseWriter, r *http.Request) {
 	proxy := r.Context().Value(CtxKeyProxy).(C.Proxy)
-	if _, ok := proxy.(*adapter.Proxy).ProxyAdapter.(C.Group); ok {
+	if _, ok := proxy.Adapter().(outboundgroup.ProxyGroup); ok {
 		render.JSON(w, r, proxy)
 		return
 	}
@@ -51,16 +57,16 @@ func getGroup(w http.ResponseWriter, r *http.Request) {
 
 func getGroupDelay(w http.ResponseWriter, r *http.Request) {
 	proxy := r.Context().Value(CtxKeyProxy).(C.Proxy)
-	group, ok := proxy.(*adapter.Proxy).ProxyAdapter.(C.Group)
+	group, ok := proxy.Adapter().(outboundgroup.ProxyGroup)
 	if !ok {
 		render.Status(r, http.StatusNotFound)
 		render.JSON(w, r, ErrNotFound)
 		return
 	}
 
-	if proxy.(*adapter.Proxy).Type() == C.URLTest {
-		URLTestGroup := proxy.(*adapter.Proxy).ProxyAdapter.(*outboundgroup.URLTest)
-		URLTestGroup.ForceSet("")
+	if selectAble, ok := proxy.Adapter().(outboundgroup.SelectAble); ok && proxy.Type() != C.Selector {
+		selectAble.ForceSet("")
+		cachefile.Cache().SetSelected(proxy.Name(), "")
 	}
 
 	query := r.URL.Query()
@@ -72,7 +78,7 @@ func getGroupDelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expectedStatus, err := utils.NewIntRanges[uint16](query.Get("expected"))
+	expectedStatus, err := utils.NewUnsignedRanges[uint16](query.Get("expected"))
 	if err != nil {
 		render.Status(r, http.StatusBadRequest)
 		render.JSON(w, r, ErrBadRequest)
@@ -90,4 +96,118 @@ func getGroupDelay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	render.JSON(w, r, dm)
+}
+
+func getGroupWeights(w http.ResponseWriter, r *http.Request) {
+	proxy := r.Context().Value(CtxKeyProxy).(C.Proxy)
+	smartGroup, ok := proxy.Adapter().(*outboundgroup.Smart)
+	if !ok {
+		log.Debugln("[Smart] Failed to request weight ranking: Not a Smart group (actual type: %T)", proxy.Adapter())
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, render.M{
+			"weights": []smart.NodeRankItem{},
+			"error":   "Not a Smart group",
+		})
+		return
+	}
+
+	configName := smartGroup.GetConfigFilename()
+	groupName := smartGroup.Name()
+
+	smartStore := cachefile.GetSmartStore()
+	if smartStore == nil {
+		render.Status(r, http.StatusServiceUnavailable)
+		render.JSON(w, r, render.M{
+			"weights": []smart.NodeRankItem{},
+			"error":   "Smart cache not available",
+		})
+		return
+	}
+
+	wrapper, err := smartStore.GetNodeWeightRankingCache(groupName, configName)
+	if err != nil {
+		log.Warnln("[Smart] Failed to get weight ranking: %s", err.Error())
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, render.M{
+			"weights": []smart.NodeRankItem{},
+			"error":   "Failed to get weight ranking: " + err.Error(),
+		})
+		return
+	}
+	if len(wrapper.Result) == 0 {
+		log.Debugln("Policy group %s has no weight data", groupName)
+		render.JSON(w, r, render.M{
+			"weights": []smart.NodeRankItem{},
+			"message": "No weight data available for the specified group",
+		})
+		return
+	}
+
+	render.JSON(w, r, render.M{
+		"weights": wrapper.Result,
+	})
+}
+
+func getAllGroupWeights(w http.ResponseWriter, r *http.Request) {
+	smartStore := cachefile.GetSmartStore()
+	if smartStore == nil {
+		render.Status(r, http.StatusServiceUnavailable)
+		render.JSON(w, r, render.M{
+			"weights": map[string][]smart.NodeRankItem{},
+			"errors":  map[string]string{},
+			"error":   "Smart cache not available",
+		})
+		return
+	}
+
+	result := make(map[string][]smart.NodeRankItem)
+	errorsMap := make(map[string]string)
+
+	var (
+		mu    sync.Mutex
+		wg    sync.WaitGroup
+		sem   = make(chan struct{}, 5)
+	)
+
+	for _, p := range tunnel.Proxies() {
+		sg, ok := p.Adapter().(*outboundgroup.Smart)
+		if !ok {
+			continue
+		}
+
+		configName := sg.GetConfigFilename()
+		groupName := sg.Name()
+
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(groupName, configName string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			wrapper, err := smartStore.GetNodeWeightRankingCache(groupName, configName)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				log.Warnln("[Smart] Failed to get weight ranking for group %s: %s", groupName, err.Error())
+				errorsMap[groupName] = err.Error()
+				return
+			}
+			result[groupName] = wrapper.Result
+		}(groupName, configName)
+	}
+
+	wg.Wait()
+
+	if len(result) == 0 && len(errorsMap) == 0 {
+		render.JSON(w, r, render.M{
+			"weights": map[string][]smart.NodeRankItem{},
+			"message": "No Smart groups or no weight data available",
+		})
+		return
+	}
+
+	render.JSON(w, r, render.M{
+		"weights": result,
+		"errors":  errorsMap,
+	})
 }

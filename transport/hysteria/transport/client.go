@@ -1,24 +1,21 @@
 package transport
 
 import (
-	"crypto/tls"
 	"fmt"
 	"net"
-	"strings"
 	"time"
 
-	"github.com/metacubex/quic-go"
+	"github.com/metacubex/mihomo/transport/hysteria/conns/faketcp"
+	"github.com/metacubex/mihomo/transport/hysteria/conns/udp"
+	"github.com/metacubex/mihomo/transport/hysteria/conns/wechat"
+	obfsPkg "github.com/metacubex/mihomo/transport/hysteria/obfs"
+	"github.com/metacubex/mihomo/transport/hysteria/utils"
 
-	"github.com/Dreamacro/clash/transport/hysteria/conns/faketcp"
-	"github.com/Dreamacro/clash/transport/hysteria/conns/udp"
-	"github.com/Dreamacro/clash/transport/hysteria/conns/wechat"
-	obfsPkg "github.com/Dreamacro/clash/transport/hysteria/obfs"
-	"github.com/Dreamacro/clash/transport/hysteria/utils"
+	"github.com/metacubex/quic-go"
+	"github.com/metacubex/tls"
 )
 
-type ClientTransport struct {
-	Dialer *net.Dialer
-}
+type ClientTransport struct{}
 
 func (ct *ClientTransport) quicPacketConn(proto string, rAddr net.Addr, serverPorts string, obfs obfsPkg.Obfuscator, hopInterval time.Duration, dialer utils.PacketDialer) (net.PacketConn, error) {
 	server := rAddr.String()
@@ -65,7 +62,7 @@ func (ct *ClientTransport) quicPacketConn(proto string, rAddr net.Addr, serverPo
 	}
 }
 
-func (ct *ClientTransport) QUICDial(proto string, server string, serverPorts string, tlsConfig *tls.Config, quicConfig *quic.Config, obfs obfsPkg.Obfuscator, hopInterval time.Duration, dialer utils.PacketDialer) (quic.Connection, error) {
+func (ct *ClientTransport) QUICDial(proto string, server string, serverPorts string, tlsConfig *tls.Config, quicConfig *quic.Config, obfs obfsPkg.Obfuscator, hopInterval time.Duration, dialer utils.PacketDialer) (*quic.Conn, error) {
 	serverUDPAddr, err := dialer.RemoteAddr(server)
 	if err != nil {
 		return nil, err
@@ -85,24 +82,4 @@ func (ct *ClientTransport) QUICDial(proto string, server string, serverPorts str
 		return nil, err
 	}
 	return qs, nil
-}
-
-func (ct *ClientTransport) DialTCP(raddr *net.TCPAddr) (*net.TCPConn, error) {
-	conn, err := ct.Dialer.Dial("tcp", raddr.String())
-	if err != nil {
-		return nil, err
-	}
-	return conn.(*net.TCPConn), nil
-}
-
-func (ct *ClientTransport) ListenUDP() (*net.UDPConn, error) {
-	return net.ListenUDP("udp", nil)
-}
-
-func isMultiPortAddr(addr string) bool {
-	_, portStr, err := net.SplitHostPort(addr)
-	if err == nil && (strings.Contains(portStr, ",") || strings.Contains(portStr, "-")) {
-		return true
-	}
-	return false
 }

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/metacubex/quic-go/congestion"
+	"github.com/metacubex/quic-go/monotime"
 )
 
 // This cubic implementation is based on the one found in Chromiums's QUIC
@@ -21,7 +22,7 @@ const (
 	cubeCongestionWindowScale                      = 410
 	cubeFactor                congestion.ByteCount = 1 << cubeScale / cubeCongestionWindowScale / maxDatagramSize
 	// TODO: when re-enabling cubic, make sure to use the actual packet size here
-	maxDatagramSize = congestion.ByteCount(InitialPacketSizeIPv4)
+	maxDatagramSize = congestion.ByteCount(InitialPacketSize)
 )
 
 const defaultNumConnections = 1
@@ -36,13 +37,11 @@ const betaLastMax float32 = 0.85
 
 // Cubic implements the cubic algorithm from TCP
 type Cubic struct {
-	clock Clock
-
 	// Number of connections to simulate.
 	numConnections int
 
 	// Time when this cycle started, after last loss event.
-	epoch time.Time
+	epoch monotime.Time
 
 	// Max congestion window used just before last loss event.
 	// Note: to improve fairness to other streams an additional back off is
@@ -66,9 +65,8 @@ type Cubic struct {
 }
 
 // NewCubic returns a new Cubic instance
-func NewCubic(clock Clock) *Cubic {
+func NewCubic() *Cubic {
 	c := &Cubic{
-		clock:          clock,
 		numConnections: defaultNumConnections,
 	}
 	c.Reset()
@@ -77,7 +75,7 @@ func NewCubic(clock Clock) *Cubic {
 
 // Reset is called after a timeout to reset the cubic state
 func (c *Cubic) Reset() {
-	c.epoch = time.Time{}
+	c.epoch = monotime.Time(0)
 	c.lastMaxCongestionWindow = 0
 	c.ackedBytesCount = 0
 	c.estimatedTCPcongestionWindow = 0
@@ -121,7 +119,7 @@ func (c *Cubic) OnApplicationLimited() {
 	// in such a period. This reset effectively freezes congestion window growth
 	// through application-limited periods and allows Cubic growth to continue
 	// when the entire window is being used.
-	c.epoch = time.Time{}
+	c.epoch = monotime.Time(0)
 }
 
 // CongestionWindowAfterPacketLoss computes a new congestion window to use after
@@ -135,7 +133,7 @@ func (c *Cubic) CongestionWindowAfterPacketLoss(currentCongestionWindow congesti
 	} else {
 		c.lastMaxCongestionWindow = currentCongestionWindow
 	}
-	c.epoch = time.Time{} // Reset time.
+	c.epoch = monotime.Time(0) // Reset time.
 	return congestion.ByteCount(float32(currentCongestionWindow) * c.beta())
 }
 
@@ -147,7 +145,7 @@ func (c *Cubic) CongestionWindowAfterAck(
 	ackedBytes congestion.ByteCount,
 	currentCongestionWindow congestion.ByteCount,
 	delayMin time.Duration,
-	eventTime time.Time,
+	eventTime monotime.Time,
 ) congestion.ByteCount {
 	c.ackedBytesCount += ackedBytes
 

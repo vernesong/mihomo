@@ -5,9 +5,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/Dreamacro/clash/component/geodata/router"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/log"
+	"github.com/metacubex/mihomo/component/geodata/router"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/log"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -32,7 +32,7 @@ func (g GeoIPCache) Set(key string, value *router.GeoIP) {
 }
 
 func (g GeoIPCache) Unmarshal(filename, code string) (*router.GeoIP, error) {
-	asset := C.Path.Resolve(filename)
+	asset := C.Path.GetAssetLocation(filename)
 	idx := strings.ToLower(asset + ":" + code)
 	if g.Has(idx) {
 		return g.Get(idx), nil
@@ -97,7 +97,7 @@ func (g GeoSiteCache) Set(key string, value *router.GeoSite) {
 }
 
 func (g GeoSiteCache) Unmarshal(filename, code string) (*router.GeoSite, error) {
-	asset := C.Path.Resolve(filename)
+	asset := C.Path.GetAssetLocation(filename)
 	idx := strings.ToLower(asset + ":" + code)
 	if g.Has(idx) {
 		return g.Get(idx), nil

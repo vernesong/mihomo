@@ -6,8 +6,7 @@ import (
 	"net"
 	"net/netip"
 
-	"github.com/Dreamacro/clash/common/nnip"
-	"github.com/Dreamacro/clash/component/iface"
+	"github.com/metacubex/mihomo/component/iface"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
 )
@@ -86,12 +85,14 @@ func receiveOffer(conn net.PacketConn, id dhcpv4.TransactionID, result chan<- []
 			return
 		}
 
-		dnsAddr := make([]netip.Addr, l)
-		for i := 0; i < l; i++ {
-			dnsAddr[i] = nnip.IpToAddr(dns[i])
+		results := make([]netip.Addr, 0, len(dns))
+		for _, ip := range dns {
+			if addr, ok := netip.AddrFromSlice(ip); ok {
+				results = append(results, addr.Unmap())
+			}
 		}
 
-		result <- dnsAddr
+		result <- results
 
 		return
 	}

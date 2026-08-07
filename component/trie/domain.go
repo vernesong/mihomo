@@ -3,6 +3,8 @@ package trie
 import (
 	"errors"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -21,22 +23,57 @@ type DomainTrie[T any] struct {
 	root *Node[T]
 }
 
+// ValidAndSplitDomain lower-cases and splits a domain into its dot-separated
+// parts, reporting whether it is a well-formed pattern. It returns false for a
+// trailing dot ("a.com."), leading/trailing whitespace, or an empty segment,
+// as well as for misplaced wildcards (see below).
 func ValidAndSplitDomain(domain string) ([]string, bool) {
+	// A trailing dot would produce an empty final segment; reject it up front.
 	if domain != "" && domain[len(domain)-1] == '.' {
 		return nil, false
 	}
+	// Reject leading/trailing whitespace (a common copy-paste artifact) so it
+	// isn't silently baked into a label.
+	if domain != "" {
+		if r, _ := utf8.DecodeRuneInString(domain); unicode.IsSpace(r) {
+			return nil, false
+		}
+		if r, _ := utf8.DecodeLastRuneInString(domain); unicode.IsSpace(r) {
+			return nil, false
+		}
+	}
 	domain = strings.ToLower(domain)
 	parts := strings.Split(domain, domainStep)
+	// A single part must be non-empty (rejects ""); for multi-part domains every
+	// segment after the first must be non-empty (rejects "a..b", "a.", ".."),
+	// while an empty first segment is allowed as the ".example.com" dot-wildcard.
 	if len(parts) == 1 {
 		if parts[0] == "" {
 			return nil, false
 		}
-
-		return parts, true
+	} else {
+		for _, part := range parts[1:] {
+			if part == "" {
+				return nil, false
+			}
+		}
 	}
 
-	for _, part := range parts[1:] {
-		if part == "" {
+	// Validate wildcard placement so that DomainTrie.Search (treats a stray
+	// wildcard as a literal label) and DomainSet.Has (treats the wildcard byte
+	// as a wildcard) can never disagree:
+	//   - complexWildcard "+" is only valid as a whole first segment of a
+	//     multi-part domain, i.e. the "+.example.com" form. A bare "+", or a
+	//     "+" anywhere else, is rejected.
+	//   - wildcard "*" is only valid as a whole segment; a partial wildcard such
+	//     as "*a" or "a*b" is rejected.
+	for i, part := range parts {
+		if strings.Contains(part, complexWildcard) {
+			if part != complexWildcard || i != 0 || len(parts) == 1 {
+				return nil, false
+			}
+		}
+		if strings.Contains(part, wildcard) && part != wildcard {
 			return nil, false
 		}
 	}
@@ -123,27 +160,41 @@ func (t *DomainTrie[T]) Optimize() {
 	t.root.optimize()
 }
 
-func (t *DomainTrie[T]) Foreach(print func(domain string, data T)) {
+func (t *DomainTrie[T]) Foreach(fn func(domain string, data T) bool) {
 	for key, data := range t.root.getChildren() {
-		recursion([]string{key}, data, print)
-		if data != nil && data.inited {
-			print(joinDomain([]string{key}), data.data)
+		recursion([]string{key}, data, fn)
+		if !data.isEmpty() {
+			if !fn(joinDomain([]string{key}), data.data) {
+				return
+			}
 		}
 	}
 }
 
-func recursion[T any](items []string, node *Node[T], fn func(domain string, data T)) {
+func (t *DomainTrie[T]) IsEmpty() bool {
+	if t == nil || t.root == nil {
+		return true
+	}
+	return len(t.root.getChildren()) == 0
+}
+
+func recursion[T any](items []string, node *Node[T], fn func(domain string, data T) bool) bool {
 	for key, data := range node.getChildren() {
 		newItems := append([]string{key}, items...)
-		if data != nil && data.inited {
+		if !data.isEmpty() {
 			domain := joinDomain(newItems)
 			if domain[0] == domainStepByte {
 				domain = complexWildcard + domain
 			}
-			fn(domain, data.Data())
+			if !fn(domain, data.Data()) {
+				return false
+			}
 		}
-		recursion(newItems, data, fn)
+		if !recursion(newItems, data, fn) {
+			return false
+		}
 	}
+	return true
 }
 
 func joinDomain(items []string) string {

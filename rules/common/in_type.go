@@ -2,18 +2,19 @@ package common
 
 import (
 	"fmt"
-	C "github.com/Dreamacro/clash/constant"
 	"strings"
+
+	C "github.com/metacubex/mihomo/constant"
 )
 
 type InType struct {
-	*Base
+	Base
 	types   []C.Type
 	adapter string
 	payload string
 }
 
-func (u *InType) Match(metadata *C.Metadata) (bool, string) {
+func (u *InType) Match(metadata *C.Metadata, helper C.RuleMatchHelper) (bool, string) {
 	for _, tp := range u.types {
 		if metadata.Type == tp {
 			return true, u.adapter
@@ -36,8 +37,12 @@ func (u *InType) Payload() string {
 
 func NewInType(iTypes, adapter string) (*InType, error) {
 	types := strings.Split(iTypes, "/")
-	if len(types) == 0 {
-		return nil, fmt.Errorf("in type couldn't be empty")
+	for i, tp := range types {
+		tp = strings.TrimSpace(tp)
+		if len(tp) == 0 {
+			return nil, fmt.Errorf("in type couldn't be empty")
+		}
+		types[i] = tp
 	}
 
 	tps, err := parseInTypes(types)
@@ -46,7 +51,7 @@ func NewInType(iTypes, adapter string) (*InType, error) {
 	}
 
 	return &InType{
-		Base:    &Base{},
+		Base:    Base{},
 		types:   tps,
 		adapter: adapter,
 		payload: strings.ToUpper(iTypes),
@@ -72,3 +77,5 @@ func parseInTypes(tps []string) (res []C.Type, err error) {
 	}
 	return
 }
+
+var _ C.Rule = (*InType)(nil)

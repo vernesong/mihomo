@@ -1,12 +1,19 @@
 package constant
 
+import "time"
+
 // Rule Type
 const (
 	Domain RuleType = iota
 	DomainSuffix
 	DomainKeyword
+	DomainRegex
+	DomainWildcard
 	GEOSITE
 	GEOIP
+	SrcGEOIP
+	IPASN
+	SrcIPASN
 	IPCIDR
 	SrcIPCIDR
 	IPSuffix
@@ -14,16 +21,21 @@ const (
 	SrcPort
 	DstPort
 	InPort
+	DSCP
 	InUser
 	InName
 	InType
-	Process
+	ProcessName
 	ProcessPath
+	ProcessNameRegex
+	ProcessPathRegex
+	ProcessNameWildcard
+	ProcessPathWildcard
+	RematchName
 	RuleSet
 	Network
 	Uid
 	SubRules
-	UserAgent
 	MATCH
 	AND
 	OR
@@ -31,6 +43,24 @@ const (
 )
 
 type RuleType int
+
+var SmartRuleTypes = map[RuleType]bool{
+	Domain:            true,
+	DomainSuffix:      true,
+	DomainKeyword:     true,
+	DomainRegex:       true,
+	DomainWildcard:    true,
+	GEOSITE:           true,
+	GEOIP:             true,
+	IPASN:             true,
+	IPCIDR:            true,
+	IPSuffix:          true,
+	RuleSet:           true,
+	SubRules:          true,
+	AND:               true,
+	OR:                true,
+	NOT:               true,
+}
 
 func (rt RuleType) String() string {
 	switch rt {
@@ -40,10 +70,20 @@ func (rt RuleType) String() string {
 		return "DomainSuffix"
 	case DomainKeyword:
 		return "DomainKeyword"
+	case DomainRegex:
+		return "DomainRegex"
+	case DomainWildcard:
+		return "DomainWildcard"
 	case GEOSITE:
 		return "GeoSite"
 	case GEOIP:
 		return "GeoIP"
+	case SrcGEOIP:
+		return "SrcGeoIP"
+	case IPASN:
+		return "IPASN"
+	case SrcIPASN:
+		return "SrcIPASN"
 	case IPCIDR:
 		return "IPCIDR"
 	case SrcIPCIDR:
@@ -64,18 +104,28 @@ func (rt RuleType) String() string {
 		return "InName"
 	case InType:
 		return "InType"
-	case Process:
-		return "Process"
+	case ProcessName:
+		return "ProcessName"
 	case ProcessPath:
 		return "ProcessPath"
-	case UserAgent:
-		return "UserAgent"
+	case ProcessNameRegex:
+		return "ProcessNameRegex"
+	case ProcessPathRegex:
+		return "ProcessPathRegex"
+	case ProcessNameWildcard:
+		return "ProcessNameWildcard"
+	case ProcessPathWildcard:
+		return "ProcessPathWildcard"
+	case RematchName:
+		return "RematchName"
 	case MATCH:
 		return "Match"
 	case RuleSet:
 		return "RuleSet"
 	case Network:
 		return "Network"
+	case DSCP:
+		return "DSCP"
 	case Uid:
 		return "Uid"
 	case SubRules:
@@ -93,9 +143,40 @@ func (rt RuleType) String() string {
 
 type Rule interface {
 	RuleType() RuleType
-	Match(metadata *Metadata) (bool, string)
+	Match(metadata *Metadata, helper RuleMatchHelper) (bool, string)
 	Adapter() string
 	Payload() string
-	ShouldResolveIP() bool
-	ShouldFindProcess() bool
+	ProviderNames() []string
+}
+
+type RuleWrapper interface {
+	Rule
+
+	// SetDisabled to set enable/disable rule
+	SetDisabled(v bool)
+	// IsDisabled return rule is disabled or not
+	IsDisabled() bool
+
+	// HitCount for statistics
+	HitCount() uint64
+	// HitAt for statistics
+	HitAt() time.Time
+	// MissCount for statistics
+	MissCount() uint64
+	// MissAt for statistics
+	MissAt() time.Time
+
+	// Unwrap return Rule
+	Unwrap() Rule
+}
+
+type RuleMatchHelper struct {
+	ResolveIP     func()
+	FindProcess   func()
+	CheckPassRule func(adapterName string) bool
+}
+
+type RuleGroup interface {
+	Rule
+	GetRecodeSize() int
 }

@@ -9,7 +9,7 @@ import (
 	"net/netip"
 	"strconv"
 
-	"github.com/Dreamacro/clash/component/auth"
+	"github.com/metacubex/mihomo/component/auth"
 )
 
 const Version = 0x04
@@ -43,7 +43,7 @@ var (
 
 var subnet = netip.PrefixFrom(netip.IPv4Unspecified(), 24)
 
-func ServerHandshake(rw io.ReadWriter, authenticator auth.Authenticator) (addr string, command Command, err error) {
+func ServerHandshake(rw io.ReadWriter, authenticator auth.Authenticator) (addr string, command Command, user string, err error) {
 	var req [8]byte
 	if _, err = io.ReadFull(rw, req[:]); err != nil {
 		return
@@ -73,6 +73,7 @@ func ServerHandshake(rw io.ReadWriter, authenticator auth.Authenticator) (addr s
 	if userID, err = readUntilNull(rw); err != nil {
 		return
 	}
+	user = string(userID)
 
 	if isReservedIP(dstIP) {
 		var target []byte
@@ -90,7 +91,7 @@ func ServerHandshake(rw io.ReadWriter, authenticator auth.Authenticator) (addr s
 	}
 
 	// SOCKS4 only support USERID auth.
-	if authenticator == nil || authenticator.Verify(string(userID), "") {
+	if authenticator == nil || authenticator.Verify(user, "") {
 		code = RequestGranted
 	} else {
 		code = RequestIdentdMismatched
@@ -180,6 +181,7 @@ func isReservedIP(ip netip.Addr) bool {
 }
 
 func readUntilNull(r io.Reader) ([]byte, error) {
+	const maxLen = 256
 	buf := &bytes.Buffer{}
 	var data [1]byte
 
@@ -189,6 +191,9 @@ func readUntilNull(r io.Reader) ([]byte, error) {
 		}
 		if data[0] == 0 {
 			return buf.Bytes(), nil
+		}
+		if buf.Len() >= maxLen {
+			return nil, errors.New("readUntilNull: data too long")
 		}
 		buf.WriteByte(data[0])
 	}

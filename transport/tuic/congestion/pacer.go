@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/metacubex/quic-go/congestion"
+	"github.com/metacubex/quic-go/monotime"
 )
 
 const initialMaxDatagramSize = congestion.ByteCount(1252)
@@ -16,7 +17,7 @@ const maxBurstSizePackets = 10
 type pacer struct {
 	budgetAtLastSent     congestion.ByteCount
 	maxDatagramSize      congestion.ByteCount
-	lastSentTime         time.Time
+	lastSentTime         monotime.Time
 	getAdjustedBandwidth func() uint64 // in bytes/s
 }
 
@@ -37,7 +38,7 @@ func newPacer(getBandwidth func() Bandwidth) *pacer {
 	return p
 }
 
-func (p *pacer) SentPacket(sendTime time.Time, size congestion.ByteCount) {
+func (p *pacer) SentPacket(sendTime monotime.Time, size congestion.ByteCount) {
 	budget := p.Budget(sendTime)
 	if size > budget {
 		p.budgetAtLastSent = 0
@@ -47,7 +48,7 @@ func (p *pacer) SentPacket(sendTime time.Time, size congestion.ByteCount) {
 	p.lastSentTime = sendTime
 }
 
-func (p *pacer) Budget(now time.Time) congestion.ByteCount {
+func (p *pacer) Budget(now monotime.Time) congestion.ByteCount {
 	if p.lastSentTime.IsZero() {
 		return p.maxBurstSize()
 	}
@@ -63,10 +64,10 @@ func (p *pacer) maxBurstSize() congestion.ByteCount {
 }
 
 // TimeUntilSend returns when the next packet should be sent.
-// It returns the zero value of time.Time if a packet can be sent immediately.
-func (p *pacer) TimeUntilSend() time.Time {
+// It returns the zero value of monotime.Time if a packet can be sent immediately.
+func (p *pacer) TimeUntilSend() monotime.Time {
 	if p.budgetAtLastSent >= p.maxDatagramSize {
-		return time.Time{}
+		return monotime.Time(0)
 	}
 	return p.lastSentTime.Add(Max(
 		MinPacingDelay,

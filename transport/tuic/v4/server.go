@@ -7,17 +7,17 @@ import (
 	"net"
 	"sync"
 
-	"github.com/Dreamacro/clash/adapter/inbound"
-	"github.com/Dreamacro/clash/common/atomic"
-	N "github.com/Dreamacro/clash/common/net"
-	"github.com/Dreamacro/clash/common/pool"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/transport/socks5"
-	"github.com/Dreamacro/clash/transport/tuic/common"
+	"github.com/metacubex/mihomo/adapter/inbound"
+	"github.com/metacubex/mihomo/common/atomic"
+	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/common/pool"
+	"github.com/metacubex/mihomo/common/xsync"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/transport/socks5"
+	"github.com/metacubex/mihomo/transport/tuic/types"
 
 	"github.com/gofrs/uuid/v5"
 	"github.com/metacubex/quic-go"
-	"github.com/puzpuzpuz/xsync/v2"
 )
 
 type ServerOption struct {
@@ -28,26 +28,25 @@ type ServerOption struct {
 	MaxUdpRelayPacketSize int
 }
 
-func NewServerHandler(option *ServerOption, quicConn quic.EarlyConnection, uuid uuid.UUID) common.ServerHandler {
+func NewServerHandler(option *ServerOption, quicConn *quic.Conn, uuid uuid.UUID) types.ServerHandler {
 	return &serverHandler{
 		ServerOption: option,
 		quicConn:     quicConn,
 		uuid:         uuid,
 		authCh:       make(chan struct{}),
-		udpInputMap:  xsync.NewIntegerMapOf[uint32, *atomic.Bool](),
 	}
 }
 
 type serverHandler struct {
 	*ServerOption
-	quicConn quic.EarlyConnection
+	quicConn *quic.Conn
 	uuid     uuid.UUID
 
 	authCh   chan struct{}
 	authOk   atomic.Bool
 	authOnce sync.Once
 
-	udpInputMap *xsync.MapOf[uint32, *atomic.Bool]
+	udpInputMap xsync.Map[uint32, *atomic.Bool]
 }
 
 func (s *serverHandler) AuthOk() bool {
@@ -68,10 +67,10 @@ func (s *serverHandler) HandleMessage(message []byte) (err error) {
 	if err != nil {
 		return
 	}
-	return s.parsePacket(&packet, common.NATIVE)
+	return s.parsePacket(&packet, types.NATIVE)
 }
 
-func (s *serverHandler) parsePacket(packet *Packet, udpRelayMode common.UdpRelayMode) (err error) {
+func (s *serverHandler) parsePacket(packet *Packet, udpRelayMode types.UdpRelayMode) (err error) {
 	<-s.authCh
 	if !s.authOk.Load() {
 		return
@@ -80,7 +79,7 @@ func (s *serverHandler) parsePacket(packet *Packet, udpRelayMode common.UdpRelay
 
 	assocId = packet.ASSOC_ID
 
-	writeClosed, _ := s.udpInputMap.LoadOrCompute(assocId, func() *atomic.Bool { return &atomic.Bool{} })
+	writeClosed, _ := s.udpInputMap.LoadOrStoreFn(assocId, func() *atomic.Bool { return &atomic.Bool{} })
 	if writeClosed.Load() {
 		return nil
 	}
@@ -167,7 +166,7 @@ func (s *serverHandler) HandleUniStream(reader *bufio.Reader) (err error) {
 		if err != nil {
 			return
 		}
-		return s.parsePacket(&packet, common.QUIC)
+		return s.parsePacket(&packet, types.QUIC)
 	case DissociateType:
 		var disassociate Dissociate
 		disassociate, err = ReadDissociateWithHead(commandHead, reader)

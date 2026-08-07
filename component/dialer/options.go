@@ -3,23 +3,36 @@ package dialer
 import (
 	"context"
 	"net"
+	"net/netip"
 
-	"github.com/Dreamacro/clash/common/atomic"
-	"github.com/Dreamacro/clash/component/resolver"
+	"github.com/metacubex/mihomo/common/atomic"
+	"github.com/metacubex/mihomo/component/resolver"
 )
 
 var (
-	DefaultOptions     []Option
 	DefaultInterface   = atomic.NewTypedValue[string]("")
 	DefaultRoutingMark = atomic.NewInt32(0)
+
+	DefaultInterfaceFinder = atomic.NewTypedValue[InterfaceFinder](nil)
 )
+
+type InterfaceFinder interface {
+	FindInterfaceName(destination netip.Addr) string
+}
 
 type NetDialer interface {
 	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 }
 
+type NetDialerFunc func(ctx context.Context, network, address string) (net.Conn, error)
+
+func (f NetDialerFunc) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	return f(ctx, network, address)
+}
+
 type option struct {
 	interfaceName string
+	fallbackBind  bool
 	addrReuse     bool
 	routingMark   int
 	network       int
@@ -35,6 +48,12 @@ type Option func(opt *option)
 func WithInterface(name string) Option {
 	return func(opt *option) {
 		opt.interfaceName = name
+	}
+}
+
+func WithFallbackBind(fallback bool) Option {
+	return func(opt *option) {
+		opt.fallbackBind = fallback
 	}
 }
 
@@ -100,4 +119,24 @@ func WithOption(o option) Option {
 	return func(opt *option) {
 		*opt = o
 	}
+}
+
+func WithOptions(options ...Option) Option {
+	return func(opt *option) {
+		for _, o := range options {
+			o(opt)
+		}
+	}
+}
+
+func IsZeroOptions(opts []Option) bool {
+	return applyOptions(opts...) == option{}
+}
+
+func applyOptions(options ...Option) option {
+	opt := option{}
+	for _, o := range options {
+		o(&opt)
+	}
+	return opt
 }

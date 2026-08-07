@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/Dreamacro/clash/common/buf"
+	"github.com/metacubex/mihomo/common/buf"
 )
 
 type refConn struct {
@@ -77,6 +77,6 @@ func (c *refConn) WriterReplaceable() bool { // Relay() will handle reference
 
 var _ ExtendedConn = (*refConn)(nil)
 
-func NewRefConn(conn net.Conn, ref any) net.Conn {
+func NewRefConn(conn net.Conn, ref any) ExtendedConn {
 	return &refConn{conn: NewExtendedConn(conn), ref: ref}
 }

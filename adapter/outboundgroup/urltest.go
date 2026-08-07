@@ -6,21 +6,16 @@ import (
 	"errors"
 	"time"
 
-	"github.com/Dreamacro/clash/adapter/outbound"
-	"github.com/Dreamacro/clash/common/callback"
-	N "github.com/Dreamacro/clash/common/net"
-	"github.com/Dreamacro/clash/common/singledo"
-	"github.com/Dreamacro/clash/component/dialer"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/constant/provider"
+	"github.com/metacubex/mihomo/common/callback"
+	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/common/singledo"
+	"github.com/metacubex/mihomo/common/utils"
+	C "github.com/metacubex/mihomo/constant"
+	P "github.com/metacubex/mihomo/constant/provider"
 )
 
-type urlTestOption func(*URLTest)
-
-func urlTestWithTolerance(tolerance uint16) urlTestOption {
-	return func(u *URLTest) {
-		u.tolerance = tolerance
-	}
+type URLTestOption struct {
+	Tolerance uint16 `group:"tolerance,omitempty"`
 }
 
 type URLTest struct {
@@ -49,23 +44,23 @@ func (u *URLTest) Set(name string) error {
 	if p == nil {
 		return errors.New("proxy not exist")
 	}
-	u.selected = name
-	u.fast(false)
+	u.ForceSet(name)
 	return nil
 }
 
 func (u *URLTest) ForceSet(name string) {
 	u.selected = name
+	u.fastSingle.Reset()
 }
 
 // DialContext implements C.ProxyAdapter
-func (u *URLTest) DialContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (c C.Conn, err error) {
+func (u *URLTest) DialContext(ctx context.Context, metadata *C.Metadata) (c C.Conn, err error) {
 	proxy := u.fast(true)
-	c, err = proxy.DialContext(ctx, metadata, u.Base.DialOptions(opts...)...)
+	c, err = proxy.DialContext(ctx, metadata)
 	if err == nil {
 		c.AppendToChains(u)
 	} else {
-		u.onDialFailed(proxy.Type(), err)
+		u.onDialFailed(proxy.Type(), err, u.healthCheck)
 	}
 
 	if N.NeedHandshake(c) {
@@ -73,7 +68,7 @@ func (u *URLTest) DialContext(ctx context.Context, metadata *C.Metadata, opts ..
 			if err == nil {
 				u.onDialSuccess()
 			} else {
-				u.onDialFailed(proxy.Type(), err)
+				u.onDialFailed(proxy.Type(), err, u.healthCheck)
 			}
 		})
 	}
@@ -82,10 +77,13 @@ func (u *URLTest) DialContext(ctx context.Context, metadata *C.Metadata, opts ..
 }
 
 // ListenPacketContext implements C.ProxyAdapter
-func (u *URLTest) ListenPacketContext(ctx context.Context, metadata *C.Metadata, opts ...dialer.Option) (C.PacketConn, error) {
-	pc, err := u.fast(true).ListenPacketContext(ctx, metadata, u.Base.DialOptions(opts...)...)
+func (u *URLTest) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (C.PacketConn, error) {
+	proxy := u.fast(true)
+	pc, err := proxy.ListenPacketContext(ctx, metadata)
 	if err == nil {
 		pc.AppendToChains(u)
+	} else {
+		u.onDialFailed(proxy.Type(), err, u.healthCheck)
 	}
 
 	return pc, err
@@ -96,25 +94,29 @@ func (u *URLTest) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 	return u.fast(touch)
 }
 
-func (u *URLTest) fast(touch bool) C.Proxy {
+func (u *URLTest) healthCheck() {
+	u.fastSingle.Reset()
+	u.GroupBase.healthCheck()
+	u.fastSingle.Reset()
+}
 
-	proxies := u.GetProxies(touch)
-	if u.selected != "" {
-		for _, proxy := range proxies {
-			if !proxy.Alive() {
-				continue
-			}
-			if proxy.Name() == u.selected {
-				u.fastNode = proxy
-				return proxy
+func (u *URLTest) fast(touch bool) C.Proxy {
+	elm, _, shared := u.fastSingle.Do(func() (C.Proxy, error) {
+		proxies := u.GetProxies(touch)
+		if u.selected != "" {
+			for _, proxy := range proxies {
+				if !proxy.AliveForTestUrl(u.testUrl) {
+					continue
+				}
+				if proxy.Name() == u.selected {
+					u.fastNode = proxy
+					return proxy, nil
+				}
 			}
 		}
-	}
 
-	elm, _, shared := u.fastSingle.Do(func() (C.Proxy, error) {
 		fast := proxies[0]
-		// min := fast.LastDelay()
-		min := fast.LastDelayForTestUrl(u.testUrl)
+		minDelay := fast.LastDelayForTestUrl(u.testUrl)
 		fastNotExist := true
 
 		for _, proxy := range proxies[1:] {
@@ -122,21 +124,18 @@ func (u *URLTest) fast(touch bool) C.Proxy {
 				fastNotExist = false
 			}
 
-			// if !proxy.Alive() {
 			if !proxy.AliveForTestUrl(u.testUrl) {
 				continue
 			}
 
-			// delay := proxy.LastDelay()
 			delay := proxy.LastDelayForTestUrl(u.testUrl)
-			if delay < min {
+			if delay < minDelay {
 				fast = proxy
-				min = delay
+				minDelay = delay
 			}
 
 		}
 		// tolerance
-		// if u.fastNode == nil || fastNotExist || !u.fastNode.Alive() || u.fastNode.LastDelay() > fast.LastDelay()+u.tolerance {
 		if u.fastNode == nil || fastNotExist || !u.fastNode.AliveForTestUrl(u.testUrl) || u.fastNode.LastDelayForTestUrl(u.testUrl) > fast.LastDelayForTestUrl(u.testUrl)+u.tolerance {
 			u.fastNode = fast
 		}
@@ -169,51 +168,54 @@ func (u *URLTest) MarshalJSON() ([]byte, error) {
 		all = append(all, proxy.Name())
 	}
 	return json.Marshal(map[string]any{
-		"type":     u.Type().String(),
-		"now":      u.Now(),
-		"all":      all,
-		"testUrl":  u.testUrl,
-		"expected": u.expectedStatus,
+		"type":           u.Type().String(),
+		"now":            u.Now(),
+		"all":            all,
+		"testUrl":        u.testUrl,
+		"expectedStatus": u.expectedStatus,
+		"fixed":          u.selected,
+		"hidden":         u.Hidden(),
+		"icon":           u.Icon(),
+		"emptyFallback":  u.EmptyFallback().Name(),
 	})
 }
 
-func parseURLTestOption(config map[string]any) []urlTestOption {
-	opts := []urlTestOption{}
-
-	// tolerance
-	if elm, ok := config["tolerance"]; ok {
-		if tolerance, ok := elm.(int); ok {
-			opts = append(opts, urlTestWithTolerance(uint16(tolerance)))
-		}
-	}
-
-	return opts
+func (u *URLTest) Providers() []P.ProxyProvider {
+	return u.providers
 }
 
-func NewURLTest(option *GroupCommonOption, providers []provider.ProxyProvider, options ...urlTestOption) *URLTest {
+func (u *URLTest) Proxies() []C.Proxy {
+	return u.GetProxies(false)
+}
+
+func (u *URLTest) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (map[string]uint16, error) {
+	return u.GroupBase.URLTest(ctx, u.testUrl, expectedStatus)
+}
+
+func NewURLTest(option GroupCommonOption, urlTestOption URLTestOption, emptyFallback C.Proxy, providers []P.ProxyProvider) (*URLTest, error) {
+	if emptyFallback == nil {
+		return nil, errors.New("empty fallback proxy not exist")
+	}
 	urlTest := &URLTest{
 		GroupBase: NewGroupBase(GroupBaseOption{
-			outbound.BaseOption{
-				Name:        option.Name,
-				Type:        C.URLTest,
-				Interface:   option.Interface,
-				RoutingMark: option.RoutingMark,
-			},
-
-			option.Filter,
-			option.ExcludeFilter,
-			option.ExcludeType,
-			providers,
+			Name:           option.Name,
+			Type:           C.URLTest,
+			Hidden:         option.Hidden,
+			Icon:           option.Icon,
+			Filter:         option.Filter,
+			ExcludeFilter:  option.ExcludeFilter,
+			ExcludeType:    option.ExcludeType,
+			TestTimeout:    option.TestTimeout,
+			MaxFailedTimes: option.MaxFailedTimes,
+			EmptyFallback:  emptyFallback,
+			Providers:      providers,
 		}),
 		fastSingle:     singledo.NewSingle[C.Proxy](time.Second * 10),
 		disableUDP:     option.DisableUDP,
 		testUrl:        option.URL,
 		expectedStatus: option.ExpectedStatus,
+		tolerance:      urlTestOption.Tolerance,
 	}
 
-	for _, option := range options {
-		option(urlTest)
-	}
-
-	return urlTest
+	return urlTest, nil
 }

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dreamacro/clash/common/atomic"
+	"github.com/metacubex/mihomo/common/atomic"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -70,9 +70,11 @@ func TestObservable_SubscribeClosedSource(t *testing.T) {
 	src := NewObservable[int](iter)
 	data, _ := src.Subscribe()
 	<-data
-
-	_, closed := src.Subscribe()
-	assert.NotNil(t, closed)
+	select {
+	case <-src.stopCh:
+	case <-time.After(time.Second):
+		assert.Fail(t, "timeout not stop")
+	}
 }
 
 func TestObservable_UnSubscribeWithNotExistSubscription(t *testing.T) {

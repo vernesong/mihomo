@@ -1,9 +1,11 @@
 package provider
 
 import (
-	"github.com/dlclark/regexp2"
+	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/metacubex/mihomo/log"
 )
 
 type SubscriptionInfo struct {
@@ -13,45 +15,44 @@ type SubscriptionInfo struct {
 	Expire   int64
 }
 
-func NewSubscriptionInfo(str string) (si *SubscriptionInfo, err error) {
-	si = &SubscriptionInfo{}
-	str = strings.ToLower(str)
-	reTraffic := regexp2.MustCompile("upload=(\\d+); download=(\\d+); total=(\\d+)", 0)
-	reExpire := regexp2.MustCompile("expire=(\\d+)", 0)
+func NewSubscriptionInfo(userinfo string) (si *SubscriptionInfo) {
+	userinfo = strings.ReplaceAll(strings.ToLower(userinfo), " ", "")
+	si = new(SubscriptionInfo)
 
-	match, err := reTraffic.FindStringMatch(str)
-	if err != nil || match == nil {
-		return nil, err
-	}
-	group := match.Groups()
-	si.Upload, err = str2uint64(group[1].String())
-	if err != nil {
-		return nil, err
-	}
+	for _, field := range strings.Split(userinfo, ";") {
+		name, value, ok := strings.Cut(field, "=")
+		if !ok {
+			continue
+		}
 
-	si.Download, err = str2uint64(group[2].String())
-	if err != nil {
-		return nil, err
-	}
-
-	si.Total, err = str2uint64(group[3].String())
-	if err != nil {
-		return nil, err
-	}
-
-	match, _ = reExpire.FindStringMatch(str)
-	if match != nil {
-		group = match.Groups()
-		si.Expire, err = str2uint64(group[1].String())
+		intValue, err := parseValue(value)
 		if err != nil {
-			return nil, err
+			log.Warnln("[Provider] get subscription-userinfo: %e", err)
+			continue
+		}
+
+		switch name {
+		case "upload":
+			si.Upload = intValue
+		case "download":
+			si.Download = intValue
+		case "total":
+			si.Total = intValue
+		case "expire":
+			si.Expire = intValue
 		}
 	}
-
-	return
+	return si
 }
 
-func str2uint64(str string) (int64, error) {
-	i, err := strconv.ParseInt(str, 10, 64)
-	return i, err
+func parseValue(value string) (int64, error) {
+	if intValue, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return intValue, nil
+	}
+
+	if floatValue, err := strconv.ParseFloat(value, 64); err == nil {
+		return int64(floatValue), nil
+	}
+
+	return 0, fmt.Errorf("failed to parse value '%s'", value)
 }

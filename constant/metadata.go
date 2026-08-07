@@ -6,11 +6,15 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
-
-	"github.com/Dreamacro/clash/transport/socks5"
 )
 
-// Socks addr type
+// SOCKS address types as defined in RFC 1928 section 5.
+const (
+	AtypIPv4       AddrType = 1
+	AtypDomainName AddrType = 3
+	AtypIPv6       AddrType = 4
+)
+
 const (
 	TCP NetWork = iota
 	UDP
@@ -24,15 +28,38 @@ const (
 	SOCKS4
 	SOCKS5
 	SHADOWSOCKS
+	SNELL
 	VMESS
+	VLESS
 	REDIR
 	TPROXY
+	TROJAN
 	TUNNEL
 	TUN
 	TUIC
+	HYSTERIA2
+	ANYTLS
+	MIERU
+	SUDOKU
+	TRUSTTUNNEL
+	SHADOWQUIC
 	INNER
-	MITM
 )
+
+type AddrType byte
+
+func (a AddrType) String() string {
+	switch a {
+	case AtypIPv4:
+		return "IPv4"
+	case AtypDomainName:
+		return "DomainName"
+	case AtypIPv6:
+		return "IPv6"
+	default:
+		return "Unknown"
+	}
+}
 
 type NetWork int
 
@@ -67,22 +94,38 @@ func (t Type) String() string {
 		return "Socks5"
 	case SHADOWSOCKS:
 		return "ShadowSocks"
+	case SNELL:
+		return "Snell"
 	case VMESS:
 		return "Vmess"
+	case VLESS:
+		return "Vless"
 	case REDIR:
 		return "Redir"
 	case TPROXY:
 		return "TProxy"
+	case TROJAN:
+		return "Trojan"
 	case TUNNEL:
 		return "Tunnel"
 	case TUN:
 		return "Tun"
 	case TUIC:
 		return "Tuic"
+	case HYSTERIA2:
+		return "Hysteria2"
+	case ANYTLS:
+		return "AnyTLS"
+	case MIERU:
+		return "Mieru"
+	case SUDOKU:
+		return "Sudoku"
+	case TRUSTTUNNEL:
+		return "TrustTunnel"
+	case SHADOWQUIC:
+		return "ShadowQuic"
 	case INNER:
 		return "Inner"
-	case MITM:
-		return "Mitm"
 	default:
 		return "Unknown"
 	}
@@ -101,18 +144,36 @@ func ParseType(t string) (*Type, error) {
 		res = SOCKS5
 	case "SHADOWSOCKS":
 		res = SHADOWSOCKS
+	case "SNELL":
+		res = SNELL
 	case "VMESS":
 		res = VMESS
+	case "VLESS":
+		res = VLESS
 	case "REDIR":
 		res = REDIR
 	case "TPROXY":
 		res = TPROXY
+	case "TROJAN":
+		res = TROJAN
 	case "TUNNEL":
 		res = TUNNEL
 	case "TUN":
 		res = TUN
 	case "TUIC":
 		res = TUIC
+	case "HYSTERIA2":
+		res = HYSTERIA2
+	case "ANYTLS":
+		res = ANYTLS
+	case "MIERU":
+		res = MIERU
+	case "SUDOKU":
+		res = SUDOKU
+	case "TRUSTTUNNEL":
+		res = TRUSTTUNNEL
+	case "SHADOWQUIC":
+		res = SHADOWQUIC
 	case "INNER":
 		res = INNER
 	default:
@@ -131,12 +192,17 @@ type Metadata struct {
 	Type         Type       `json:"type"`
 	SrcIP        netip.Addr `json:"sourceIP"`
 	DstIP        netip.Addr `json:"destinationIP"`
+	SrcGeoIP     []string   `json:"sourceGeoIP"`      // can be nil if never queried, empty slice if got no result
+	DstGeoIP     []string   `json:"destinationGeoIP"` // can be nil if never queried, empty slice if got no result
+	SrcIPASN     string     `json:"sourceIPASN"`
+	DstIPASN     string     `json:"destinationIPASN"`
 	SrcPort      uint16     `json:"sourcePort,string"`      // `,string` is used to compatible with old version json output
 	DstPort      uint16     `json:"destinationPort,string"` // `,string` is used to compatible with old version json output
 	InIP         netip.Addr `json:"inboundIP"`
 	InPort       uint16     `json:"inboundPort,string"` // `,string` is used to compatible with old version json output
 	InName       string     `json:"inboundName"`
 	InUser       string     `json:"inboundUser"`
+	RematchName  string     `json:"rematchName"`
 	Host         string     `json:"host"`
 	DNSMode      DNSMode    `json:"dnsMode"`
 	Uid          uint32     `json:"uid"`
@@ -145,10 +211,16 @@ type Metadata struct {
 	SpecialProxy string     `json:"specialProxy"`
 	SpecialRules string     `json:"specialRules"`
 	RemoteDst    string     `json:"remoteDestination"`
+	DSCP         uint8      `json:"dscp"`
+	UUID           string     `json:"id,omitempty"` // ID is used to identify the connection for smart
+	SmartBlock     string     `json:"smartBlock"`   // SmartBlock indicates if the node selected by smart group should be blocked for this connection
+	SmartTarget    string     `json:"smartTarget"`    // SmartTarget indicates the target domain/ip for smart group node selection
+	WildcardTarget string     `json:"wildcardTarget"` // WildcardTarget caches GetEffectiveTarget result
+
+	RawSrcAddr net.Addr `json:"-"`
+	RawDstAddr net.Addr `json:"-"`
 	// Only domain rule
 	SniffHost string `json:"sniffHost"`
-	// Only Mitm rule
-	UserAgent string `json:"userAgent"`
 }
 
 func (m *Metadata) RemoteAddress() string {
@@ -159,11 +231,13 @@ func (m *Metadata) SourceAddress() string {
 	return net.JoinHostPort(m.SrcIP.String(), strconv.FormatUint(uint64(m.SrcPort), 10))
 }
 
+func (m *Metadata) SourceAddrPort() netip.AddrPort {
+	return netip.AddrPortFrom(m.SrcIP.Unmap(), m.SrcPort)
+}
+
 func (m *Metadata) SourceDetail() string {
 	if m.Type == INNER {
-		return fmt.Sprintf("%s", ClashName)
-	} else if m.Type == MITM {
-		return fmt.Sprintf("%s-MITM", ClashName)
+		return fmt.Sprintf("%s", MihomoName)
 	}
 
 	switch {
@@ -182,14 +256,14 @@ func (m *Metadata) SourceValid() bool {
 	return m.SrcPort != 0 && m.SrcIP.IsValid()
 }
 
-func (m *Metadata) AddrType() int {
+func (m *Metadata) AddrType() AddrType {
 	switch true {
 	case m.Host != "" || !m.DstIP.IsValid():
-		return socks5.AtypDomainName
+		return AtypDomainName
 	case m.DstIP.Is4():
-		return socks5.AtypIPv4
+		return AtypIPv4
 	default:
-		return socks5.AtypIPv6
+		return AtypIPv6
 	}
 }
 
@@ -217,6 +291,11 @@ func (m *Metadata) Pure() *Metadata {
 	return m
 }
 
+func (m *Metadata) Clone() *Metadata {
+	copyM := *m
+	return &copyM
+}
+
 func (m *Metadata) AddrPort() netip.AddrPort {
 	return netip.AddrPortFrom(m.DstIP.Unmap(), m.DstPort)
 }
@@ -242,6 +321,34 @@ func (m *Metadata) Valid() bool {
 	return m.Host != "" || m.DstIP.IsValid()
 }
 
+func (m *Metadata) SetRemoteAddr(addr net.Addr) error {
+	if addr == nil {
+		return nil
+	}
+	if rawAddr, ok := addr.(interface{ RawAddr() net.Addr }); ok {
+		if rawAddr := rawAddr.RawAddr(); rawAddr != nil {
+			if err := m.SetRemoteAddr(rawAddr); err == nil {
+				return nil
+			}
+		}
+	}
+	if addr, ok := addr.(interface{ AddrPort() netip.AddrPort }); ok { // *net.TCPAddr, *net.UDPAddr, M.Socksaddr
+		if addrPort := addr.AddrPort(); addrPort.Port() != 0 {
+			m.DstPort = addrPort.Port()
+			if addrPort.IsValid() { // sing's M.Socksaddr maybe return an invalid AddrPort if it's a DomainName
+				m.DstIP = addrPort.Addr().Unmap()
+				return nil
+			} else {
+				if addr, ok := addr.(interface{ AddrString() string }); ok { // must be sing's M.Socksaddr
+					m.Host = addr.AddrString() // actually is M.Socksaddr.Fqdn
+					return nil
+				}
+			}
+		}
+	}
+	return m.SetRemoteAddress(addr.String())
+}
+
 func (m *Metadata) SetRemoteAddress(rawAddress string) error {
 	host, port, err := net.SplitHostPort(rawAddress)
 	if err != nil {
@@ -263,4 +370,11 @@ func (m *Metadata) SetRemoteAddress(rawAddress string) error {
 	m.DstPort = uint16Port
 
 	return nil
+}
+
+func (m *Metadata) SwapSrcDst() {
+	m.SrcIP, m.DstIP = m.DstIP, m.SrcIP
+	m.SrcPort, m.DstPort = m.DstPort, m.SrcPort
+	m.SrcIPASN, m.DstIPASN = m.DstIPASN, m.SrcIPASN
+	m.SrcGeoIP, m.DstGeoIP = m.DstGeoIP, m.SrcGeoIP
 }

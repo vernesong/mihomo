@@ -3,19 +3,18 @@ package common
 import (
 	"fmt"
 
-	"github.com/Dreamacro/clash/component/geodata"
-	_ "github.com/Dreamacro/clash/component/geodata/memconservative"
-	"github.com/Dreamacro/clash/component/geodata/router"
-	_ "github.com/Dreamacro/clash/component/geodata/standard"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/log"
+	"github.com/metacubex/mihomo/component/geodata"
+	_ "github.com/metacubex/mihomo/component/geodata/memconservative"
+	"github.com/metacubex/mihomo/component/geodata/router"
+	_ "github.com/metacubex/mihomo/component/geodata/standard"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/log"
 )
 
 type GEOSITE struct {
-	*Base
+	Base
 	country    string
 	adapter    string
-	matcher    *router.DomainMatcher
 	recodeSize int
 }
 
@@ -23,12 +22,20 @@ func (gs *GEOSITE) RuleType() C.RuleType {
 	return C.GEOSITE
 }
 
-func (gs *GEOSITE) Match(metadata *C.Metadata) (bool, string) {
-	domain := metadata.RuleHost()
+func (gs *GEOSITE) Match(metadata *C.Metadata, helper C.RuleMatchHelper) (bool, string) {
+	return gs.MatchDomain(metadata.RuleHost()), gs.adapter
+}
+
+// MatchDomain implements C.DomainMatcher
+func (gs *GEOSITE) MatchDomain(domain string) bool {
 	if len(domain) == 0 {
-		return false, ""
+		return false
 	}
-	return gs.matcher.ApplyDomain(domain), gs.adapter
+	matcher, err := gs.GetDomainMatcher()
+	if err != nil {
+		return false
+	}
+	return matcher.ApplyDomain(domain)
 }
 
 func (gs *GEOSITE) Adapter() string {
@@ -39,12 +46,19 @@ func (gs *GEOSITE) Payload() string {
 	return gs.country
 }
 
-func (gs *GEOSITE) GetDomainMatcher() *router.DomainMatcher {
-	return gs.matcher
+func (gs *GEOSITE) GetDomainMatcher() (router.DomainMatcher, error) {
+	matcher, err := geodata.LoadGeoSiteMatcher(gs.country)
+	if err != nil {
+		return nil, fmt.Errorf("load GeoSite data error, %w", err)
+	}
+	return matcher, nil
 }
 
 func (gs *GEOSITE) GetRecodeSize() int {
-	return gs.recodeSize
+	if matcher, err := gs.GetDomainMatcher(); err == nil {
+		return matcher.Count()
+	}
+	return 0
 }
 
 func NewGEOSITE(country string, adapter string) (*GEOSITE, error) {
@@ -53,20 +67,18 @@ func NewGEOSITE(country string, adapter string) (*GEOSITE, error) {
 		return nil, err
 	}
 
-	matcher, size, err := geodata.LoadGeoSiteMatcher(country)
-	if err != nil {
-		return nil, fmt.Errorf("load GeoSite data error, %s", err.Error())
-	}
-
-	log.Infoln("Start initial GeoSite rule %s => %s, records: %d", country, adapter, size)
-
 	geoSite := &GEOSITE{
-		Base:       &Base{},
-		country:    country,
-		adapter:    adapter,
-		matcher:    matcher,
-		recodeSize: size,
+		Base:    Base{},
+		country: country,
+		adapter: adapter,
 	}
+
+	matcher, err := geoSite.GetDomainMatcher() // test load
+	if err != nil {
+		return nil, err
+	}
+
+	log.Infoln("Finished initial GeoSite rule %s => %s, records: %d", country, adapter, matcher.Count())
 
 	return geoSite, nil
 }

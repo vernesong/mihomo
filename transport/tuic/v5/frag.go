@@ -4,12 +4,19 @@ import (
 	"bytes"
 	"sync"
 
-	"github.com/Dreamacro/clash/common/cache"
+	"github.com/metacubex/mihomo/common/lru"
 
 	"github.com/metacubex/quic-go"
 )
 
-func fragWriteNative(quicConn quic.Connection, packet Packet, buf *bytes.Buffer, fragSize int) (err error) {
+// MaxFragSize is a safe udp relay packet size
+// because tuicv5 support udp fragment so we unneeded to do a magic modify for quic-go to increase MaxDatagramFrameSize
+// it may not work fine in some platform
+// "1200" from quic-go's MaxDatagramSize
+// "-3" from quic-go's DatagramFrame.MaxDataLen
+var MaxFragSize = 1200 - PacketOverHead - 3
+
+func fragWriteNative(quicConn *quic.Conn, packet Packet, buf *bytes.Buffer, fragSize int) (err error) {
 	fullPayload := packet.DATA
 	off := 0
 	fragID := uint8(0)
@@ -32,7 +39,7 @@ func fragWriteNative(quicConn quic.Connection, packet Packet, buf *bytes.Buffer,
 			return
 		}
 		data := buf.Bytes()
-		err = quicConn.SendMessage(data)
+		err = quicConn.SendDatagram(data)
 		if err != nil {
 			return
 		}
@@ -42,7 +49,7 @@ func fragWriteNative(quicConn quic.Connection, packet Packet, buf *bytes.Buffer,
 }
 
 type deFragger struct {
-	lru  *cache.LruCache[uint16, *packetBag]
+	lru  *lru.LruCache[uint16, *packetBag]
 	once sync.Once
 }
 
@@ -58,9 +65,9 @@ func newPacketBag() *packetBag {
 
 func (d *deFragger) init() {
 	if d.lru == nil {
-		d.lru = cache.New(
-			cache.WithAge[uint16, *packetBag](10),
-			cache.WithUpdateAgeOnGet[uint16, *packetBag](),
+		d.lru = lru.New(
+			lru.WithAge[uint16, *packetBag](10),
+			lru.WithUpdateAgeOnGet[uint16, *packetBag](),
 		)
 	}
 }

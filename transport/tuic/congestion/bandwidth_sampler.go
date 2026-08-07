@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/metacubex/quic-go/congestion"
+	"github.com/metacubex/quic-go/monotime"
 )
 
 var (
@@ -36,7 +37,7 @@ type SendTimeState struct {
 type ConnectionStateOnSentPacket struct {
 	packetNumber congestion.PacketNumber
 	// Time at which the packet is sent.
-	sendTime time.Time
+	sendTime monotime.Time
 	// Size of the packet.
 	size congestion.ByteCount
 	// The value of |totalBytesSentAtLastAckedPacket| at the time the
@@ -44,10 +45,10 @@ type ConnectionStateOnSentPacket struct {
 	totalBytesSentAtLastAckedPacket congestion.ByteCount
 	// The value of |lastAckedPacketSentTime| at the time the packet was
 	// sent.
-	lastAckedPacketSentTime time.Time
+	lastAckedPacketSentTime monotime.Time
 	// The value of |lastAckedPacketAckTime| at the time the packet was
 	// sent.
-	lastAckedPacketAckTime time.Time
+	lastAckedPacketAckTime monotime.Time
 	// Send time states that are returned to the congestion controller when the
 	// packet is acked or lost.
 	sendTimeState SendTimeState
@@ -166,9 +167,9 @@ type BandwidthSampler struct {
 	totalBytesSentAtLastAckedPacket congestion.ByteCount
 	// The time at which the last acknowledged packet was sent. Set to
 	// QuicTime::Zero() if no valid timestamp is available.
-	lastAckedPacketSentTime time.Time
+	lastAckedPacketSentTime monotime.Time
 	// The time at which the most recent packet was acknowledged.
-	lastAckedPacketAckTime time.Time
+	lastAckedPacketAckTime monotime.Time
 	// The most recently sent packet.
 	lastSendPacket congestion.PacketNumber
 	// Indicates whether the bandwidth sampler is currently in an app-limited
@@ -194,7 +195,7 @@ func NewBandwidthSampler() *BandwidthSampler {
 // packets are sent in order. The information about the packet will not be
 // released from the sampler until it the packet is either acknowledged or
 // declared lost.
-func (s *BandwidthSampler) OnPacketSent(sentTime time.Time, lastSentPacket congestion.PacketNumber, sentBytes, bytesInFlight congestion.ByteCount, hasRetransmittableData bool) {
+func (s *BandwidthSampler) OnPacketSent(sentTime monotime.Time, lastSentPacket congestion.PacketNumber, sentBytes, bytesInFlight congestion.ByteCount, hasRetransmittableData bool) {
 	s.lastSendPacket = lastSentPacket
 
 	if !hasRetransmittableData {
@@ -224,7 +225,7 @@ func (s *BandwidthSampler) OnPacketSent(sentTime time.Time, lastSentPacket conge
 // OnPacketAcked Notifies the sampler that the |lastAckedPacket| is acknowledged. Returns a
 // bandwidth sample. If no bandwidth sample is available,
 // QuicBandwidth::Zero() is returned.
-func (s *BandwidthSampler) OnPacketAcked(ackTime time.Time, lastAckedPacket congestion.PacketNumber) *BandwidthSample {
+func (s *BandwidthSampler) OnPacketAcked(ackTime monotime.Time, lastAckedPacket congestion.PacketNumber) *BandwidthSample {
 	sentPacketState := s.connectionStats.Get(lastAckedPacket)
 	if sentPacketState == nil {
 		return NewBandwidthSample()
@@ -238,7 +239,7 @@ func (s *BandwidthSampler) OnPacketAcked(ackTime time.Time, lastAckedPacket cong
 
 // onPacketAckedInner Handles the actual bandwidth calculations, whereas the outer method handles
 // retrieving and removing |sentPacket|.
-func (s *BandwidthSampler) onPacketAckedInner(ackTime time.Time, lastAckedPacket congestion.PacketNumber, sentPacket *ConnectionStateOnSentPacket) *BandwidthSample {
+func (s *BandwidthSampler) onPacketAckedInner(ackTime monotime.Time, lastAckedPacket congestion.PacketNumber, sentPacket *ConnectionStateOnSentPacket) *BandwidthSample {
 	s.totalBytesAcked += sentPacket.size
 
 	s.totalBytesSentAtLastAckedPacket = sentPacket.sendTimeState.totalBytesSent
@@ -296,9 +297,9 @@ func (s *BandwidthSampler) onPacketAckedInner(ackTime time.Time, lastAckedPacket
 	return sample
 }
 
-// OnPacketLost Informs the sampler that a packet is considered lost and it should no
+// OnCongestionEvent Informs the sampler that a packet is considered lost and it should no
 // longer keep track of it.
-func (s *BandwidthSampler) OnPacketLost(packetNumber congestion.PacketNumber) SendTimeState {
+func (s *BandwidthSampler) OnCongestionEvent(packetNumber congestion.PacketNumber) SendTimeState {
 	ok, sentPacket := s.connectionStats.Remove(packetNumber)
 	sendTimeState := SendTimeState{
 		isValid: ok,
@@ -336,7 +337,7 @@ type ConnectionStates struct {
 	stats map[congestion.PacketNumber]*ConnectionStateOnSentPacket
 }
 
-func (s *ConnectionStates) Insert(packetNumber congestion.PacketNumber, sentTime time.Time, bytes congestion.ByteCount, sampler *BandwidthSampler) bool {
+func (s *ConnectionStates) Insert(packetNumber congestion.PacketNumber, sentTime monotime.Time, bytes congestion.ByteCount, sampler *BandwidthSampler) bool {
 	if _, ok := s.stats[packetNumber]; ok {
 		return false
 	}
@@ -357,7 +358,7 @@ func (s *ConnectionStates) Remove(packetNumber congestion.PacketNumber) (bool, *
 	return ok, state
 }
 
-func NewConnectionStateOnSentPacket(packetNumber congestion.PacketNumber, sentTime time.Time, bytes congestion.ByteCount, sampler *BandwidthSampler) *ConnectionStateOnSentPacket {
+func NewConnectionStateOnSentPacket(packetNumber congestion.PacketNumber, sentTime monotime.Time, bytes congestion.ByteCount, sampler *BandwidthSampler) *ConnectionStateOnSentPacket {
 	return &ConnectionStateOnSentPacket{
 		packetNumber:                    packetNumber,
 		sendTime:                        sentTime,

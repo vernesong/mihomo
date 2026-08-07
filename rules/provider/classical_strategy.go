@@ -2,22 +2,26 @@ package provider
 
 import (
 	"fmt"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/log"
-	"strings"
+
+	C "github.com/metacubex/mihomo/constant"
+	P "github.com/metacubex/mihomo/constant/provider"
+	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/rules/common"
 )
 
 type classicalStrategy struct {
-	rules             []C.Rule
-	count             int
-	shouldResolveIP   bool
-	shouldFindProcess bool
-	parse             func(tp, payload, target string, params []string) (parsed C.Rule, parseErr error)
+	rules []C.Rule
+	count int
+	parse common.ParseRuleFunc
 }
 
-func (c *classicalStrategy) Match(metadata *C.Metadata) bool {
+func (c *classicalStrategy) Behavior() P.RuleBehavior {
+	return P.Classical
+}
+
+func (c *classicalStrategy) Match(metadata *C.Metadata, helper C.RuleMatchHelper) bool {
 	for _, rule := range c.rules {
-		if m, _ := rule.Match(metadata); m {
+		if m, _ := rule.Match(metadata, helper); m {
 			return true
 		}
 	}
@@ -29,66 +33,32 @@ func (c *classicalStrategy) Count() int {
 	return c.count
 }
 
-func (c *classicalStrategy) ShouldResolveIP() bool {
-	return c.shouldResolveIP
-}
-
-func (c *classicalStrategy) ShouldFindProcess() bool {
-	return c.shouldFindProcess
-}
-
 func (c *classicalStrategy) Reset() {
 	c.rules = nil
 	c.count = 0
-	c.shouldFindProcess = false
-	c.shouldResolveIP = false
 }
 
 func (c *classicalStrategy) Insert(rule string) {
-	ruleType, rule, params := ruleParse(rule)
-
-	if ruleType == "PROCESS-NAME" {
-		c.shouldFindProcess = true
-	}
-
-	r, err := c.parse(ruleType, rule, "", params)
+	r, err := c.payloadToRule(rule)
 	if err != nil {
-		log.Warnln("parse rule error:[%s]", err.Error())
+		log.Warnln("parse classical rule [%s] error: %s", rule, err.Error())
 	} else {
-		if r.ShouldResolveIP() {
-			c.shouldResolveIP = true
-		}
-		if r.ShouldFindProcess() {
-			c.shouldFindProcess = true
-		}
-
 		c.rules = append(c.rules, r)
 		c.count++
 	}
 }
 
-func (c *classicalStrategy) FinishInsert() {}
-
-func ruleParse(ruleRaw string) (string, string, []string) {
-	item := strings.Split(ruleRaw, ",")
-	if len(item) == 1 {
-		return "", item[0], nil
-	} else if len(item) == 2 {
-		return item[0], item[1], nil
-	} else if len(item) > 2 {
-		return item[0], item[1], item[2:]
+func (c *classicalStrategy) payloadToRule(rule string) (C.Rule, error) {
+	tp, payload, target, params := common.ParseRulePayload(rule, false)
+	switch tp {
+	case "MATCH", "RULE-SET", "SUB-RULE":
+		return nil, fmt.Errorf("unsupported rule type on classical rule-set: %s", tp)
 	}
-
-	return "", "", nil
+	return c.parse(tp, payload, target, params, nil)
 }
 
-func NewClassicalStrategy(parse func(tp, payload, target string, params []string, subRules map[string][]C.Rule) (parsed C.Rule, parseErr error)) *classicalStrategy {
-	return &classicalStrategy{rules: []C.Rule{}, parse: func(tp, payload, target string, params []string) (parsed C.Rule, parseErr error) {
-		switch tp {
-		case "MATCH", "SUB-RULE":
-			return nil, fmt.Errorf("unsupported rule type on rule-set")
-		default:
-			return parse(tp, payload, target, params, nil)
-		}
-	}}
+func (c *classicalStrategy) FinishInsert() {}
+
+func NewClassicalStrategy(parse common.ParseRuleFunc) *classicalStrategy {
+	return &classicalStrategy{rules: []C.Rule{}, parse: parse}
 }

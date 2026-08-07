@@ -3,15 +3,14 @@ package route
 import (
 	"bytes"
 	"encoding/json"
-	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/Dreamacro/clash/tunnel/statistic"
+	"github.com/metacubex/mihomo/tunnel/statistic"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/render"
-	"github.com/gorilla/websocket"
+	"github.com/metacubex/chi"
+	"github.com/metacubex/chi/render"
+	"github.com/metacubex/http"
 )
 
 func connectionRouter() http.Handler {
@@ -19,17 +18,18 @@ func connectionRouter() http.Handler {
 	r.Get("/", getConnections)
 	r.Delete("/", closeAllConnections)
 	r.Delete("/{id}", closeConnection)
+	r.Delete("/smart/{id}", setSmartBlock)
 	return r
 }
 
 func getConnections(w http.ResponseWriter, r *http.Request) {
-	if !websocket.IsWebSocketUpgrade(r) {
+	if !(r.Header.Get("Upgrade") == "websocket") {
 		snapshot := statistic.DefaultManager.Snapshot()
 		render.JSON(w, r, snapshot)
 		return
 	}
 
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, _, err := wsUpgrade(r, w)
 	if err != nil {
 		return
 	}
@@ -55,7 +55,7 @@ func getConnections(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		return conn.WriteMessage(websocket.TextMessage, buf.Bytes())
+		return wsWriteServerText(conn, buf.Bytes())
 	}
 
 	if err := sendSnapshot(); err != nil {
@@ -84,5 +84,14 @@ func closeAllConnections(w http.ResponseWriter, r *http.Request) {
 		_ = c.Close()
 		return true
 	})
+	render.NoContent(w, r)
+}
+
+func setSmartBlock(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if c := statistic.DefaultManager.Get(id); c != nil {
+		c.Info().Metadata.SmartBlock = "blocked"
+		_ = c.Close()
+	}
 	render.NoContent(w, r)
 }

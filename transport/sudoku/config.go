@@ -1,0 +1,251 @@
+package sudoku
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/metacubex/mihomo/transport/sudoku/obfs/sudoku"
+)
+
+// ProtocolConfig defines the configuration for the Sudoku protocol stack.
+// It is intentionally kept close to the upstream Sudoku project to ensure wire compatibility.
+type ProtocolConfig struct {
+	// Client-only: "host:port".
+	ServerAddress string
+
+	// Pre-shared key (or ED25519 key material) used to derive crypto and tables.
+	Key string
+
+	// "aes-128-gcm", "chacha20-poly1305", or "none".
+	AEADMethod string
+
+	// Table is the single obfuscation table to use when table rotation is disabled.
+	Table *sudoku.Table
+
+	// Tables is an optional candidate set for table rotation.
+	// If provided (len>0), the client will pick one table per connection and the server will
+	// probe the handshake to detect which one was used, keeping the handshake format unchanged.
+	// When Tables is set, Table may be nil.
+	Tables []*sudoku.Table
+
+	// Padding insertion ratio (0-100). Must satisfy PaddingMax >= PaddingMin.
+	PaddingMin int
+	PaddingMax int
+
+	// EnablePureDownlink enables the pure Sudoku downlink mode.
+	// When false, the connection uses the bandwidth-optimized packed downlink.
+	EnablePureDownlink bool
+
+	// Client-only: final target "host:port".
+	TargetAddress string
+
+	// Server-side handshake timeout (seconds).
+	HandshakeTimeoutSeconds int
+
+	// DisableHTTPMask disables all HTTP camouflage layers.
+	DisableHTTPMask bool
+
+	// HTTPMaskMode controls how the HTTP layer behaves:
+	//   - "legacy": write a fake HTTP/1.1 header then switch to raw stream (default, not CDN-compatible)
+	//   - "stream": real HTTP tunnel (split-stream), CDN-compatible
+	//   - "poll": plain HTTP tunnel (authorize/push/pull), strong restricted-network pass-through
+	//   - "auto": try stream then fall back to poll
+	//   - "ws": WebSocket tunnel (GET upgrade), CDN-friendly
+	HTTPMaskMode string
+
+	// HTTPMaskTLSEnabled enables HTTPS for HTTP tunnel modes (client-side).
+	// If false, the tunnel uses HTTP (no port-based inference).
+	HTTPMaskTLSEnabled bool
+
+	// HTTPMaskHost optionally overrides the HTTP Host header / SNI host for HTTP tunnel modes (client-side).
+	HTTPMaskHost string
+
+	// HTTPMaskPathRoot optionally prefixes all HTTP mask paths with a first-level segment.
+	// Example: "aabbcc" => "/aabbcc/session", "/aabbcc/api/v1/upload", ...
+	HTTPMaskPathRoot string
+
+	// Multiplex controls transport reuse and Sudoku session mux:
+	//   - "off": disable session mux and HTTPMask transport reuse
+	//   - "auto": enable HTTPMask transport reuse only
+	//   - "on": enable session mux over raw TCP or HTTPMask
+	Multiplex string
+
+	// HTTPMaskMultiplex is the legacy location for Multiplex.
+	// When both fields are set, this legacy field wins for compatibility.
+	HTTPMaskMultiplex string
+}
+
+func (c *ProtocolConfig) Validate() error {
+	if c.Table == nil && len(c.Tables) == 0 {
+		return fmt.Errorf("table cannot be nil (or provide tables)")
+	}
+	for i, t := range c.Tables {
+		if t == nil {
+			return fmt.Errorf("tables[%d] cannot be nil", i)
+		}
+	}
+
+	if c.Key == "" {
+		return fmt.Errorf("key cannot be empty")
+	}
+
+	switch c.AEADMethod {
+	case "aes-128-gcm", "chacha20-poly1305", "none":
+	default:
+		return fmt.Errorf("invalid aead-method: %s, must be one of: aes-128-gcm, chacha20-poly1305, none", c.AEADMethod)
+	}
+
+	if c.PaddingMin < 0 || c.PaddingMin > 100 {
+		return fmt.Errorf("padding-min must be between 0 and 100, got %d", c.PaddingMin)
+	}
+	if c.PaddingMax < 0 || c.PaddingMax > 100 {
+		return fmt.Errorf("padding-max must be between 0 and 100, got %d", c.PaddingMax)
+	}
+	if c.PaddingMax < c.PaddingMin {
+		return fmt.Errorf("padding-max (%d) must be >= padding-min (%d)", c.PaddingMax, c.PaddingMin)
+	}
+
+	if c.HandshakeTimeoutSeconds < 0 {
+		return fmt.Errorf("handshake-timeout must be >= 0, got %d", c.HandshakeTimeoutSeconds)
+	}
+
+	switch strings.ToLower(strings.TrimSpace(c.HTTPMaskMode)) {
+	case "", "legacy", "stream", "poll", "auto", "ws":
+	default:
+		return fmt.Errorf("invalid http-mask-mode: %s, must be one of: legacy, stream, poll, auto, ws", c.HTTPMaskMode)
+	}
+
+	if v := strings.TrimSpace(c.HTTPMaskPathRoot); v != "" {
+		v = strings.Trim(v, "/")
+		if v == "" || strings.Contains(v, "/") {
+			return fmt.Errorf("invalid http-mask-path-root: must be a single path segment")
+		}
+		for i := 0; i < len(v); i++ {
+			ch := v[i]
+			switch {
+			case ch >= 'a' && ch <= 'z':
+			case ch >= 'A' && ch <= 'Z':
+			case ch >= '0' && ch <= '9':
+			case ch == '_' || ch == '-':
+			default:
+				return fmt.Errorf("invalid http-mask-path-root: contains invalid character %q", ch)
+			}
+		}
+	}
+
+	if _, err := NormalizeMultiplexMode(c.Multiplex); err != nil {
+		return fmt.Errorf("invalid multiplex: %w", err)
+	}
+	if _, err := NormalizeMultiplexMode(c.HTTPMaskMultiplex); err != nil {
+		return fmt.Errorf("invalid http-mask-multiplex: %w", err)
+	}
+
+	return nil
+}
+
+func (c *ProtocolConfig) ValidateClient() error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	if c.ServerAddress == "" {
+		return fmt.Errorf("server address cannot be empty")
+	}
+	if c.TargetAddress == "" {
+		return fmt.Errorf("target address cannot be empty")
+	}
+	return nil
+}
+
+func DefaultConfig() *ProtocolConfig {
+	return &ProtocolConfig{
+		AEADMethod:              "chacha20-poly1305",
+		PaddingMin:              10,
+		PaddingMax:              30,
+		EnablePureDownlink:      true,
+		HandshakeTimeoutSeconds: 5,
+		HTTPMaskMode:            "legacy",
+		Multiplex:               "off",
+	}
+}
+
+func NormalizeMultiplexMode(mode string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "off":
+		return "off", nil
+	case "auto":
+		return "auto", nil
+	case "on":
+		return "on", nil
+	default:
+		return "", fmt.Errorf("%q, must be one of: off, auto, on", mode)
+	}
+}
+
+func (c *ProtocolConfig) MultiplexMode() string {
+	if c == nil {
+		return "off"
+	}
+	for _, mode := range []string{c.HTTPMaskMultiplex, c.Multiplex} {
+		if strings.TrimSpace(mode) == "" {
+			continue
+		}
+		normalized, err := NormalizeMultiplexMode(mode)
+		if err == nil {
+			return normalized
+		}
+		return "off"
+	}
+	return "off"
+}
+
+func (c *ProtocolConfig) SessionMuxEnabled() bool {
+	return c.MultiplexMode() == "on"
+}
+
+func DerefInt(v *int, def int) int {
+	if v == nil {
+		return def
+	}
+	return *v
+}
+
+func DerefBool(v *bool, def bool) bool {
+	if v == nil {
+		return def
+	}
+	return *v
+}
+
+// ResolvePadding applies defaults and keeps min/max consistent when only one side is provided.
+func ResolvePadding(min, max *int, defMin, defMax int) (int, int) {
+	paddingMin := DerefInt(min, defMin)
+	paddingMax := DerefInt(max, defMax)
+	switch {
+	case min == nil && max != nil && paddingMax < paddingMin:
+		paddingMin = paddingMax
+	case max == nil && min != nil && paddingMax < paddingMin:
+		paddingMax = paddingMin
+	}
+	return paddingMin, paddingMax
+}
+
+func NormalizeTableType(tableType string) (string, error) {
+	normalized, err := sudoku.NormalizeASCIIMode(tableType)
+	if err != nil {
+		return "", fmt.Errorf("table-type must be prefer_ascii, prefer_entropy, up_ascii_down_entropy, or up_entropy_down_ascii")
+	}
+	return normalized, nil
+}
+
+func (c *ProtocolConfig) tableCandidates() []*sudoku.Table {
+	if c == nil {
+		return nil
+	}
+	if len(c.Tables) > 0 {
+		return c.Tables
+	}
+	if c.Table != nil {
+		return []*sudoku.Table{c.Table}
+	}
+	return nil
+}

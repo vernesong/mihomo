@@ -1,15 +1,16 @@
 package shadowsocks
 
 import (
+	"context"
 	"net"
 
-	"github.com/Dreamacro/clash/adapter/inbound"
-	N "github.com/Dreamacro/clash/common/net"
-	"github.com/Dreamacro/clash/common/sockopt"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/log"
-	"github.com/Dreamacro/clash/transport/shadowsocks/core"
-	"github.com/Dreamacro/clash/transport/socks5"
+	"github.com/metacubex/mihomo/adapter/inbound"
+	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/common/sockopt"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/transport/shadowsocks/core"
+	"github.com/metacubex/mihomo/transport/socks5"
 )
 
 type UDPListener struct {
@@ -17,14 +18,13 @@ type UDPListener struct {
 	closed     bool
 }
 
-func NewUDP(addr string, pickCipher core.Cipher, in chan<- C.PacketAdapter) (*UDPListener, error) {
-	l, err := net.ListenPacket("udp", addr)
+func NewUDP(addr string, lc C.InboundListenConfig, pickCipher core.Cipher, tunnel C.Tunnel, additions ...inbound.Addition) (*UDPListener, error) {
+	l, err := lc.ListenPacket(context.Background(), "udp", addr)
 	if err != nil {
 		return nil, err
 	}
 
-	err = sockopt.UDPReuseaddr(l.(*net.UDPConn))
-	if err != nil {
+	if err := sockopt.UDPReuseaddr(l); err != nil {
 		log.Warnln("Failed to Reuse UDP Address: %s", err)
 	}
 
@@ -42,7 +42,7 @@ func NewUDP(addr string, pickCipher core.Cipher, in chan<- C.PacketAdapter) (*UD
 				}
 				continue
 			}
-			handleSocksUDP(conn, in, data, put, remoteAddr)
+			handleSocksUDP(conn, tunnel, data, put, remoteAddr, additions...)
 		}
 	}()
 
@@ -58,7 +58,7 @@ func (l *UDPListener) LocalAddr() net.Addr {
 	return l.packetConn.LocalAddr()
 }
 
-func handleSocksUDP(pc net.PacketConn, in chan<- C.PacketAdapter, buf []byte, put func(), addr net.Addr, additions ...inbound.Addition) {
+func handleSocksUDP(pc net.PacketConn, tunnel C.Tunnel, buf []byte, put func(), addr net.Addr, additions ...inbound.Addition) {
 	tgtAddr := socks5.SplitAddr(buf)
 	if tgtAddr == nil {
 		// Unresolved UDP packet, return buffer to the pool
@@ -67,7 +67,7 @@ func handleSocksUDP(pc net.PacketConn, in chan<- C.PacketAdapter, buf []byte, pu
 		}
 		return
 	}
-	target := socks5.ParseAddr(tgtAddr.String())
+	target := tgtAddr
 	payload := buf[len(tgtAddr):]
 
 	packet := &packet{
@@ -76,8 +76,5 @@ func handleSocksUDP(pc net.PacketConn, in chan<- C.PacketAdapter, buf []byte, pu
 		payload: payload,
 		put:     put,
 	}
-	select {
-	case in <- inbound.NewPacket(target, packet, C.SHADOWSOCKS, additions...):
-	default:
-	}
+	tunnel.HandleUDPPacket(inbound.NewPacket(target, packet, C.SHADOWSOCKS, additions...))
 }

@@ -16,6 +16,17 @@ func Filter[T comparable](tSlice []T, filter func(t T) bool) []T {
 	return result
 }
 
+func Map[T any, N any](arr []T, block func(it T) N) []N {
+	if arr == nil { // keep nil
+		return nil
+	}
+	retArr := make([]N, 0, len(arr))
+	for index := range arr {
+		retArr = append(retArr, block(arr[index]))
+	}
+	return retArr
+}
+
 func ToStringSlice(value any) ([]string, error) {
 	strArr := make([]string, 0)
 	switch reflect.TypeOf(value).Kind() {

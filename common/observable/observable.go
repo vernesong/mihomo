@@ -10,6 +10,7 @@ type Observable[T any] struct {
 	listener map[Subscription[T]]*Subscriber[T]
 	mux      sync.Mutex
 	done     bool
+	stopCh   chan struct{}
 }
 
 func (o *Observable[T]) process() {
@@ -31,6 +32,7 @@ func (o *Observable[T]) close() {
 	for _, sub := range o.listener {
 		sub.Close()
 	}
+	close(o.stopCh)
 }
 
 func (o *Observable[T]) Subscribe() (Subscription[T], error) {
@@ -59,6 +61,7 @@ func NewObservable[T any](iter Iterable[T]) *Observable[T] {
 	observable := &Observable[T]{
 		iterable: iter,
 		listener: map[Subscription[T]]*Subscriber[T]{},
+		stopCh:   make(chan struct{}),
 	}
 	go observable.process()
 	return observable

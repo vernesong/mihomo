@@ -1,6 +1,7 @@
 package convert
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -35,6 +36,9 @@ func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy m
 		if alpn := query.Get("alpn"); alpn != "" {
 			proxy["alpn"] = strings.Split(alpn, ",")
 		}
+		if pcs := query.Get("pcs"); pcs != "" {
+			proxy["fingerprint"] = pcs
+		}
 	}
 	if sni := query.Get("sni"); sni != "" {
 		proxy["servername"] = sni
@@ -59,7 +63,7 @@ func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy m
 		network = "tcp"
 	}
 	fakeType := strings.ToLower(query.Get("headerType"))
-	if fakeType == "http" {
+	if network == "tcp" && fakeType == "http" {
 		network = "http"
 	} else if network == "http" {
 		network = "h2"
@@ -67,40 +71,37 @@ func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy m
 	proxy["network"] = network
 	switch network {
 	case "tcp":
-		if fakeType != "none" {
-			headers := make(map[string]any)
-			httpOpts := make(map[string]any)
-			httpOpts["path"] = []string{"/"}
-
-			if host := query.Get("host"); host != "" {
-				headers["Host"] = []string{host}
-			}
-
-			if method := query.Get("method"); method != "" {
-				httpOpts["method"] = method
-			}
-
-			if path := query.Get("path"); path != "" {
-				httpOpts["path"] = []string{path}
-			}
-			httpOpts["headers"] = headers
-			proxy["http-opts"] = httpOpts
-		}
-
 	case "http":
 		headers := make(map[string]any)
-		h2Opts := make(map[string]any)
-		h2Opts["path"] = []string{"/"}
+		httpOpts := make(map[string]any)
+		httpOpts["path"] = []string{"/"}
+
+		if host := query.Get("host"); host != "" {
+			headers["Host"] = []string{host}
+		}
+
+		if method := query.Get("method"); method != "" {
+			httpOpts["method"] = method
+		}
+
 		if path := query.Get("path"); path != "" {
-			h2Opts["path"] = []string{path}
+			httpOpts["path"] = []string{path}
+		}
+		httpOpts["headers"] = headers
+		proxy["http-opts"] = httpOpts
+
+	case "h2":
+		h2Opts := make(map[string]any)
+		h2Opts["path"] = "/"
+		if path := query.Get("path"); path != "" {
+			h2Opts["path"] = path
 		}
 		if host := query.Get("host"); host != "" {
 			h2Opts["host"] = []string{host}
 		}
-		h2Opts["headers"] = headers
 		proxy["h2-opts"] = h2Opts
 
-	case "ws":
+	case "ws", "httpupgrade":
 		headers := make(map[string]any)
 		wsOpts := make(map[string]any)
 		headers["User-Agent"] = RandUserAgent()
@@ -113,7 +114,13 @@ func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy m
 			if err != nil {
 				return fmt.Errorf("bad WebSocket max early data size: %v", err)
 			}
-			wsOpts["max-early-data"] = med
+			switch network {
+			case "ws":
+				wsOpts["max-early-data"] = med
+				wsOpts["early-data-header-name"] = "Sec-WebSocket-Protocol"
+			case "httpupgrade":
+				wsOpts["v2ray-http-upgrade-fast-open"] = true
+			}
 		}
 		if earlyDataHeader := query.Get("eh"); earlyDataHeader != "" {
 			wsOpts["early-data-header-name"] = earlyDataHeader
@@ -125,6 +132,283 @@ func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy m
 		grpcOpts := make(map[string]any)
 		grpcOpts["grpc-service-name"] = query.Get("serviceName")
 		proxy["grpc-opts"] = grpcOpts
+
+	case "xhttp":
+		proxy["network"] = "xhttp"
+		xhttpOpts := make(map[string]any)
+
+		if path := query.Get("path"); path != "" {
+			xhttpOpts["path"] = path
+		}
+
+		if host := query.Get("host"); host != "" {
+			xhttpOpts["host"] = host
+		}
+
+		if mode := query.Get("mode"); mode != "" {
+			xhttpOpts["mode"] = mode
+		}
+
+		if extra := query.Get("extra"); extra != "" {
+			var extraMap map[string]any
+			if err := json.Unmarshal([]byte(extra), &extraMap); err == nil {
+				parseXHTTPExtra(extraMap, xhttpOpts)
+			}
+		}
+
+		proxy["xhttp-opts"] = xhttpOpts
 	}
+
 	return nil
+}
+
+// parseXHTTPExtra maps xray-core extra JSON fields to mihomo xhttp-opts fields.
+func parseXHTTPExtra(extra map[string]any, opts map[string]any) {
+	// xmuxToReuse converts an xmux map to mihomo reuse-settings.
+	xmuxToReuse := func(xmux map[string]any) map[string]any {
+		reuse := make(map[string]any)
+		set := func(src, dst string) {
+			if v, ok := xmux[src]; ok {
+				switch val := v.(type) {
+				case string:
+					if val != "" {
+						reuse[dst] = val
+					}
+				case float64:
+					reuse[dst] = strconv.FormatInt(int64(val), 10)
+				}
+			}
+		}
+		set("maxConnections", "max-connections")
+		set("maxConcurrency", "max-concurrency")
+		set("cMaxReuseTimes", "c-max-reuse-times")
+		set("hMaxRequestTimes", "h-max-request-times")
+		set("hMaxReusableSecs", "h-max-reusable-secs")
+		if v, ok := xmux["hKeepAlivePeriod"].(float64); ok {
+			reuse["h-keep-alive-period"] = int(v)
+		}
+		return reuse
+	}
+
+	if v, ok := extra["noGRPCHeader"].(bool); ok && v {
+		opts["no-grpc-header"] = true
+	}
+
+	if v, ok := extra["xPaddingBytes"].(string); ok && v != "" {
+		opts["x-padding-bytes"] = v
+	}
+
+	if v, ok := extra["xPaddingObfsMode"].(bool); ok {
+		opts["x-padding-obfs-mode"] = v
+	}
+
+	if v, ok := extra["xPaddingKey"].(string); ok && v != "" {
+		opts["x-padding-key"] = v
+	}
+
+	if v, ok := extra["xPaddingHeader"].(string); ok && v != "" {
+		opts["x-padding-header"] = v
+	}
+
+	if v, ok := extra["xPaddingPlacement"].(string); ok && v != "" {
+		opts["x-padding-placement"] = v
+	}
+
+	if v, ok := extra["xPaddingMethod"].(string); ok && v != "" {
+		opts["x-padding-method"] = v
+	}
+
+	if v, ok := extra["uplinkHTTPMethod"].(string); ok && v != "" {
+		opts["uplink-http-method"] = v
+	}
+
+	if v, ok := extra["sessionIDPlacement"].(string); ok && v != "" {
+		opts["session-placement"] = v
+	} else if v, ok := extra["sessionPlacement"].(string); ok && v != "" {
+		opts["session-placement"] = v
+	}
+
+	if v, ok := extra["sessionIDKey"].(string); ok && v != "" {
+		opts["session-key"] = v
+	} else if v, ok := extra["sessionKey"].(string); ok && v != "" {
+		opts["session-key"] = v
+	}
+
+	if v, ok := extra["sessionIDTable"].(string); ok && v != "" {
+		opts["session-table"] = v
+	}
+
+	if v, ok := extra["sessionIDLength"].(string); ok && v != "" {
+		opts["session-length"] = v
+	} else if v, ok := extra["sessionIDLength"].(float64); ok {
+		opts["session-length"] = strconv.FormatInt(int64(v), 10)
+	}
+
+	if v, ok := extra["seqPlacement"].(string); ok && v != "" {
+		opts["seq-placement"] = v
+	}
+
+	if v, ok := extra["seqKey"].(string); ok && v != "" {
+		opts["seq-key"] = v
+	}
+
+	if v, ok := extra["uplinkDataPlacement"].(string); ok && v != "" {
+		opts["uplink-data-placement"] = v
+	}
+
+	if v, ok := extra["uplinkDataKey"].(string); ok && v != "" {
+		opts["uplink-data-key"] = v
+	}
+
+	if v, ok := extra["uplinkChunkSize"].(float64); ok {
+		opts["uplink-chunk-size"] = int(v)
+	}
+
+	if v, ok := extra["scMaxEachPostBytes"].(float64); ok {
+		opts["sc-max-each-post-bytes"] = int(v)
+	}
+
+	if v, ok := extra["scMinPostsIntervalMs"].(float64); ok {
+		opts["sc-min-posts-interval-ms"] = int(v)
+	}
+
+	// xmux in root extra → reuse-settings
+	if xmuxAny, ok := extra["xmux"].(map[string]any); ok && len(xmuxAny) > 0 {
+		if reuse := xmuxToReuse(xmuxAny); len(reuse) > 0 {
+			opts["reuse-settings"] = reuse
+		}
+	}
+
+	if dsAny, ok := extra["downloadSettings"].(map[string]any); ok {
+		ds := make(map[string]any)
+
+		if addr, ok := dsAny["address"].(string); ok && addr != "" {
+			ds["server"] = addr
+		}
+
+		if port, ok := dsAny["port"].(float64); ok {
+			ds["port"] = int(port)
+		}
+
+		sec := ""
+		if s, ok := dsAny["security"].(string); ok {
+			sec = strings.ToLower(s)
+		}
+
+		if sec == "tls" || sec == "reality" {
+			ds["tls"] = true
+
+			if tlsAny, ok := dsAny["tlsSettings"].(map[string]any); ok {
+				if sn, ok := tlsAny["serverName"].(string); ok && sn != "" {
+					ds["servername"] = sn
+				}
+				if fp, ok := tlsAny["fingerprint"].(string); ok && fp != "" {
+					ds["client-fingerprint"] = fp
+				}
+				if alpnAny, ok := tlsAny["alpn"].([]any); ok && len(alpnAny) > 0 {
+					alpnList := make([]string, 0, len(alpnAny))
+					for _, a := range alpnAny {
+						if s, ok := a.(string); ok {
+							alpnList = append(alpnList, s)
+						}
+					}
+					if len(alpnList) > 0 {
+						ds["alpn"] = alpnList
+					}
+				}
+				if v, ok := tlsAny["allowInsecure"].(bool); ok && v {
+					ds["skip-cert-verify"] = true
+				}
+			}
+
+			if sec == "reality" {
+				if realityAny, ok := dsAny["realitySettings"].(map[string]any); ok {
+					realityOpts := make(map[string]any)
+					if pk, ok := realityAny["publicKey"].(string); ok && pk != "" {
+						realityOpts["public-key"] = pk
+					}
+					if sid, ok := realityAny["shortId"].(string); ok && sid != "" {
+						realityOpts["short-id"] = sid
+					}
+					if len(realityOpts) > 0 {
+						ds["reality-opts"] = realityOpts
+					}
+				}
+			}
+		}
+
+		if xhttpAny, ok := dsAny["xhttpSettings"].(map[string]any); ok {
+			if path, ok := xhttpAny["path"].(string); ok && path != "" {
+				ds["path"] = path
+			}
+			if host, ok := xhttpAny["host"].(string); ok && host != "" {
+				ds["host"] = host
+			}
+			if headers, ok := xhttpAny["headers"].(map[string]any); ok && len(headers) > 0 {
+				ds["headers"] = headers
+			}
+
+			// xmux inside downloadSettings.xhttpSettings.extra → download-settings.reuse-settings
+			if dsExtraAny, ok := xhttpAny["extra"].(map[string]any); ok {
+				if xmuxAny, ok := dsExtraAny["xmux"].(map[string]any); ok && len(xmuxAny) > 0 {
+					if reuse := xmuxToReuse(xmuxAny); len(reuse) > 0 {
+						ds["reuse-settings"] = reuse
+					}
+				}
+			}
+		}
+
+		if len(ds) > 0 {
+			opts["download-settings"] = ds
+		}
+	}
+}
+
+func buildRealmOpts(serverURL, token, realmID string, stunServers []string) map[string]any {
+	opts := map[string]any{"enable": true, "server-url": serverURL}
+	if token != "" {
+		opts["token"] = token
+	}
+	if realmID != "" {
+		opts["realm-id"] = realmID
+	}
+	if len(stunServers) > 0 {
+		opts["stun-servers"] = stunServers
+	}
+	return opts
+}
+
+func splitHysteria2Ports(line string) (string, string) {
+	i := strings.Index(line, "://")
+	if i < 0 {
+		return line, ""
+	}
+	head, rest := line[:i+3], line[i+3:]
+	auth, tail := rest, ""
+	if j := strings.IndexAny(rest, "/?#"); j >= 0 {
+		auth, tail = rest[:j], rest[j:]
+	}
+	userinfo := ""
+	if at := strings.LastIndex(auth, "@"); at >= 0 {
+		userinfo, auth = auth[:at+1], auth[at+1:]
+	}
+	if strings.Contains(auth, "]") {
+		return line, ""
+	}
+	colon := strings.LastIndex(auth, ":")
+	if colon < 0 {
+		return line, ""
+	}
+	host, ports := auth[:colon], auth[colon+1:]
+	if !strings.ContainsAny(ports, ",-") {
+		return line, ""
+	}
+	first := ports
+	if k := strings.IndexAny(ports, ",-"); k >= 0 {
+		first = ports[:k]
+	}
+	if first == "" {
+		return line, ""
+	}
+	return head + userinfo + host + ":" + first + tail, ports
 }

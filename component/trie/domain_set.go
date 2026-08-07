@@ -6,8 +6,9 @@ package trie
 import (
 	"sort"
 	"strings"
+	"unicode/utf8"
 
-	"github.com/Dreamacro/clash/common/utils"
+	"github.com/metacubex/mihomo/common/utils"
 	"github.com/openacid/low/bitmap"
 )
 
@@ -28,8 +29,9 @@ type qElt struct{ s, e, col int }
 // NewDomainSet creates a new *DomainSet struct, from a DomainTrie.
 func (t *DomainTrie[T]) NewDomainSet() *DomainSet {
 	reserveDomains := make([]string, 0)
-	t.Foreach(func(domain string, data T) {
+	t.Foreach(func(domain string, data T) bool {
 		reserveDomains = append(reserveDomains, utils.Reverse(domain))
+		return true
 	})
 	// ensure that the same prefix is continuous
 	// and according to the ascending sequence of length
@@ -74,8 +76,15 @@ func (ss *DomainSet) Has(key string) bool {
 	if ss == nil {
 		return false
 	}
-	key = utils.Reverse(key)
-	key = strings.ToLower(key)
+	for i := 0; i < len(key); i++ {
+		if key[i] >= utf8.RuneSelf {
+			// The set is built with rune-wise reversal, which only matches
+			// byte-wise reversal for ASCII. Normalize the same way and
+			// byte-reverse so revLowerAt below observes it unchanged.
+			key = byteReverse(strings.ToLower(utils.Reverse(key)))
+			break
+		}
+	}
 	// no more labels in this node
 	// skip character matching
 	// go to next level
@@ -86,7 +95,7 @@ func (ss *DomainSet) Has(key string) bool {
 	stack := make([]wildcardCursor, 0)
 	for i := 0; i < len(key); i++ {
 	RESTART:
-		c := key[i]
+		c := revLowerAt(key, i)
 		for ; ; bmIdx++ {
 			if getBit(ss.labelBitmap, bmIdx) != 0 {
 				if len(stack) > 0 {
@@ -96,7 +105,7 @@ func (ss *DomainSet) Has(key string) bool {
 					nextNodeId := countZeros(ss.labelBitmap, ss.ranks, cursor.bmIdx+1)
 					nextBmIdx := selectIthOne(ss.labelBitmap, ss.ranks, ss.selects, nextNodeId-1) + 1
 					j := cursor.index
-					for ; j < len(key) && key[j] != domainStepByte; j++ {
+					for ; j < len(key) && revLowerAt(key, j) != domainStepByte; j++ {
 					}
 					if j == len(key) {
 						if getBit(ss.leaves, nextNodeId) != 0 {
@@ -134,6 +143,64 @@ func (ss *DomainSet) Has(key string) bool {
 
 	return getBit(ss.leaves, nodeId) != 0
 
+}
+
+// revLowerAt returns the i-th byte of key read back to front, lowercased for
+// ASCII. It lets Has walk the reversed key without materializing it.
+func revLowerAt(key string, i int) byte {
+	c := key[len(key)-1-i]
+	if c >= 'A' && c <= 'Z' {
+		c += 'a' - 'A'
+	}
+	return c
+}
+
+func byteReverse(s string) string {
+	buf := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		buf[i] = s[len(s)-1-i]
+	}
+	return string(buf)
+}
+
+func (ss *DomainSet) keys(f func(key string) bool) {
+	var currentKey []byte
+	var traverse func(int, int) bool
+	traverse = func(nodeId, bmIdx int) bool {
+		if getBit(ss.leaves, nodeId) != 0 {
+			if !f(string(currentKey)) {
+				return false
+			}
+		}
+
+		for ; ; bmIdx++ {
+			if getBit(ss.labelBitmap, bmIdx) != 0 {
+				return true
+			}
+			nextLabel := ss.labels[bmIdx-nodeId]
+			currentKey = append(currentKey, nextLabel)
+			nextNodeId := countZeros(ss.labelBitmap, ss.ranks, bmIdx+1)
+			nextBmIdx := selectIthOne(ss.labelBitmap, ss.ranks, ss.selects, nextNodeId-1) + 1
+			if !traverse(nextNodeId, nextBmIdx) {
+				return false
+			}
+			currentKey = currentKey[:len(currentKey)-1]
+		}
+	}
+
+	traverse(0, 0)
+	return
+}
+
+func (ss *DomainSet) Foreach(f func(key string) bool) {
+	ss.keys(func(key string) bool {
+		return f(utils.Reverse(key))
+	})
+}
+
+// MatchDomain implements C.DomainMatcher
+func (ss *DomainSet) MatchDomain(domain string) bool {
+	return ss.Has(domain)
 }
 
 func setBit(bm *[]uint64, i int, v int) {

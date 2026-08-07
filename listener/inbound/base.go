@@ -5,9 +5,11 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"strings"
 
-	"github.com/Dreamacro/clash/adapter/inbound"
-	C "github.com/Dreamacro/clash/constant"
+	"github.com/metacubex/mihomo/adapter/inbound"
+	"github.com/metacubex/mihomo/common/utils"
+	C "github.com/metacubex/mihomo/constant"
 )
 
 type Base struct {
@@ -15,7 +17,7 @@ type Base struct {
 	name         string
 	specialRules string
 	listenAddr   netip.Addr
-	port         int
+	ports        utils.IntRanges[uint16]
 }
 
 func NewBase(options *BaseOption) (*Base, error) {
@@ -26,11 +28,15 @@ func NewBase(options *BaseOption) (*Base, error) {
 	if err != nil {
 		return nil, err
 	}
+	ports, err := utils.NewUnsignedRanges[uint16](options.Port)
+	if err != nil {
+		return nil, err
+	}
 	return &Base{
 		name:         options.Name(),
 		listenAddr:   addr,
 		specialRules: options.SpecialRules,
-		port:         options.Port,
+		ports:        ports,
 		config:       options,
 	}, nil
 }
@@ -57,11 +63,19 @@ func (b *Base) Name() string {
 
 // RawAddress implements constant.InboundListener
 func (b *Base) RawAddress() string {
-	return net.JoinHostPort(b.listenAddr.String(), strconv.Itoa(int(b.port)))
+	if len(b.ports) == 0 {
+		return net.JoinHostPort(b.listenAddr.String(), "0")
+	}
+	address := make([]string, 0, len(b.ports))
+	b.ports.Range(func(port uint16) bool {
+		address = append(address, net.JoinHostPort(b.listenAddr.String(), strconv.Itoa(int(port))))
+		return true
+	})
+	return strings.Join(address, ",")
 }
 
 // Listen implements constant.InboundListener
-func (*Base) Listen(tcpIn chan<- C.ConnContext, udpIn chan<- C.PacketAdapter, natTable C.NatTable) error {
+func (*Base) Listen(tunnel C.Tunnel) error {
 	return nil
 }
 
@@ -69,14 +83,24 @@ func (b *Base) Additions() []inbound.Addition {
 	return b.config.Additions()
 }
 
+func (b *Base) ListenConfig() C.InboundListenConfig {
+	return b.config.ListenConfig()
+}
+
 var _ C.InboundListener = (*Base)(nil)
 
 type BaseOption struct {
 	NameStr      string `inbound:"name"`
 	Listen       string `inbound:"listen,omitempty"`
-	Port         int    `inbound:"port,omitempty"`
+	Port         string `inbound:"port,omitempty"`
 	SpecialRules string `inbound:"rule,omitempty"`
 	SpecialProxy string `inbound:"proxy,omitempty"`
+	RoutingMark  int    `inbound:"routing-mark,omitempty"`
+
+	//
+	// The following parameters are used internally, assign value by the structure decoder are disallowed
+	//
+	ListenConfigForAPI C.InboundListenConfig `inbound:"-"`
 }
 
 func (o BaseOption) Name() string {
@@ -93,6 +117,15 @@ func (o BaseOption) Additions() []inbound.Addition {
 		inbound.WithSpecialRules(o.SpecialRules),
 		inbound.WithSpecialProxy(o.SpecialProxy),
 	}
+}
+
+func (o BaseOption) ListenConfig() C.InboundListenConfig {
+	if o.ListenConfigForAPI != nil {
+		return o.ListenConfigForAPI
+	}
+	lc := inbound.NewListenConfig()
+	lc.SetRouteMark(o.RoutingMark)
+	return lc
 }
 
 var _ C.InboundConfig = (*BaseOption)(nil)

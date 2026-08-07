@@ -1,16 +1,11 @@
 package mmdb
 
 import (
-	"context"
-	"io"
-	"net/http"
-	"os"
 	"sync"
-	"time"
 
-	clashHttp "github.com/Dreamacro/clash/component/http"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/log"
+	mihomoOnce "github.com/metacubex/mihomo/common/once"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/log"
 
 	"github.com/oschwald/maxminddb-golang"
 )
@@ -24,73 +19,78 @@ const (
 )
 
 var (
-	reader Reader
-	once   sync.Once
+	ipReader  IPReader
+	asnReader ASNReader
+	ipOnce    sync.Once
+	asnOnce   sync.Once
 )
 
 func LoadFromBytes(buffer []byte) {
-	once.Do(func() {
+	ipOnce.Do(func() {
 		mmdb, err := maxminddb.FromBytes(buffer)
 		if err != nil {
 			log.Fatalln("Can't load mmdb: %s", err.Error())
 		}
-		reader = Reader{Reader: mmdb}
+		ipReader = IPReader{Reader: mmdb}
 		switch mmdb.Metadata.DatabaseType {
 		case "sing-geoip":
-			reader.databaseType = typeSing
+			ipReader.databaseType = typeSing
 		case "Meta-geoip0":
-			reader.databaseType = typeMetaV0
+			ipReader.databaseType = typeMetaV0
 		default:
-			reader.databaseType = typeMaxmind
+			ipReader.databaseType = typeMaxmind
 		}
 	})
 }
 
-func Verify() bool {
-	instance, err := maxminddb.Open(C.Path.MMDB())
+func Verify(path string) bool {
+	instance, err := maxminddb.Open(path)
 	if err == nil {
 		instance.Close()
 	}
 	return err == nil
 }
 
-func Instance() Reader {
-	once.Do(func() {
+func IPInstance() IPReader {
+	ipOnce.Do(func() {
 		mmdbPath := C.Path.MMDB()
-		log.Debugln("Load MMDB file: %s", mmdbPath)
+		log.Infoln("Load MMDB file: %s", mmdbPath)
 		mmdb, err := maxminddb.Open(mmdbPath)
 		if err != nil {
 			log.Fatalln("Can't load MMDB: %s", err.Error())
 		}
-		reader = Reader{Reader: mmdb}
+		ipReader = IPReader{Reader: mmdb}
 		switch mmdb.Metadata.DatabaseType {
 		case "sing-geoip":
-			reader.databaseType = typeSing
+			ipReader.databaseType = typeSing
 		case "Meta-geoip0":
-			reader.databaseType = typeMetaV0
+			ipReader.databaseType = typeMetaV0
 		default:
-			reader.databaseType = typeMaxmind
+			ipReader.databaseType = typeMaxmind
 		}
 	})
 
-	return reader
+	return ipReader
 }
 
-func DownloadMMDB(path string) (err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*90)
-	defer cancel()
-	resp, err := clashHttp.HttpRequest(ctx, C.MmdbUrl, http.MethodGet, http.Header{"User-Agent": {"clash"}}, nil)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
+func ASNInstance() ASNReader {
+	asnOnce.Do(func() {
+		ASNPath := C.Path.ASN()
+		log.Infoln("Load ASN file: %s", ASNPath)
+		asn, err := maxminddb.Open(ASNPath)
+		if err != nil {
+			log.Fatalln("Can't load ASN: %s", err.Error())
+		}
+		asnReader = ASNReader{Reader: asn}
+	})
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = io.Copy(f, resp.Body)
+	return asnReader
+}
 
-	return err
+func ReloadIP() {
+	mihomoOnce.Reset(&ipOnce)
+}
+
+func ReloadASN() {
+	mihomoOnce.Reset(&asnOnce)
 }

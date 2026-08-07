@@ -9,7 +9,7 @@ import (
 	"net/netip"
 	"strconv"
 
-	"github.com/Dreamacro/clash/component/auth"
+	"github.com/metacubex/mihomo/component/auth"
 )
 
 // Error represents a SOCKS error
@@ -106,7 +106,7 @@ type User struct {
 }
 
 // ServerHandshake fast-tracks SOCKS initialization to get target address to connect on server side.
-func ServerHandshake(rw net.Conn, authenticator auth.Authenticator) (addr Addr, command Command, err error) {
+func ServerHandshake(rw net.Conn, authenticator auth.Authenticator) (addr Addr, command Command, user string, err error) {
 	// Read RFC 1928 for request and reply structure and sizes.
 	buf := make([]byte, MaxAddrLen)
 	// read VER, NMETHODS, METHODS
@@ -116,6 +116,10 @@ func ServerHandshake(rw net.Conn, authenticator auth.Authenticator) (addr Addr, 
 	nmethods := buf[1]
 	if _, err = io.ReadFull(rw, buf[:nmethods]); err != nil {
 		return
+	}
+
+	if nmethods == 1 && buf[0] == 0x02 /* will use password */ && authenticator == nil {
+		authenticator = auth.AlwaysValid
 	}
 
 	// write VER METHOD
@@ -141,7 +145,7 @@ func ServerHandshake(rw net.Conn, authenticator auth.Authenticator) (addr Addr, 
 		if _, err = io.ReadFull(rw, authBuf[:userLen]); err != nil {
 			return
 		}
-		user := string(authBuf[:userLen])
+		user = string(authBuf[:userLen])
 
 		// Get password
 		if _, err = rw.Read(header[:1]); err != nil {
@@ -189,7 +193,7 @@ func ServerHandshake(rw net.Conn, authenticator auth.Authenticator) (addr Addr, 
 	switch command {
 	case CmdConnect, CmdUDPAssociate:
 		// Acquire server listened address info
-		localAddr := ParseAddr(rw.LocalAddr().String())
+		localAddr := ParseAddrToSocksAddr(rw.LocalAddr())
 		if localAddr == nil {
 			err = ErrAddressNotSupported
 		} else {
@@ -414,12 +418,15 @@ func ParseAddr(s string) Addr {
 func ParseAddrToSocksAddr(addr net.Addr) Addr {
 	var hostip net.IP
 	var port int
-	if udpaddr, ok := addr.(*net.UDPAddr); ok {
-		hostip = udpaddr.IP
-		port = udpaddr.Port
-	} else if tcpaddr, ok := addr.(*net.TCPAddr); ok {
-		hostip = tcpaddr.IP
-		port = tcpaddr.Port
+	switch addr := addr.(type) {
+	case *net.UDPAddr:
+		hostip = addr.IP
+		port = addr.Port
+	case *net.TCPAddr:
+		hostip = addr.IP
+		port = addr.Port
+	case nil:
+		return nil
 	}
 
 	// fallback parse

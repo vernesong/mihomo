@@ -5,7 +5,7 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/Dreamacro/clash/common/net/packet"
+	"github.com/metacubex/mihomo/common/net/packet"
 )
 
 type EnhancePacketConn struct {
@@ -52,7 +52,7 @@ FOR:
 				c.netPacketConn.resultCh <- nil
 				break FOR
 			}
-		case <-c.netPacketConn.pipeDeadline.wait():
+		case <-c.netPacketConn.pipeDeadline.Wait():
 			return nil, nil, nil, os.ErrDeadlineExceeded
 		}
 	}

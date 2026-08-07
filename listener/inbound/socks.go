@@ -1,15 +1,26 @@
 package inbound
 
 import (
+	"errors"
 	"fmt"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/listener/socks"
-	"github.com/Dreamacro/clash/log"
+	"strings"
+
+	C "github.com/metacubex/mihomo/constant"
+	LC "github.com/metacubex/mihomo/listener/config"
+	"github.com/metacubex/mihomo/listener/socks"
+	"github.com/metacubex/mihomo/log"
 )
 
 type SocksOption struct {
 	BaseOption
-	UDP bool `inbound:"udp,omitempty"`
+	Users          AuthUsers     `inbound:"users,omitempty"`
+	UDP            bool          `inbound:"udp,omitempty"`
+	Certificate    string        `inbound:"certificate,omitempty"`
+	PrivateKey     string        `inbound:"private-key,omitempty"`
+	ClientAuthType string        `inbound:"client-auth-type,omitempty"`
+	ClientAuthCert string        `inbound:"client-auth-cert,omitempty"`
+	EchKey         string        `inbound:"ech-key,omitempty"`
+	RealityConfig  RealityConfig `inbound:"reality-config,omitempty"`
 }
 
 func (o SocksOption) Equal(config C.InboundConfig) bool {
@@ -20,8 +31,8 @@ type Socks struct {
 	*Base
 	config *SocksOption
 	udp    bool
-	stl    *socks.Listener
-	sul    *socks.UDPListener
+	stl    []*socks.Listener
+	sul    []*socks.UDPListener
 }
 
 func NewSocks(options *SocksOption) (*Socks, error) {
@@ -43,39 +54,60 @@ func (s *Socks) Config() C.InboundConfig {
 
 // Close implements constant.InboundListener
 func (s *Socks) Close() error {
-	var err error
-	if s.stl != nil {
-		if tcpErr := s.stl.Close(); tcpErr != nil {
-			err = tcpErr
+	var errs []error
+	for _, l := range s.stl {
+		err := l.Close()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("close tcp listener %s err: %w", l.Address(), err))
 		}
 	}
-	if s.udp && s.sul != nil {
-		if udpErr := s.sul.Close(); udpErr != nil {
-			if err == nil {
-				err = udpErr
-			} else {
-				return fmt.Errorf("close tcp err: %s, close udp err: %s", err.Error(), udpErr.Error())
-			}
+	for _, l := range s.sul {
+		err := l.Close()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("close udp listener %s err: %w", l.Address(), err))
 		}
 	}
-
-	return err
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
 
 // Address implements constant.InboundListener
 func (s *Socks) Address() string {
-	return s.stl.Address()
+	var addrList []string
+	for _, l := range s.stl {
+		addrList = append(addrList, l.Address())
+	}
+	return strings.Join(addrList, ",")
 }
 
 // Listen implements constant.InboundListener
-func (s *Socks) Listen(tcpIn chan<- C.ConnContext, udpIn chan<- C.PacketAdapter, natTable C.NatTable) error {
-	var err error
-	if s.stl, err = socks.New(s.RawAddress(), tcpIn, s.Additions()...); err != nil {
-		return err
-	}
-	if s.udp {
-		if s.sul, err = socks.NewUDP(s.RawAddress(), udpIn, s.Additions()...); err != nil {
+func (s *Socks) Listen(tunnel C.Tunnel) error {
+	lc := s.ListenConfig()
+	for _, addr := range strings.Split(s.RawAddress(), ",") {
+		config := LC.AuthServer{
+			Enable:         true,
+			Listen:         addr,
+			AuthStore:      s.config.Users.GetAuthStore(),
+			Certificate:    s.config.Certificate,
+			PrivateKey:     s.config.PrivateKey,
+			ClientAuthType: s.config.ClientAuthType,
+			ClientAuthCert: s.config.ClientAuthCert,
+			EchKey:         s.config.EchKey,
+			RealityConfig:  s.config.RealityConfig.Build(),
+		}
+		stl, err := socks.NewWithConfig(config, lc, tunnel, s.Additions()...)
+		if err != nil {
 			return err
+		}
+		s.stl = append(s.stl, stl)
+		if s.udp {
+			sul, err := socks.NewUDPWithConfig(config, lc, tunnel, s.Additions()...)
+			if err != nil {
+				return err
+			}
+			s.sul = append(s.sul, sul)
 		}
 	}
 

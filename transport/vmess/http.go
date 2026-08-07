@@ -3,12 +3,13 @@ package vmess
 import (
 	"bufio"
 	"bytes"
-	"fmt"
+	"io"
 	"net"
-	"net/http"
 	"net/textproto"
+	"net/url"
 
-	"github.com/zhangyunhao116/fastrand"
+	"github.com/metacubex/http"
+	"github.com/metacubex/randv2"
 )
 
 type httpConn struct {
@@ -52,16 +53,27 @@ func (hc *httpConn) Write(b []byte) (int, error) {
 		return hc.Conn.Write(b)
 	}
 
-	path := hc.cfg.Path[fastrand.Intn(len(hc.cfg.Path))]
-	host := hc.cfg.Host
-	if header := hc.cfg.Headers["Host"]; len(header) != 0 {
-		host = header[fastrand.Intn(len(header))]
+	path := "/"
+	if len(hc.cfg.Path) > 0 {
+		path = hc.cfg.Path[randv2.IntN(len(hc.cfg.Path))]
 	}
 
-	u := fmt.Sprintf("http://%s%s", host, path)
-	req, _ := http.NewRequest("GET", u, bytes.NewBuffer(b))
+	host := hc.cfg.Host
+	if header := hc.cfg.Headers["Host"]; len(header) != 0 {
+		host = header[randv2.IntN(len(header))]
+	}
+
+	req := http.Request{
+		Method: hc.cfg.Method, // default is GET
+		Host:   host,
+		URL:    &url.URL{Scheme: "http", Host: host, Path: path},
+		Header: make(http.Header),
+		Body:   io.NopCloser(bytes.NewReader(b)),
+	}
 	for key, list := range hc.cfg.Headers {
-		req.Header.Set(key, list[fastrand.Intn(len(list))])
+		if len(list) > 0 {
+			req.Header.Set(key, list[randv2.IntN(len(list))])
+		}
 	}
 	req.ContentLength = int64(len(b))
 	if err := req.Write(hc.Conn); err != nil {

@@ -6,8 +6,8 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/Dreamacro/clash/common/atomic"
-	"github.com/Dreamacro/clash/common/net/packet"
+	"github.com/metacubex/mihomo/common/atomic"
+	"github.com/metacubex/mihomo/common/net/packet"
 )
 
 type readResult struct {
@@ -19,7 +19,7 @@ type readResult struct {
 type NetPacketConn struct {
 	net.PacketConn
 	deadline     atomic.TypedValue[time.Time]
-	pipeDeadline pipeDeadline
+	pipeDeadline PipeDeadline
 	disablePipe  atomic.Bool
 	inRead       atomic.Bool
 	resultCh     chan any
@@ -28,7 +28,7 @@ type NetPacketConn struct {
 func NewNetPacketConn(pc net.PacketConn) net.PacketConn {
 	npc := &NetPacketConn{
 		PacketConn:   pc,
-		pipeDeadline: makePipeDeadline(),
+		pipeDeadline: MakePipeDeadline(),
 		resultCh:     make(chan any, 1),
 	}
 	npc.resultCh <- nil
@@ -83,7 +83,7 @@ FOR:
 				c.resultCh <- nil
 				break FOR
 			}
-		case <-c.pipeDeadline.wait():
+		case <-c.pipeDeadline.Wait():
 			return 0, nil, os.ErrDeadlineExceeded
 		}
 	}
@@ -122,7 +122,7 @@ func (c *NetPacketConn) SetReadDeadline(t time.Time) error {
 		return c.PacketConn.SetReadDeadline(t)
 	}
 	c.deadline.Store(t)
-	c.pipeDeadline.set(t)
+	c.pipeDeadline.Set(t)
 	return nil
 }
 

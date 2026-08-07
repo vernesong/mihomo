@@ -2,16 +2,20 @@ package congestion
 
 import (
 	"github.com/metacubex/quic-go/congestion"
+	"github.com/metacubex/quic-go/monotime"
+
 	"time"
 )
 
 const (
 	initMaxDatagramSize = 1252
 
-	pktInfoSlotCount = 4
+	pktInfoSlotCount = 5 // slot index is based on seconds, so this is basically how many seconds we sample
 	minSampleCount   = 50
 	minAckRate       = 0.8
 )
+
+var _ congestion.CongestionControlEx = &BrutalSender{}
 
 type BrutalSender struct {
 	rttStats        congestion.RTTStatsProvider
@@ -45,11 +49,11 @@ func (b *BrutalSender) SetRTTStatsProvider(rttStats congestion.RTTStatsProvider)
 	b.rttStats = rttStats
 }
 
-func (b *BrutalSender) TimeUntilSend(bytesInFlight congestion.ByteCount) time.Time {
+func (b *BrutalSender) TimeUntilSend(bytesInFlight congestion.ByteCount) monotime.Time {
 	return b.pacer.TimeUntilSend()
 }
 
-func (b *BrutalSender) HasPacingBudget(now time.Time) bool {
+func (b *BrutalSender) HasPacingBudget(now monotime.Time) bool {
 	return b.pacer.Budget(now) >= b.maxDatagramSize
 }
 
@@ -65,37 +69,32 @@ func (b *BrutalSender) GetCongestionWindow() congestion.ByteCount {
 	return congestion.ByteCount(float64(b.bps) * rtt.Seconds() * 1.5 / b.ackRate)
 }
 
-func (b *BrutalSender) OnPacketSent(sentTime time.Time, bytesInFlight congestion.ByteCount,
+func (b *BrutalSender) OnPacketSent(sentTime monotime.Time, bytesInFlight congestion.ByteCount,
 	packetNumber congestion.PacketNumber, bytes congestion.ByteCount, isRetransmittable bool) {
 	b.pacer.SentPacket(sentTime, bytes)
 }
 
 func (b *BrutalSender) OnPacketAcked(number congestion.PacketNumber, ackedBytes congestion.ByteCount,
-	priorInFlight congestion.ByteCount, eventTime time.Time) {
-	currentTimestamp := eventTime.Unix()
-	slot := currentTimestamp % pktInfoSlotCount
-	if b.pktInfoSlots[slot].Timestamp == currentTimestamp {
-		b.pktInfoSlots[slot].AckCount++
-	} else {
-		// uninitialized slot or too old, reset
-		b.pktInfoSlots[slot].Timestamp = currentTimestamp
-		b.pktInfoSlots[slot].AckCount = 1
-		b.pktInfoSlots[slot].LossCount = 0
-	}
-	b.updateAckRate(currentTimestamp)
+	priorInFlight congestion.ByteCount, eventTime monotime.Time) {
+	// Stub
 }
 
-func (b *BrutalSender) OnPacketLost(number congestion.PacketNumber, lostBytes congestion.ByteCount,
+func (b *BrutalSender) OnCongestionEvent(number congestion.PacketNumber, lostBytes congestion.ByteCount,
 	priorInFlight congestion.ByteCount) {
-	currentTimestamp := time.Now().Unix()
+	// Stub
+}
+
+func (b *BrutalSender) OnCongestionEventEx(priorInFlight congestion.ByteCount, eventTime monotime.Time, ackedPackets []congestion.AckedPacketInfo, lostPackets []congestion.LostPacketInfo) {
+	currentTimestamp := int64(time.Duration(eventTime) / time.Second)
 	slot := currentTimestamp % pktInfoSlotCount
 	if b.pktInfoSlots[slot].Timestamp == currentTimestamp {
-		b.pktInfoSlots[slot].LossCount++
+		b.pktInfoSlots[slot].LossCount += uint64(len(lostPackets))
+		b.pktInfoSlots[slot].AckCount += uint64(len(ackedPackets))
 	} else {
 		// uninitialized slot or too old, reset
 		b.pktInfoSlots[slot].Timestamp = currentTimestamp
-		b.pktInfoSlots[slot].AckCount = 0
-		b.pktInfoSlots[slot].LossCount = 1
+		b.pktInfoSlots[slot].AckCount = uint64(len(ackedPackets))
+		b.pktInfoSlots[slot].LossCount = uint64(len(lostPackets))
 	}
 	b.updateAckRate(currentTimestamp)
 }
@@ -117,10 +116,12 @@ func (b *BrutalSender) updateAckRate(currentTimestamp int64) {
 	}
 	if ackCount+lossCount < minSampleCount {
 		b.ackRate = 1
+		return
 	}
 	rate := float64(ackCount) / float64(ackCount+lossCount)
 	if rate < minAckRate {
 		b.ackRate = minAckRate
+		return
 	}
 	b.ackRate = rate
 }

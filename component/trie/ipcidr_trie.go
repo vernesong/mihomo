@@ -3,7 +3,7 @@ package trie
 import (
 	"net"
 
-	"github.com/Dreamacro/clash/log"
+	"github.com/metacubex/mihomo/log"
 )
 
 type IPV6 bool
@@ -185,6 +185,10 @@ func addIpv6Cidr(trie *IpCidrTrie, ip net.IP, groupSize int) {
 	}
 
 	for i := 2; i < groupSize; i += 2 {
+		if ip[i] == 0 && ip[i+1] == 0 {
+			node.Mark = true
+		}
+
 		if node.Mark {
 			return
 		}

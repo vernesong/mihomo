@@ -2,76 +2,115 @@ package outboundgroup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/Dreamacro/clash/adapter/outbound"
-	"github.com/Dreamacro/clash/common/atomic"
-	"github.com/Dreamacro/clash/common/utils"
-	C "github.com/Dreamacro/clash/constant"
-	"github.com/Dreamacro/clash/constant/provider"
-	types "github.com/Dreamacro/clash/constant/provider"
-	"github.com/Dreamacro/clash/log"
-	"github.com/Dreamacro/clash/tunnel"
+	"github.com/metacubex/mihomo/adapter/outbound"
+	"github.com/metacubex/mihomo/common/atomic"
+	"github.com/metacubex/mihomo/common/utils"
+	C "github.com/metacubex/mihomo/constant"
+	P "github.com/metacubex/mihomo/constant/provider"
+	"github.com/metacubex/mihomo/log"
 
 	"github.com/dlclark/regexp2"
+	"golang.org/x/exp/slices"
 )
 
 type GroupBase struct {
 	*outbound.Base
-	filterRegs       []*regexp2.Regexp
-	excludeFilterReg *regexp2.Regexp
-	excludeTypeArray []string
-	providers        []provider.ProxyProvider
-	failedTestMux    sync.Mutex
-	failedTimes      int
-	failedTime       time.Time
-	failedTesting    *atomic.Bool
-	proxies          [][]C.Proxy
-	versions         []atomic.Uint32
+	hidden            bool
+	icon              string
+	filterRegs        []*regexp2.Regexp
+	excludeFilterRegs []*regexp2.Regexp
+	excludeTypeArray  []string
+	providers         []P.ProxyProvider
+	failedTestMux     sync.Mutex
+	failedTimes       int
+	failedTime        time.Time
+	failedTesting     atomic.Bool
+	testTimeout       int
+	maxFailedTimes    int
+	emptyFallback     C.Proxy
+
+	// for GetProxies
+	getProxiesMutex  sync.Mutex
+	providerVersions []uint32
+	providerProxies  []C.Proxy
 }
 
 type GroupBaseOption struct {
-	outbound.BaseOption
-	filter        string
-	excludeFilter string
-	excludeType   string
-	providers     []provider.ProxyProvider
+	Name           string
+	Type           C.AdapterType
+	Hidden         bool
+	Icon           string
+	Filter         string
+	ExcludeFilter  string
+	ExcludeType    string
+	TestTimeout    int
+	MaxFailedTimes int
+	EmptyFallback  C.Proxy
+	Providers      []P.ProxyProvider
 }
 
 func NewGroupBase(opt GroupBaseOption) *GroupBase {
-	var excludeFilterReg *regexp2.Regexp
-	if opt.excludeFilter != "" {
-		excludeFilterReg = regexp2.MustCompile(opt.excludeFilter, 0)
-	}
 	var excludeTypeArray []string
-	if opt.excludeType != "" {
-		excludeTypeArray = strings.Split(opt.excludeType, "|")
+	if opt.ExcludeType != "" {
+		excludeTypeArray = strings.Split(opt.ExcludeType, "|")
+	}
+
+	var excludeFilterRegs []*regexp2.Regexp
+	if opt.ExcludeFilter != "" {
+		for _, excludeFilter := range strings.Split(opt.ExcludeFilter, "`") {
+			excludeFilterReg := regexp2.MustCompile(excludeFilter, regexp2.None)
+			excludeFilterRegs = append(excludeFilterRegs, excludeFilterReg)
+		}
 	}
 
 	var filterRegs []*regexp2.Regexp
-	if opt.filter != "" {
-		for _, filter := range strings.Split(opt.filter, "`") {
-			filterReg := regexp2.MustCompile(filter, 0)
+	if opt.Filter != "" {
+		for _, filter := range strings.Split(opt.Filter, "`") {
+			filterReg := regexp2.MustCompile(filter, regexp2.None)
 			filterRegs = append(filterRegs, filterReg)
 		}
 	}
 
 	gb := &GroupBase{
-		Base:             outbound.NewBase(opt.BaseOption),
-		filterRegs:       filterRegs,
-		excludeFilterReg: excludeFilterReg,
-		excludeTypeArray: excludeTypeArray,
-		providers:        opt.providers,
-		failedTesting:    atomic.NewBool(false),
+		Base:              outbound.NewBase(outbound.BaseOption{Name: opt.Name, Type: opt.Type}),
+		hidden:            opt.Hidden,
+		icon:              opt.Icon,
+		filterRegs:        filterRegs,
+		excludeFilterRegs: excludeFilterRegs,
+		excludeTypeArray:  excludeTypeArray,
+		providers:         opt.Providers,
+		failedTesting:     atomic.NewBool(false),
+		testTimeout:       opt.TestTimeout,
+		maxFailedTimes:    opt.MaxFailedTimes,
+		emptyFallback:     opt.EmptyFallback,
 	}
 
-	gb.proxies = make([][]C.Proxy, len(opt.providers))
-	gb.versions = make([]atomic.Uint32, len(opt.providers))
+	if gb.testTimeout == 0 {
+		gb.testTimeout = 5000
+	}
+	if gb.maxFailedTimes == 0 {
+		gb.maxFailedTimes = 5
+	}
 
 	return gb
+}
+
+func (gb *GroupBase) Hidden() bool {
+	return gb.hidden
+}
+
+func (gb *GroupBase) Icon() string {
+	return gb.icon
+}
+
+func (gb *GroupBase) EmptyFallback() C.Proxy {
+	return gb.emptyFallback
 }
 
 func (gb *GroupBase) Touch() {
@@ -81,63 +120,62 @@ func (gb *GroupBase) Touch() {
 }
 
 func (gb *GroupBase) GetProxies(touch bool) []C.Proxy {
+	providerVersions := make([]uint32, len(gb.providers))
+	for i, pd := range gb.providers {
+		if touch { // touch first
+			pd.Touch()
+		}
+		providerVersions[i] = pd.Version()
+	}
+
+	// thread safe
+	gb.getProxiesMutex.Lock()
+	defer gb.getProxiesMutex.Unlock()
+
+	// return the cached proxies if version not changed
+	if slices.Equal(providerVersions, gb.providerVersions) {
+		return gb.providerProxies
+	}
+
 	var proxies []C.Proxy
 	if len(gb.filterRegs) == 0 {
 		for _, pd := range gb.providers {
-			if touch {
-				pd.Touch()
-			}
 			proxies = append(proxies, pd.Proxies()...)
 		}
 	} else {
-		for i, pd := range gb.providers {
-			if touch {
-				pd.Touch()
-			}
-
-			if pd.VehicleType() == types.Compatible {
-				gb.versions[i].Store(pd.Version())
-				gb.proxies[i] = pd.Proxies()
+		for _, pd := range gb.providers {
+			if pd.VehicleType() == P.Compatible { // compatible provider unneeded filter
+				proxies = append(proxies, pd.Proxies()...)
 				continue
 			}
 
-			version := gb.versions[i].Load()
-			if version != pd.Version() && gb.versions[i].CompareAndSwap(version, pd.Version()) {
-				var (
-					proxies    []C.Proxy
-					newProxies []C.Proxy
-				)
-
-				proxies = pd.Proxies()
-				proxiesSet := map[string]struct{}{}
-				for _, filterReg := range gb.filterRegs {
-					for _, p := range proxies {
-						name := p.Name()
-						if mat, _ := filterReg.FindStringMatch(name); mat != nil {
-							if _, ok := proxiesSet[name]; !ok {
-								proxiesSet[name] = struct{}{}
-								newProxies = append(newProxies, p)
-							}
+			var newProxies []C.Proxy
+			proxiesSet := map[string]struct{}{}
+			for _, filterReg := range gb.filterRegs {
+				for _, p := range pd.Proxies() {
+					name := p.Name()
+					if mat, _ := filterReg.MatchString(name); mat {
+						if _, ok := proxiesSet[name]; !ok {
+							proxiesSet[name] = struct{}{}
+							newProxies = append(newProxies, p)
 						}
 					}
 				}
-
-				gb.proxies[i] = newProxies
 			}
-		}
-
-		for _, p := range gb.proxies {
-			proxies = append(proxies, p...)
+			proxies = append(proxies, newProxies...)
 		}
 	}
 
+	// Multiple filers means that proxies are sorted in the order in which the filers appear.
+	// Although the filter has been performed once in the previous process,
+	// when there are multiple providers, the array needs to be reordered as a whole.
 	if len(gb.providers) > 1 && len(gb.filterRegs) > 1 {
 		var newProxies []C.Proxy
 		proxiesSet := map[string]struct{}{}
 		for _, filterReg := range gb.filterRegs {
 			for _, p := range proxies {
 				name := p.Name()
-				if mat, _ := filterReg.FindStringMatch(name); mat != nil {
+				if mat, _ := filterReg.MatchString(name); mat {
 					if _, ok := proxiesSet[name]; !ok {
 						proxiesSet[name] = struct{}{}
 						newProxies = append(newProxies, p)
@@ -154,32 +192,31 @@ func (gb *GroupBase) GetProxies(touch bool) []C.Proxy {
 		}
 		proxies = newProxies
 	}
-	if gb.excludeTypeArray != nil {
-		var newProxies []C.Proxy
-		for _, p := range proxies {
-			mType := p.Type().String()
-			flag := false
-			for i := range gb.excludeTypeArray {
-				if strings.EqualFold(mType, gb.excludeTypeArray[i]) {
-					flag = true
-					break
-				}
 
-			}
-			if flag {
-				continue
+	if len(gb.excludeFilterRegs) > 0 {
+		var newProxies []C.Proxy
+	LOOP1:
+		for _, p := range proxies {
+			name := p.Name()
+			for _, excludeFilterReg := range gb.excludeFilterRegs {
+				if mat, _ := excludeFilterReg.MatchString(name); mat {
+					continue LOOP1
+				}
 			}
 			newProxies = append(newProxies, p)
 		}
 		proxies = newProxies
 	}
 
-	if gb.excludeFilterReg != nil {
+	if gb.excludeTypeArray != nil {
 		var newProxies []C.Proxy
+	LOOP2:
 		for _, p := range proxies {
-			name := p.Name()
-			if mat, _ := gb.excludeFilterReg.FindStringMatch(name); mat != nil {
-				continue
+			mType := p.Type().String()
+			for _, excludeType := range gb.excludeTypeArray {
+				if strings.EqualFold(mType, excludeType) {
+					continue LOOP2
+				}
 			}
 			newProxies = append(newProxies, p)
 		}
@@ -187,8 +224,12 @@ func (gb *GroupBase) GetProxies(touch bool) []C.Proxy {
 	}
 
 	if len(proxies) == 0 {
-		return append(proxies, tunnel.Proxies()["COMPATIBLE"])
+		return []C.Proxy{gb.EmptyFallback()}
 	}
+
+	// only cache when proxies not empty
+	gb.providerVersions = providerVersions
+	gb.providerProxies = proxies
 
 	return proxies
 }
@@ -202,7 +243,7 @@ func (gb *GroupBase) URLTest(ctx context.Context, url string, expectedStatus uti
 		proxy := proxy
 		wg.Add(1)
 		go func() {
-			delay, err := proxy.URLTest(ctx, url, expectedStatus, C.DropHistory)
+			delay, err := proxy.URLTest(ctx, url, expectedStatus)
 			if err == nil {
 				lock.Lock()
 				mp[proxy.Name()] = delay
@@ -221,17 +262,21 @@ func (gb *GroupBase) URLTest(ctx context.Context, url string, expectedStatus uti
 	}
 }
 
-func (gb *GroupBase) onDialFailed(adapterType C.AdapterType, err error) {
-	if adapterType == C.Direct || adapterType == C.Compatible || adapterType == C.Reject || adapterType == C.Pass {
+func (gb *GroupBase) onDialFailed(adapterType C.AdapterType, err error, fn func()) {
+	if adapterType == C.Direct || adapterType == C.Compatible || adapterType == C.Reject || adapterType == C.Pass || adapterType == C.RejectDrop {
 		return
 	}
 
-	if strings.Contains(err.Error(), "connection refused") {
-		go gb.healthCheck()
+	if errors.Is(err, C.ErrNotSupport) {
 		return
 	}
 
 	go func() {
+		if strings.Contains(err.Error(), "connection refused") {
+			fn()
+			return
+		}
+
 		gb.failedTestMux.Lock()
 		defer gb.failedTestMux.Unlock()
 
@@ -240,15 +285,15 @@ func (gb *GroupBase) onDialFailed(adapterType C.AdapterType, err error) {
 			log.Debugln("ProxyGroup: %s first failed", gb.Name())
 			gb.failedTime = time.Now()
 		} else {
-			if time.Since(gb.failedTime) > gb.failedTimeoutInterval() {
+			if time.Since(gb.failedTime) > time.Duration(gb.testTimeout)*time.Millisecond {
 				gb.failedTimes = 0
 				return
 			}
 
 			log.Debugln("ProxyGroup: %s failed count: %d", gb.Name(), gb.failedTimes)
-			if gb.failedTimes >= gb.maxFailedTimes() {
-				log.Warnln("because %s failed multiple times, active health check", gb.Name())
-				gb.healthCheck()
+			if gb.failedTimes >= gb.maxFailedTimes {
+				log.Warnln("because %s failed multiple times, activate health check", gb.Name())
+				fn()
 			}
 		}
 	}()
@@ -275,20 +320,8 @@ func (gb *GroupBase) healthCheck() {
 	gb.failedTimes = 0
 }
 
-func (gb *GroupBase) failedIntervalTime() int64 {
-	return 5 * time.Second.Milliseconds()
-}
-
 func (gb *GroupBase) onDialSuccess() {
 	if !gb.failedTesting.Load() {
 		gb.failedTimes = 0
 	}
-}
-
-func (gb *GroupBase) maxFailedTimes() int {
-	return 5
-}
-
-func (gb *GroupBase) failedTimeoutInterval() time.Duration {
-	return 5 * time.Second
 }
