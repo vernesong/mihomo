@@ -26,6 +26,7 @@ import (
 	"github.com/metacubex/mihomo/component/fakeip"
 	"github.com/metacubex/mihomo/component/geodata"
 	M "github.com/metacubex/mihomo/component/mitm"
+	"github.com/metacubex/mihomo/component/modules"
 	"github.com/metacubex/mihomo/component/process"
 	"github.com/metacubex/mihomo/component/resolver"
 	WR "github.com/metacubex/mihomo/component/rewrite"
@@ -226,6 +227,7 @@ type Config struct {
 	TLS           *TLS
 	Mitm          *Mitm
 	Rewrite       *Rewrite
+	Modules       *modules.Manager
 }
 
 type RawCors struct {
@@ -499,12 +501,29 @@ type RawConfig struct {
 
 // Parse config
 func Parse(buf []byte) (*Config, error) {
-	rawCfg, err := UnmarshalRawConfig(buf)
+	decrypted, err := age.DecryptBytes(buf)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt config error: %w", err)
+	}
+
+	moduleManager, merged, err := modules.Parse(decrypted)
 	if err != nil {
 		return nil, err
 	}
 
-	return ParseRawConfig(rawCfg)
+	rawCfg, err := UnmarshalRawConfig(merged)
+	if err != nil {
+		_ = moduleManager.Close()
+		return nil, err
+	}
+
+	parsed, err := ParseRawConfig(rawCfg)
+	if err != nil {
+		_ = moduleManager.Close()
+		return nil, err
+	}
+	parsed.Modules = moduleManager
+	return parsed, nil
 }
 
 func DefaultRawConfig() *RawConfig {

@@ -3,6 +3,7 @@ package log
 import (
 	"fmt"
 	"os"
+	"sync/atomic"
 
 	"github.com/metacubex/mihomo/common/observable"
 
@@ -12,10 +13,11 @@ import (
 var (
 	logCh  = make(chan Event)
 	source = observable.NewObservable[Event](logCh)
-	level  = INFO
+	level  atomic.Int32
 )
 
 func init() {
+	level.Store(int32(INFO))
 	log.SetOutput(os.Stdout)
 	log.SetLevel(log.DebugLevel)
 	log.SetFormatter(&log.TextFormatter{
@@ -72,15 +74,15 @@ func UnSubscribe(sub observable.Subscription[Event]) {
 }
 
 func Level() LogLevel {
-	return level
+	return LogLevel(level.Load())
 }
 
 func SetLevel(newLevel LogLevel) {
-	level = newLevel
+	level.Store(int32(newLevel))
 }
 
 func print(data Event) {
-	if data.LogLevel < level {
+	if data.LogLevel < Level() {
 		return
 	}
 

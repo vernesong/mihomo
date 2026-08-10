@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/adapter/outboundgroup"
+	"github.com/metacubex/mihomo/common/orderedmap"
 	"github.com/metacubex/mihomo/component/auth"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/dialer"
@@ -22,10 +24,12 @@ import (
 	"github.com/metacubex/mihomo/component/iface"
 	"github.com/metacubex/mihomo/component/keepalive"
 	"github.com/metacubex/mihomo/component/mitm"
+	"github.com/metacubex/mihomo/component/modules"
 	"github.com/metacubex/mihomo/component/profile"
 	"github.com/metacubex/mihomo/component/profile/cachefile"
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/component/resource"
+	"github.com/metacubex/mihomo/component/smart/lightgbm"
 	"github.com/metacubex/mihomo/component/sniffer"
 	"github.com/metacubex/mihomo/component/trie"
 	"github.com/metacubex/mihomo/component/updater"
@@ -41,10 +45,15 @@ import (
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/ntp/ntp"
 	"github.com/metacubex/mihomo/tunnel"
-	"github.com/metacubex/mihomo/component/smart/lightgbm"
 )
 
-var mux sync.Mutex
+var (
+	mux sync.RWMutex
+
+	moduleAccessMux sync.RWMutex
+	moduleReloadMux sync.Mutex
+	activeModules   *modules.Manager
+)
 
 func readConfig(path string) ([]byte, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -74,7 +83,14 @@ func ParseWithPath(path string) (*config.Config, error) {
 		return nil, err
 	}
 
-	return ParseWithBytes(buf)
+	cfg, err := ParseWithBytes(buf)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Modules != nil {
+		cfg.Modules.SetSourcePath(path)
+	}
+	return cfg, nil
 }
 
 // ParseWithBytes config with buffer
@@ -86,6 +102,10 @@ func ParseWithBytes(buf []byte) (*config.Config, error) {
 func ApplyConfig(cfg *config.Config, force bool) {
 	mux.Lock()
 	defer mux.Unlock()
+	applyConfig(cfg, force)
+}
+
+func applyConfig(cfg *config.Config, force bool) {
 	log.SetLevel(cfg.General.LogLevel)
 
 	tunnel.OnSuspend()
@@ -125,6 +145,172 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	updateUpdater(cfg)
 
 	resolver.ResetConnection()
+	updateModuleManager(cfg.Modules)
+}
+
+func updateModuleManager(next *modules.Manager) {
+	moduleAccessMux.Lock()
+	previous := activeModules
+	activeModules = next
+	moduleAccessMux.Unlock()
+
+	if previous != nil && previous != next {
+		_ = previous.Close()
+	}
+	if next != nil && previous != next {
+		next.Start(reloadModules)
+	}
+}
+
+func reloadModules(expected *modules.Manager) error {
+	moduleReloadMux.Lock()
+	defer moduleReloadMux.Unlock()
+
+	if !isActiveModuleManager(expected) {
+		return nil
+	}
+
+	var (
+		cfg *config.Config
+		err error
+	)
+	if path := expected.SourcePath(); path != "" {
+		cfg, err = ParseWithPath(path)
+	} else {
+		var source []byte
+		source, err = expected.ReadSource()
+		if err == nil {
+			cfg, err = ParseWithBytes(source)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	applyModuleConfig(cfg, expected)
+	return nil
+}
+
+func applyModuleConfig(cfg *config.Config, expected *modules.Manager) {
+	mux.Lock()
+	defer mux.Unlock()
+	if !isActiveModuleManager(expected) {
+		if cfg.Modules != nil {
+			_ = cfg.Modules.Close()
+		}
+		return
+	}
+	applyConfig(cfg, true)
+}
+
+func isActiveModuleManager(manager *modules.Manager) bool {
+	moduleAccessMux.RLock()
+	defer moduleAccessMux.RUnlock()
+	return activeModules == manager
+}
+
+func GetModules() *orderedmap.OrderedMap[string, modules.Info] {
+	moduleAccessMux.RLock()
+	manager := activeModules
+	moduleAccessMux.RUnlock()
+	if manager == nil {
+		return orderedmap.New[string, modules.Info]()
+	}
+	return manager.Snapshot()
+}
+
+func GetModule(name string) (modules.Info, bool) {
+	moduleAccessMux.RLock()
+	manager := activeModules
+	moduleAccessMux.RUnlock()
+	if manager == nil {
+		return modules.Info{}, false
+	}
+	return manager.Get(name)
+}
+
+func GetModuleConfig() ([]byte, bool) {
+	moduleAccessMux.RLock()
+	manager := activeModules
+	moduleAccessMux.RUnlock()
+	if manager == nil {
+		return nil, false
+	}
+	return manager.EffectiveConfig(), true
+}
+
+func SetModuleEnabled(name string, enabled bool) error {
+	moduleReloadMux.Lock()
+	defer moduleReloadMux.Unlock()
+
+	path := C.Path.Config()
+	moduleAccessMux.RLock()
+	manager := activeModules
+	moduleAccessMux.RUnlock()
+	if manager != nil {
+		if sourcePath := manager.SourcePath(); sourcePath != "" {
+			path = sourcePath
+		}
+	}
+	source, err := readConfig(path)
+	if err != nil {
+		return err
+	}
+	updated, changed, err := modules.SetEnabled(source, name, enabled)
+	if err != nil {
+		return err
+	}
+
+	cfg, err := ParseWithBytes(updated)
+	if err != nil {
+		return err
+	}
+	if cfg.Modules != nil {
+		cfg.Modules.SetSourcePath(path)
+	}
+
+	if changed {
+		if err := writeConfigAtomic(path, updated); err != nil {
+			if cfg.Modules != nil {
+				_ = cfg.Modules.Close()
+			}
+			return err
+		}
+	}
+
+	ApplyConfig(cfg, true)
+	return nil
+}
+
+func writeConfigAtomic(path string, data []byte) (err error) {
+	if resolved, resolveErr := filepath.EvalSymlinks(path); resolveErr == nil {
+		path = resolved
+	}
+	mode := os.FileMode(0o644)
+	if stat, statErr := os.Stat(path); statErr == nil {
+		mode = stat.Mode().Perm()
+	}
+
+	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+
+	if err = temporary.Chmod(mode); err == nil {
+		_, err = temporary.Write(data)
+	}
+	if err == nil {
+		err = temporary.Sync()
+	}
+	closeErr := temporary.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return os.Rename(temporaryPath, path)
 }
 
 func initInnerTcp() {
@@ -132,6 +318,9 @@ func initInnerTcp() {
 }
 
 func GetGeneral() *config.General {
+	mux.RLock()
+	defer mux.RUnlock()
+
 	ports := listener.GetPorts()
 	var authenticator []string
 	if auth := authStore.Default.Authenticator(); auth != nil {
