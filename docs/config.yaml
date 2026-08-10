@@ -64,11 +64,11 @@ tls:
       format/pem...
       -----END CERTIFICATE-----
 
-# HTTPS 中间人代理配置；未配置时关闭
+# HTTP(S) 调试与 HTTPS 中间人代理配置；未配置时关闭
 # mitm:
-#   h2: false # 是否允许客户端和上游使用 HTTP/2
+#   h2: false # 是否允许客户端和上游使用 HTTP/2，包括明文 HTTP/2
 #   capture: false # 是否捕获 HTTP 请求和响应正文；开启后可能产生很高的内存和 CPU 开销
-#   hostname: # DOMAIN-WILDCARD 匹配语义；无端口时仅匹配 443，:端口 精确匹配，:0 匹配任意端口
+#   hostname: # DOMAIN-WILDCARD 匹配语义；无端口时匹配 HTTP 80 与 HTTPS 443，:端口 精确匹配，:0 匹配任意端口
 #     - example.com
 #     - "*.example.com:8443"
 #     - "*.example.net:0"

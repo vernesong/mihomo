@@ -1,4 +1,4 @@
-# MITM 抓包接口
+# MITM 与明文 HTTP 抓包接口
 
 MITM 接口挂载在 external controller 的 `/mitm` 路径下，并沿用 controller 的鉴权方式。配置了 `secret` 时，请发送 `Authorization: Bearer <secret>`。
 
@@ -11,10 +11,12 @@ mitm:
   capture: false
 ```
 
-- `capture: false`：记录被 MITM 处理的 HTTP 请求及响应元数据和 Headers，不保存正文。
+- `capture: false`：记录经过 HTTPS MITM 或明文 HTTP 调试链路的请求及响应元数据和 Headers，不保存正文。
 - `capture: true`：同时保存请求及响应的完整 HTTP body。配置加载时会输出 WARNING，因为此模式可能消耗大量内存和 CPU。
 - 在线切换只影响切换后创建的请求。通过接口修改的是运行时状态，不会写回配置文件；下一次配置加载会重新采用配置文件中的值。
 - 最多保留最近 256 个请求。单个 body 不设大小上限，因此不建议长期开启。
+
+已经是明文的 HTTP 请求不需要 TLS 解密，但会复用相同的 hostname、hostname-exclude、client-source-address、Session、Handler 与抓包接口。无端口的 hostname 条目会匹配标准 HTTP 80 和 HTTPS 443；自定义端口仍需写成 `域名:端口`，`:0` 仍表示任意端口。明文 HTTP/2 仅在 `h2: true` 时处理。
 
 ## 获取请求记录
 
@@ -80,7 +82,7 @@ GET /mitm
 - `session.id`：对应同一上游 TCP 连接在 `/connections` 中的 Tracker UUID。它不是 MITM 另外生成的 UUID；上游连接尚未建立时暂为空，`REJECT`、本地响应或拨号失败时可能一直为空。
 - `session.requestIndex`：mihomo 进程内单调递增的 HTTP 请求序号，用于区分同一连接上的多个请求及关联 WebSocket 更新；它不是连接 ID，也不是 UUID。
 - `session.capture`：该请求开始时是否启用了正文捕获。
-- `request.url`：完整 URL，包含 scheme、host、path 和 query，不包含 fragment。
+- `request.url`：完整 URL，包含 `http` 或 `https` scheme、host、path 和 query，不包含 fragment。
 - `headers`：值始终是字符串数组，适合直接转换为多值 Header 列表；Go HTTP server 单独保存的请求 `Host` 也会合并到这里。
 - `response`、`completedAt`：请求仍在进行时可能不存在。
 - `error`：上游请求失败时出现，内容为错误文本。

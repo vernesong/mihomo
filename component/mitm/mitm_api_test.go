@@ -278,6 +278,160 @@ mitm:
 	}
 }
 
+func TestMitmUserPlainHTTPAPI(t *testing.T) {
+	const (
+		passphrase   = "password"
+		hostname     = "plain.example.com"
+		connectionID = "33333333-3333-4333-8333-333333333333"
+	)
+	_, _, caP12 := newTestAuthority(t, passphrase)
+
+	for _, testCase := range []struct {
+		name string
+		h2   bool
+	}{
+		{name: "HTTP/1.1"},
+		{name: "unencrypted HTTP/2", h2: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			mitm.SetCaptureEnabled(false)
+			mitm.ClearCapturedSessions()
+			t.Cleanup(func() {
+				mitm.SetCaptureEnabled(false)
+				mitm.ClearCapturedSessions()
+			})
+
+			rawConfig := fmt.Sprintf(`
+mitm:
+  h2: %t
+  capture: true
+  hostname:
+    - %s
+  passphrase: %q
+  ca-p12: %q
+`, testCase.h2, hostname, passphrase, base64.StdEncoding.EncodeToString(caP12))
+			parsedConfig, err := config.Parse([]byte(rawConfig))
+			require.NoError(t, err)
+			require.NotNil(t, parsedConfig.Mitm)
+			require.True(t, parsedConfig.Mitm.MatchHostPort(hostname, 80, netip.MustParseAddr("127.0.0.1")))
+
+			upstreamHandler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("X-Upstream-Response", "visible")
+				_, _ = fmt.Fprintf(writer, "%s|%s", request.Header.Get("X-MITM-Request"), request.Proto)
+			})
+			upstream := httptest.NewUnstartedServer(upstreamHandler)
+			if testCase.h2 {
+				protocols := new(http.Protocols)
+				protocols.SetUnencryptedHTTP2(true)
+				upstream.Config.Protocols = protocols
+				require.NoError(t, http2.ConfigureServer(upstream.Config, &http2.Server{}))
+			}
+			upstream.Start()
+			defer upstream.Close()
+
+			handler := &apiHandler{
+				requestURLs:   make(chan string, 1),
+				connectionIDs: make(chan string, 1),
+			}
+			mitm.SetCaptureEnabled(parsedConfig.Mitm.Capture)
+			interceptor := mitm.New(parsedConfig.Mitm, handler)
+			require.NotNil(t, interceptor)
+
+			clientConn, serverConn := net.Pipe()
+			handleResult := make(chan error, 1)
+			dialedURLs := make(chan string, 1)
+			go func() {
+				handled, err := interceptor.Handle(N.NewBufferedConn(serverConn), &C.Metadata{
+					NetWork: C.TCP,
+					Type:    C.HTTP,
+					SrcIP:   netip.MustParseAddr("127.0.0.1"),
+					SrcPort: 54321,
+					Host:    hostname,
+					DstPort: 80,
+				}, func(ctx context.Context, _, _ string) (net.Conn, error) {
+					dialedURLs <- mitm.RequestURLFromContext(ctx)
+					connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", upstream.Listener.Addr().String())
+					if err != nil {
+						return nil, err
+					}
+					return &apiTrackedConnection{Conn: connection, id: connectionID}, nil
+				})
+				if !handled && err == nil {
+					err = fmt.Errorf("connection was not handled")
+				}
+				handleResult <- err
+			}()
+
+			requestURL := "http://" + hostname + "/index.html?source=plain-http"
+			request := &http.Request{
+				Method:        http.MethodPost,
+				URL:           mustParseURL(t, requestURL),
+				Host:          hostname,
+				Header:        make(http.Header),
+				Body:          io.NopCloser(strings.NewReader("plain-request-body")),
+				ContentLength: int64(len("plain-request-body")),
+			}
+			request.Header.Set("Content-Type", "text/plain")
+			request.Header.Set("X-Client-Request", "visible")
+
+			var response *http.Response
+			var h2Client *http2.ClientConn
+			if testCase.h2 {
+				h2Transport := &http2.Transport{}
+				h2Client, err = h2Transport.NewClientConn(clientConn)
+				require.NoError(t, err)
+				response, err = h2Client.RoundTrip(request)
+			} else {
+				require.NoError(t, request.Write(clientConn))
+				response, err = http.ReadResponse(bufio.NewReader(clientConn), request)
+			}
+			require.NoError(t, err)
+			responseBody, err := io.ReadAll(response.Body)
+			require.NoError(t, err)
+			require.NoError(t, response.Body.Close())
+			require.Equal(t, http.StatusOK, response.StatusCode)
+			require.Equal(t, "handled", response.Header.Get("X-MITM-Response"))
+			if testCase.h2 {
+				require.Equal(t, "handled|HTTP/2.0", string(responseBody))
+			} else {
+				require.Equal(t, "handled|HTTP/1.1", string(responseBody))
+			}
+			require.Equal(t, requestURL, <-dialedURLs)
+			require.Equal(t, requestURL, <-handler.requestURLs)
+			require.Equal(t, connectionID, <-handler.connectionIDs)
+			require.Equal(t, hostname, handler.hostname)
+
+			if h2Client != nil {
+				require.NoError(t, h2Client.Close())
+			}
+			_ = clientConn.Close()
+			select {
+			case err := <-handleResult:
+				require.NoError(t, err)
+			case <-time.After(3 * time.Second):
+				t.Fatal("plain HTTP handler did not stop after the client closed")
+			}
+			require.Empty(t, handler.errors)
+
+			snapshot := mitm.CapturedSessionsSnapshot()
+			require.True(t, snapshot.Capture)
+			require.Len(t, snapshot.Sessions, 1)
+			captured := snapshot.Sessions[0]
+			require.Equal(t, connectionID, captured.ConnectionID)
+			require.Equal(t, requestURL, captured.Request.URL)
+			require.Equal(t, hostname, captured.Request.Headers.Get("Host"))
+			require.Equal(t, "visible", captured.Request.Headers.Get("X-Client-Request"))
+			require.NotNil(t, captured.Request.Body)
+			require.Equal(t, "plain-request-body", captured.Request.Body.Content)
+			require.NotNil(t, captured.Response)
+			require.Equal(t, "visible", captured.Response.Headers.Get("X-Upstream-Response"))
+			require.NotNil(t, captured.Response.Body)
+			require.Equal(t, string(responseBody), captured.Response.Body.Content)
+			require.NotNil(t, captured.CompletedAt)
+		})
+	}
+}
+
 func TestMitmUserConfigurationDefaultsAndHostnamePorts(t *testing.T) {
 	const passphrase = "password"
 	_, _, caP12 := newTestAuthority(t, passphrase)
@@ -285,6 +439,8 @@ func TestMitmUserConfigurationDefaultsAndHostnamePorts(t *testing.T) {
 mitm:
   hostname:
     - standard.example.com
+    - plain.example.com:80
+    - secure.example.com:443
     - custom.example.com:8443
     - "*.any.example.com:0"
     - blocked.example.com:0
@@ -303,7 +459,12 @@ mitm:
 	ipv6 := netip.MustParseAddr("2001:db8::1")
 	require.True(t, parsedConfig.Mitm.Match("standard.example.com", ipv4))
 	require.True(t, parsedConfig.Mitm.Match("standard.example.com", ipv6))
+	require.True(t, parsedConfig.Mitm.MatchHostPort("standard.example.com", 80, ipv4))
 	require.False(t, parsedConfig.Mitm.MatchHostPort("standard.example.com", 8443, ipv4))
+	require.True(t, parsedConfig.Mitm.MatchHostPort("plain.example.com", 80, ipv4))
+	require.False(t, parsedConfig.Mitm.MatchHostPort("plain.example.com", 443, ipv4))
+	require.True(t, parsedConfig.Mitm.MatchHostPort("secure.example.com", 443, ipv6))
+	require.False(t, parsedConfig.Mitm.MatchHostPort("secure.example.com", 80, ipv6))
 	require.True(t, parsedConfig.Mitm.MatchHostPort("custom.example.com", 8443, ipv6))
 	require.False(t, parsedConfig.Mitm.MatchHostPort("custom.example.com", 443, ipv4))
 	require.True(t, parsedConfig.Mitm.MatchHostPort("edge.any.example.com", 443, ipv4))
@@ -391,6 +552,13 @@ func newTestAuthority(t *testing.T, passphrase string) (*x509.Certificate, *rsa.
 	p12, err := pkcs12.Modern.Encode(key, certificate, nil, passphrase)
 	require.NoError(t, err)
 	return certificate, key, p12
+}
+
+func mustParseURL(t *testing.T, value string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(value)
+	require.NoError(t, err)
+	return parsed
 }
 
 func newTestServerCertificate(t *testing.T, hostname string, authority *x509.Certificate, authorityKey *rsa.PrivateKey) tls.Certificate {

@@ -9,7 +9,10 @@ import (
 	"github.com/metacubex/mihomo/component/wildcard"
 )
 
-const standardHTTPSPort uint16 = 443
+const (
+	standardHTTPPort  uint16 = 80
+	standardHTTPSPort uint16 = 443
+)
 
 var defaultClientSourceAddress = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/0"),
@@ -19,6 +22,7 @@ var defaultClientSourceAddress = []netip.Prefix{
 type hostnamePattern struct {
 	pattern string
 	port    uint16
+	hasPort bool
 }
 
 type Options struct {
@@ -120,18 +124,22 @@ func (c *Config) MatchHostname(host string) bool {
 }
 
 func (c *Config) MatchHostnamePort(host string, port uint16) bool {
+	return c.matchHostnamePort(host, port, standardHTTPPort, standardHTTPSPort)
+}
+
+func (c *Config) matchHostnamePort(host string, port uint16, implicitPorts ...uint16) bool {
 	if !c.Enabled() {
 		return false
 	}
 
 	host = strings.ToLower(host)
 	for _, pattern := range c.hostnameExclude {
-		if pattern.match(host, port) {
+		if pattern.match(host, port, implicitPorts...) {
 			return false
 		}
 	}
 	for _, pattern := range c.hostname {
-		if pattern.match(host, port) {
+		if pattern.match(host, port, implicitPorts...) {
 			return true
 		}
 	}
@@ -159,7 +167,7 @@ func parseHostnamePattern(value string) (hostnamePattern, error) {
 		return hostnamePattern{}, fmt.Errorf("hostname is empty")
 	}
 
-	port := standardHTTPSPort
+	port := uint16(0)
 	if hasPort {
 		parsedPort, err := strconv.ParseUint(portText, 10, 16)
 		if err != nil {
@@ -167,7 +175,7 @@ func parseHostnamePattern(value string) (hostnamePattern, error) {
 		}
 		port = uint16(parsedPort)
 	}
-	return hostnamePattern{pattern: host, port: port}, nil
+	return hostnamePattern{pattern: host, port: port, hasPort: hasPort}, nil
 }
 
 func splitHostnamePattern(value string) (host string, port string, hasPort bool, err error) {
@@ -197,6 +205,17 @@ func splitHostnamePattern(value string) (host string, port string, hasPort bool,
 	return value[:lastColon], value[lastColon+1:], true, nil
 }
 
-func (p hostnamePattern) match(host string, port uint16) bool {
-	return (p.port == 0 || p.port == port) && wildcard.Match(p.pattern, host)
+func (p hostnamePattern) match(host string, port uint16, implicitPorts ...uint16) bool {
+	portMatched := false
+	if p.hasPort {
+		portMatched = p.port == 0 || p.port == port
+	} else {
+		for _, implicitPort := range implicitPorts {
+			if port == implicitPort {
+				portMatched = true
+				break
+			}
+		}
+	}
+	return portMatched && wildcard.Match(p.pattern, host)
 }

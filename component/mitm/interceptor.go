@@ -1,6 +1,7 @@
 package mitm
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -23,7 +24,9 @@ import (
 	"github.com/metacubex/tls"
 )
 
-const maxClientHelloSize = 64 * 1024
+const maxSniffBufferSize = 64 * 1024
+
+var http2ClientPreface = []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
 
 var errSingleConnectionDone = errors.New("MITM connection closed")
 
@@ -31,6 +34,29 @@ type DialContext func(ctx context.Context, network, address string) (net.Conn, e
 
 type connectionIdentifier interface {
 	ID() string
+}
+
+type downstreamProtocol uint8
+
+const (
+	downstreamUnknown downstreamProtocol = iota
+	downstreamTLS
+	downstreamHTTP1
+	downstreamHTTP2
+)
+
+func (p downstreamProtocol) scheme() string {
+	if p == downstreamTLS {
+		return "https"
+	}
+	return "http"
+}
+
+func (p downstreamProtocol) standardPort() uint16 {
+	if p == downstreamTLS {
+		return standardHTTPSPort
+	}
+	return standardHTTPPort
 }
 
 type Interceptor struct {
@@ -53,15 +79,15 @@ func (i *Interceptor) Handle(conn *N.BufferedConn, metadata *C.Metadata, dial Di
 		return false, nil
 	}
 
-	serverName, isTLS := sniffServerName(conn)
-	if !isTLS {
+	serverName, protocol := sniffDownstream(conn)
+	if protocol == downstreamUnknown || (protocol == downstreamHTTP2 && !i.config.H2) {
 		return false, nil
 	}
 	if serverName == "" {
 		serverName = metadata.RuleHost()
 	}
 	serverName = normalizeCertificateHost(serverName)
-	if !i.config.MatchHostnamePort(serverName, metadata.DstPort) {
+	if !i.config.matchHostnamePort(serverName, metadata.DstPort, protocol.standardPort()) {
 		return false, nil
 	}
 
@@ -70,11 +96,23 @@ func (i *Interceptor) Handle(conn *N.BufferedConn, metadata *C.Metadata, dial Di
 	metadata.DstIP = netip.Addr{}
 	metadata.DNSMode = C.DNSNormal
 
-	proxy := i.newReverseProxy(dial, metadata)
+	proxy := i.newReverseProxy(dial, metadata, protocol.scheme())
+	if protocol != downstreamTLS {
+		return i.servePlainHTTP(conn, proxy)
+	}
+
+	return i.serveTLS(conn, serverName, proxy)
+}
+
+func (i *Interceptor) serveTLS(conn net.Conn, serverName string, proxy http.Handler) (bool, error) {
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(i.config.H2)
 	server := &http.Server{
 		Handler:   proxy,
 		TLSConfig: i.config.authority.tlsConfig(serverName, i.config.H2),
 		ErrorLog:  stdlog.New(io.Discard, "", 0),
+		Protocols: protocols,
 	}
 	if i.config.H2 {
 		if err := http2.ConfigureServer(server, &http2.Server{}); err != nil {
@@ -91,8 +129,29 @@ func (i *Interceptor) Handle(conn *N.BufferedConn, metadata *C.Metadata, dial Di
 		return true, err
 	}
 
-	listener := newSingleConnListener(tlsConn)
-	err = server.Serve(listener)
+	return i.serveSingleConnection(server, tlsConn)
+}
+
+func (i *Interceptor) servePlainHTTP(conn net.Conn, proxy http.Handler) (bool, error) {
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(i.config.H2)
+	server := &http.Server{
+		Handler:   proxy,
+		ErrorLog:  stdlog.New(io.Discard, "", 0),
+		Protocols: protocols,
+	}
+	if i.config.H2 {
+		if err := http2.ConfigureServer(server, &http2.Server{}); err != nil {
+			return true, err
+		}
+	}
+	return i.serveSingleConnection(server, conn)
+}
+
+func (i *Interceptor) serveSingleConnection(server *http.Server, conn net.Conn) (bool, error) {
+	listener := newSingleConnListener(conn)
+	err := server.Serve(listener)
 	_ = listener.Close()
 	if errors.Is(err, errSingleConnectionDone) || errors.Is(err, net.ErrClosed) || errors.Is(err, http.ErrServerClosed) {
 		return true, nil
@@ -116,67 +175,89 @@ func (i *Interceptor) matchSource(source netip.Addr) bool {
 	return false
 }
 
-func sniffServerName(conn *N.BufferedConn) (string, bool) {
+func sniffDownstream(conn *N.BufferedConn) (string, downstreamProtocol) {
 	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 
-	want := 5
-	isTLS := false
-	for want <= maxClientHelloSize {
+	httpSniffer, err := sniffer.NewHTTPSniffer(sniffer.SnifferConfig{})
+	if err != nil {
+		return "", downstreamUnknown
+	}
+
+	want := 1
+	protocol := downstreamUnknown
+	for want <= maxSniffBufferSize {
 		conn.Grow(want)
 		_, peekErr := conn.Peek(want)
 		buffered := conn.Buffered()
 		if buffered == 0 {
-			return "", false
+			return "", downstreamUnknown
 		}
 		data, _ := conn.Peek(buffered)
-		if data[0] != 0x16 {
-			return "", false
-		}
-		if len(data) >= 3 {
-			if data[1] != 3 {
-				return "", false
+		if protocol == downstreamUnknown {
+			if data[0] == 0x16 {
+				protocol = downstreamTLS
+			} else {
+				protocol = downstreamHTTP1
 			}
-			isTLS = true
 		}
 
-		serverName, sniffErr := sniffer.SniffTLS(data)
-		if sniffErr == nil && serverName != nil {
-			return *serverName, true
+		if protocol == downstreamTLS {
+			if len(data) >= 2 && data[1] != 3 {
+				return "", downstreamUnknown
+			}
+
+			serverName, sniffErr := sniffer.SniffTLS(data)
+			if sniffErr == nil && serverName != nil {
+				return *serverName, downstreamTLS
+			}
+			if !errors.Is(sniffErr, sniffer.ErrNoClue) {
+				return "", downstreamTLS
+			}
+		} else {
+			serverName, sniffErr := httpSniffer.SniffData(data)
+			if sniffErr == nil {
+				if bytes.HasPrefix(data, http2ClientPreface) {
+					return serverName, downstreamHTTP2
+				}
+				return serverName, downstreamHTTP1
+			}
+			if !errors.Is(sniffErr, sniffer.ErrNoClue) {
+				return "", downstreamUnknown
+			}
 		}
-		if !errors.Is(sniffErr, sniffer.ErrNoClue) {
-			return "", isTLS
-		}
+
 		if peekErr != nil {
-			return "", isTLS
+			if protocol == downstreamTLS {
+				return "", downstreamTLS
+			}
+			return "", downstreamUnknown
 		}
 
-		if buffered >= maxClientHelloSize {
-			return "", isTLS
+		if buffered >= maxSniffBufferSize {
+			break
 		}
 		want *= 2
 		if want <= buffered {
 			want = buffered + 1
 		}
-		if want > maxClientHelloSize {
-			want = maxClientHelloSize
+		if want > maxSniffBufferSize {
+			want = maxSniffBufferSize
 		}
 	}
-	return "", isTLS
+	if protocol == downstreamTLS {
+		return "", downstreamTLS
+	}
+	return "", downstreamUnknown
 }
 
 type sessionContextKey struct{}
 
-func (i *Interceptor) newReverseProxy(dial DialContext, metadata *C.Metadata) http.Handler {
+func (i *Interceptor) newReverseProxy(dial DialContext, metadata *C.Metadata, defaultScheme string) http.Handler {
 	reverseProxy := &httputil.ReverseProxy{
 		Transport: &requestRoundTripper{interceptor: i, dial: dial},
 		Rewrite: func(proxyRequest *httputil.ProxyRequest) {
-			if proxyRequest.Out.URL.Scheme == "" {
-				proxyRequest.Out.URL.Scheme = "https"
-			}
-			if proxyRequest.Out.URL.Host == "" {
-				proxyRequest.Out.URL.Host = proxyRequest.In.Host
-			}
+			setRequestURLDefaults(proxyRequest.Out, defaultScheme)
 			proxyRequest.Out.Host = proxyRequest.In.Host
 		},
 		ModifyResponse: func(response *http.Response) error {
@@ -218,9 +299,11 @@ func (i *Interceptor) newReverseProxy(dial DialContext, metadata *C.Metadata) ht
 	}
 
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		setRequestURLDefaults(request, defaultScheme)
 		session := newSession(request, metadata)
 		newRequest, response := i.handler.HandleRequest(session)
 		if newRequest != nil {
+			setRequestURLDefaults(newRequest, defaultScheme)
 			request = newRequest
 			session.SetRequest(newRequest)
 		}
@@ -236,6 +319,18 @@ func (i *Interceptor) newReverseProxy(dial DialContext, metadata *C.Metadata) ht
 	})
 }
 
+func setRequestURLDefaults(request *http.Request, scheme string) {
+	if request == nil || request.URL == nil {
+		return
+	}
+	if request.URL.Scheme == "" {
+		request.URL.Scheme = scheme
+	}
+	if request.URL.Host == "" {
+		request.URL.Host = request.Host
+	}
+}
+
 type requestRoundTripper struct {
 	interceptor *Interceptor
 	dial        DialContext
@@ -246,7 +341,8 @@ func (t *requestRoundTripper) RoundTrip(request *http.Request) (*http.Response, 
 	session, _ := request.Context().Value(sessionContextKey{}).(*Session)
 	// A fresh transport ensures every URL gets an independent routing decision.
 	// Close its pool with the response body so it cannot leak an idle connection.
-	transport := t.interceptor.newTransport(t.dial, requestURL, session)
+	useUnencryptedHTTP2 := t.interceptor.config.H2 && request.URL.Scheme == "http" && request.ProtoMajor == 2
+	transport := t.interceptor.newTransport(t.dial, requestURL, session, useUnencryptedHTTP2)
 	response, err := transport.RoundTrip(request)
 	if err != nil {
 		transport.CloseIdleConnections()
@@ -282,7 +378,7 @@ func (b *closeIdleResponseBody) Close() error {
 	return err
 }
 
-func (i *Interceptor) newTransport(dial DialContext, requestURL string, session *Session) *http.Transport {
+func (i *Interceptor) newTransport(dial DialContext, requestURL string, session *Session, useUnencryptedHTTP2 bool) *http.Transport {
 	nextProtos := []string{"http/1.1"}
 	if i.config.H2 {
 		nextProtos = []string{"h2", "http/1.1"}
@@ -303,7 +399,7 @@ func (i *Interceptor) newTransport(dial DialContext, requestURL string, session 
 		return connection, nil
 	}
 
-	return &http.Transport{
+	transport := &http.Transport{
 		Proxy: nil,
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			return dialConnection(ctx, network, address)
@@ -334,6 +430,12 @@ func (i *Interceptor) newTransport(dial DialContext, requestURL string, session 
 			return tlsConn, nil
 		},
 	}
+	if useUnencryptedHTTP2 {
+		protocols := new(http.Protocols)
+		protocols.SetUnencryptedHTTP2(true)
+		transport.Protocols = protocols
+	}
+	return transport
 }
 
 func writeResponse(writer http.ResponseWriter, response *http.Response) {
@@ -362,14 +464,14 @@ func writeResponse(writer http.ResponseWriter, response *http.Response) {
 }
 
 type singleConnListener struct {
-	conn     http.TLSConn
+	conn     net.Conn
 	mutex    sync.Mutex
 	accepted bool
 	done     chan struct{}
 	doneOnce sync.Once
 }
 
-func newSingleConnListener(conn http.TLSConn) *singleConnListener {
+func newSingleConnListener(conn net.Conn) *singleConnListener {
 	return &singleConnListener{conn: conn, done: make(chan struct{})}
 }
 
@@ -378,7 +480,10 @@ func (l *singleConnListener) Accept() (net.Conn, error) {
 	if !l.accepted {
 		l.accepted = true
 		l.mutex.Unlock()
-		return &notifyCloseTLSConn{TLSConn: l.conn, onClose: l.finish}, nil
+		if tlsConn, ok := l.conn.(http.TLSConn); ok {
+			return &notifyCloseTLSConn{TLSConn: tlsConn, onClose: l.finish}, nil
+		}
+		return &notifyCloseConn{Conn: l.conn, onClose: l.finish}, nil
 	}
 	l.mutex.Unlock()
 	<-l.done
@@ -401,6 +506,16 @@ func (l *singleConnListener) finish() {
 type notifyCloseTLSConn struct {
 	http.TLSConn
 	onClose func()
+}
+
+type notifyCloseConn struct {
+	net.Conn
+	onClose func()
+}
+
+func (c *notifyCloseConn) Close() error {
+	c.onClose()
+	return c.Conn.Close()
 }
 
 func (c *notifyCloseTLSConn) Close() error {

@@ -141,7 +141,7 @@ func newSession(request *http.Request, metadata *C.Metadata) *Session {
 	return session
 }
 
-// RequestURLFromContext returns the absolute URL associated with an upstream MITM dial.
+// RequestURLFromContext returns the absolute URL associated with an intercepted HTTP dial.
 func RequestURLFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""

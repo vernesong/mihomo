@@ -211,7 +211,7 @@ type Metadata struct {
 	SpecialProxy string     `json:"specialProxy"`
 	SpecialRules string     `json:"specialRules"`
 	RemoteDst    string     `json:"remoteDestination"`
-	URL          string     `json:"url,omitempty"` // absolute URL for an intercepted MITM HTTP request
+	URL          string     `json:"url,omitempty"` // absolute URL for an intercepted HTTPS or plaintext HTTP request
 	DSCP         uint8      `json:"dscp"`
 	UUID           string     `json:"id,omitempty"` // ID is used to identify the connection for smart
 	SmartBlock     string     `json:"smartBlock"`   // SmartBlock indicates if the node selected by smart group should be blocked for this connection
