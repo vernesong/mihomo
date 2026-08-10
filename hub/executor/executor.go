@@ -119,6 +119,7 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	loadProvider(cfg.Providers)
 	updateProfile(cfg)
 	loadProvider(cfg.RuleProviders)
+	tunnel.RefreshProtocolDetection()
 	runtime.GC()
 	tunnel.OnRunning()
 	updateUpdater(cfg)

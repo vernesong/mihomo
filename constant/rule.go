@@ -41,6 +41,7 @@ const (
 	OR
 	NOT
 	URLRegex
+	Protocol
 )
 
 type RuleType int
@@ -139,6 +140,8 @@ func (rt RuleType) String() string {
 		return "NOT"
 	case URLRegex:
 		return "URLRegex"
+	case Protocol:
+		return "Protocol"
 	default:
 		return "Unknown"
 	}

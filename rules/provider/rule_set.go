@@ -59,6 +59,18 @@ func (rs *RuleSet) ProviderNames() []string {
 	return []string{rs.ruleProviderName}
 }
 
+func (rs *RuleSet) RequiredProtocols() []C.SniffProtocol {
+	provider, ok := rs.getProvider()
+	if !ok {
+		return nil
+	}
+	requirement, ok := provider.Strategy().(C.ProtocolRequirement)
+	if !ok {
+		return nil
+	}
+	return requirement.RequiredProtocols()
+}
+
 func (rs *RuleSet) getProvider() (P.RuleProvider, bool) {
 	pp, ok := tunnel.RuleProviders()[rs.ruleProviderName]
 	return pp, ok
@@ -76,3 +88,4 @@ func NewRuleSet(ruleProviderName string, adapter string, isSrc bool, noResolveIP
 }
 
 var _ C.Rule = (*RuleSet)(nil)
+var _ C.ProtocolRequirement = (*RuleSet)(nil)

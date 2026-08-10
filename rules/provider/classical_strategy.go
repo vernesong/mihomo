@@ -59,6 +59,17 @@ func (c *classicalStrategy) payloadToRule(rule string) (C.Rule, error) {
 
 func (c *classicalStrategy) FinishInsert() {}
 
+func (c *classicalStrategy) RequiredProtocols() (protocols []C.SniffProtocol) {
+	for _, rule := range c.rules {
+		if requirement, ok := rule.(C.ProtocolRequirement); ok {
+			protocols = append(protocols, requirement.RequiredProtocols()...)
+		}
+	}
+	return protocols
+}
+
 func NewClassicalStrategy(parse common.ParseRuleFunc) *classicalStrategy {
 	return &classicalStrategy{rules: []C.Rule{}, parse: parse}
 }
+
+var _ C.ProtocolRequirement = (*classicalStrategy)(nil)

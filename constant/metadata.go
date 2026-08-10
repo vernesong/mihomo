@@ -222,6 +222,8 @@ type Metadata struct {
 	RawDstAddr net.Addr `json:"-"`
 	// Only domain rule
 	SniffHost string `json:"sniffHost"`
+	// Protocol is populated only when an active PROTOCOL rule requires its detector.
+	Protocol SniffProtocol `json:"protocol,omitempty"`
 }
 
 func (m *Metadata) RemoteAddress() string {

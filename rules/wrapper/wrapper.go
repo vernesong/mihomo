@@ -67,9 +67,18 @@ func (r *RuleWrapper) Match(metadata *C.Metadata, helper C.RuleMatchHelper) (boo
 	return ok, adapter
 }
 
+func (r *RuleWrapper) RequiredProtocols() []C.SniffProtocol {
+	if requirement, ok := r.Rule.(C.ProtocolRequirement); ok {
+		return requirement.RequiredProtocols()
+	}
+	return nil
+}
+
 func NewRuleWrapper(rule C.Rule) C.RuleWrapper {
 	return &RuleWrapper{Rule: rule}
 }
+
+var _ C.ProtocolRequirement = (*RuleWrapper)(nil)
 
 // atomicTime is a wrapper of [atomic.Int64] to provide atomic time storage.
 // it only saves unix nanosecond export from time.Time.

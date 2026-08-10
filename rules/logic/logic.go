@@ -256,4 +256,14 @@ func (logic *Logic) ProviderNames() (names []string) {
 	return
 }
 
+func (logic *Logic) RequiredProtocols() (protocols []C.SniffProtocol) {
+	for _, rule := range logic.rules {
+		if requirement, ok := rule.(C.ProtocolRequirement); ok {
+			protocols = append(protocols, requirement.RequiredProtocols()...)
+		}
+	}
+	return protocols
+}
+
 var _ C.Rule = (*Logic)(nil)
+var _ C.ProtocolRequirement = (*Logic)(nil)

@@ -71,6 +71,8 @@ func ParseRule(tp, payload, target string, params []string, subRules map[string]
 		parsed, parseErr = RC.NewProcess(payload, target, C.ProcessPathWildcard)
 	case "NETWORK":
 		parsed, parseErr = RC.NewNetworkType(payload, target)
+	case "PROTOCOL":
+		parsed, parseErr = RC.NewProtocol(payload, target)
 	case "UID":
 		parsed, parseErr = RC.NewUid(payload, target)
 	case "IN-TYPE":

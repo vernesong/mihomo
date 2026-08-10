@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	errNotTLS         = errors.New("not TLS header")
-	errNotClientHello = errors.New("not client hello")
+	errNotTLS          = errors.New("not TLS header")
+	errNotClientHello  = errors.New("not client hello")
+	errTLSNoServerName = fmt.Errorf("%w: client hello has no server name", errNotTLS)
 )
 
 const (
@@ -145,7 +146,7 @@ func ReadClientHello(data []byte) (*string, error) {
 	offset += compressionMethodsLen
 
 	if offset == helloSize {
-		return nil, errNotClientHello
+		return nil, errTLSNoServerName
 	}
 	if err := need(offset + 2); err != nil {
 		return nil, err
@@ -214,7 +215,7 @@ func ReadClientHello(data []byte) (*string, error) {
 			if extensionEnd == extensionsEnd {
 				// This is the last extension, so its payload cannot contain a
 				// later server_name extension that changes the verdict.
-				return nil, errNotTLS
+				return nil, errTLSNoServerName
 			}
 			if err := need(extensionEnd); err != nil {
 				return nil, err
@@ -223,7 +224,7 @@ func ReadClientHello(data []byte) (*string, error) {
 		}
 	}
 
-	return nil, errNotTLS
+	return nil, errTLSNoServerName
 }
 
 func clientHelloSize(data []byte) (int, error) {
