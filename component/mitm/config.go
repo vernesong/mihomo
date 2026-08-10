@@ -23,6 +23,7 @@ type hostnamePattern struct {
 
 type Options struct {
 	H2                  bool
+	Capture             bool
 	Hostname            []string
 	HostnameExclude     []string
 	ClientSourceAddress []netip.Prefix
@@ -32,6 +33,7 @@ type Options struct {
 
 type Config struct {
 	H2                  bool           `json:"h2"`
+	Capture             bool           `json:"capture"`
 	Hostname            []string       `json:"hostname"`
 	HostnameExclude     []string       `json:"hostname-exclude"`
 	ClientSourceAddress []netip.Prefix `json:"client-source-address"`
@@ -75,6 +77,7 @@ func NewConfig(options Options) (*Config, error) {
 
 	return &Config{
 		H2:                  options.H2,
+		Capture:             options.Capture,
 		Hostname:            hostname,
 		HostnameExclude:     hostnameExclude,
 		ClientSourceAddress: clientSourceAddress,

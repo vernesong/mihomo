@@ -35,6 +35,7 @@ type Session struct {
 	request  *http.Request
 	response *http.Response
 	metadata *C.Metadata
+	capture  *captureTransaction
 
 	propsMutex sync.RWMutex
 	props      map[string]any
@@ -61,6 +62,16 @@ func (s *Session) SetRequest(request *http.Request) {
 
 func (s *Session) SetResponse(response *http.Response) {
 	s.response = response
+}
+
+func (s *Session) setConnectionID(id string) {
+	if id == "" {
+		return
+	}
+	if s.metadata != nil {
+		s.metadata.UUID = id
+	}
+	s.capture.setConnectionID(id)
 }
 
 func (s *Session) GetProperties(key string) (any, bool) {
@@ -121,11 +132,13 @@ func NewResponse(code int, body io.Reader, request *http.Request) *http.Response
 func newSession(request *http.Request, metadata *C.Metadata) *Session {
 	sessionMetadata := metadata.Clone()
 	sessionMetadata.URL = fullRequestURL(request)
-	return &Session{
+	session := &Session{
 		request:  request,
 		metadata: sessionMetadata,
 		props:    make(map[string]any),
 	}
+	session.capture = beginCaptureSession(request, sessionMetadata)
+	return session
 }
 
 // RequestURLFromContext returns the absolute URL associated with an upstream MITM dial.

@@ -411,6 +411,7 @@ type RawTLS struct {
 
 type RawMitm struct {
 	H2                  bool     `yaml:"h2" json:"h2"`
+	Capture             bool     `yaml:"capture" json:"capture"`
 	Hostname            []string `yaml:"hostname" json:"hostname"`
 	HostnameExclude     []string `yaml:"hostname-exclude" json:"hostname-exclude"`
 	ClientSourceAddress []string `yaml:"client-source-address" json:"client-source-address"`
@@ -936,6 +937,7 @@ func parseMitm(raw *RawMitm) (*Mitm, error) {
 	}
 	mitmConfig, err := M.NewConfig(M.Options{
 		H2:                  raw.H2,
+		Capture:             raw.Capture,
 		Hostname:            raw.Hostname,
 		HostnameExclude:     raw.HostnameExclude,
 		ClientSourceAddress: prefixes,

@@ -29,6 +29,10 @@ var errSingleConnectionDone = errors.New("MITM connection closed")
 
 type DialContext func(ctx context.Context, network, address string) (net.Conn, error)
 
+type connectionIdentifier interface {
+	ID() string
+}
+
 type Interceptor struct {
 	config  *Config
 	handler Handler
@@ -182,21 +186,21 @@ func (i *Interceptor) newReverseProxy(dial DialContext, metadata *C.Metadata) ht
 			}
 			session.SetResponse(response)
 			replacement := i.handler.HandleResponse(session)
-			if replacement == nil || replacement == response {
-				return nil
-			}
-			oldBody := response.Body
-			if replacement.Request == nil {
-				replacement.Request = response.Request
-			}
-			if replacement.Body == nil {
-				replacement.Body = http.NoBody
-			}
-			*response = *replacement
-			if oldBody != nil && oldBody != response.Body {
-				_ = oldBody.Close()
+			if replacement != nil && replacement != response {
+				oldBody := response.Body
+				if replacement.Request == nil {
+					replacement.Request = response.Request
+				}
+				if replacement.Body == nil {
+					replacement.Body = http.NoBody
+				}
+				*response = *replacement
+				if oldBody != nil && oldBody != response.Body {
+					_ = oldBody.Close()
+				}
 			}
 			session.SetResponse(response)
+			session.capture.observeResponse(response)
 			return nil
 		},
 		ErrorHandler: func(writer http.ResponseWriter, request *http.Request, err error) {
@@ -206,6 +210,8 @@ func (i *Interceptor) newReverseProxy(dial DialContext, metadata *C.Metadata) ht
 			}
 			session.SetResponse(session.NewErrorResponse(err))
 			i.handler.HandleError(session, err)
+			session.capture.setError(err)
+			session.capture.observeResponse(session.Response())
 			writeResponse(writer, session.Response())
 		},
 		ErrorLog: stdlog.New(io.Discard, "", 0),
@@ -220,6 +226,7 @@ func (i *Interceptor) newReverseProxy(dial DialContext, metadata *C.Metadata) ht
 		}
 		if response != nil {
 			session.SetResponse(response)
+			session.capture.observeResponse(response)
 			writeResponse(writer, response)
 			return
 		}
@@ -236,9 +243,10 @@ type requestRoundTripper struct {
 
 func (t *requestRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
 	requestURL := fullRequestURL(request)
+	session, _ := request.Context().Value(sessionContextKey{}).(*Session)
 	// A fresh transport ensures every URL gets an independent routing decision.
 	// Close its pool with the response body so it cannot leak an idle connection.
-	transport := t.interceptor.newTransport(t.dial, requestURL)
+	transport := t.interceptor.newTransport(t.dial, requestURL, session)
 	response, err := transport.RoundTrip(request)
 	if err != nil {
 		transport.CloseIdleConnections()
@@ -274,7 +282,7 @@ func (b *closeIdleResponseBody) Close() error {
 	return err
 }
 
-func (i *Interceptor) newTransport(dial DialContext, requestURL string) *http.Transport {
+func (i *Interceptor) newTransport(dial DialContext, requestURL string, session *Session) *http.Transport {
 	nextProtos := []string{"http/1.1"}
 	if i.config.H2 {
 		nextProtos = []string{"h2", "http/1.1"}
@@ -284,11 +292,21 @@ func (i *Interceptor) newTransport(dial DialContext, requestURL string) *http.Tr
 		Time:       ntp.Now,
 		NextProtos: nextProtos,
 	}
+	dialConnection := func(ctx context.Context, network, address string) (net.Conn, error) {
+		connection, err := dial(withRequestURL(ctx, requestURL), network, address)
+		if err != nil {
+			return nil, err
+		}
+		if identified, ok := connection.(connectionIdentifier); ok && session != nil {
+			session.setConnectionID(identified.ID())
+		}
+		return connection, nil
+	}
 
 	return &http.Transport{
 		Proxy: nil,
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			return dial(withRequestURL(ctx, requestURL), network, address)
+			return dialConnection(ctx, network, address)
 		},
 		ForceAttemptHTTP2:     i.config.H2,
 		MaxIdleConns:          100,
@@ -297,7 +315,7 @@ func (i *Interceptor) newTransport(dial DialContext, requestURL string) *http.Tr
 		ExpectContinueTimeout: time.Second,
 		TLSClientConfig:       baseTLSConfig,
 		DialTLSContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			rawConn, err := dial(withRequestURL(ctx, requestURL), network, address)
+			rawConn, err := dialConnection(ctx, network, address)
 			if err != nil {
 				return nil, err
 			}

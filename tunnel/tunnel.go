@@ -256,6 +256,7 @@ func UpdateSniffer(dispatcher *sniffer.Dispatcher) {
 }
 
 func UpdateMitm(config *M.Config) {
+	M.SetCaptureEnabled(config != nil && config.Capture)
 	configMux.Lock()
 	defer configMux.Unlock()
 	mitmConfig = config

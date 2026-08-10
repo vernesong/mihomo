@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,11 +38,19 @@ import (
 
 func TestMitmUserConfigurationAndHTTPAPI(t *testing.T) {
 	const (
-		passphrase = "password"
-		hostname   = "api.example.com"
+		passphrase         = "password"
+		hostname           = "api.example.com"
+		firstConnectionID  = "11111111-1111-4111-8111-111111111111"
+		secondConnectionID = "22222222-2222-4222-8222-222222222222"
 	)
 
 	caCertificate, caKey, caP12 := newTestAuthority(t, passphrase)
+	mitm.SetCaptureEnabled(false)
+	mitm.ClearCapturedSessions()
+	t.Cleanup(func() {
+		mitm.SetCaptureEnabled(false)
+		mitm.ClearCapturedSessions()
+	})
 	ca.ResetCertificate()
 	require.NoError(t, ca.AddCertificate(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCertificate.Raw}))))
 	t.Cleanup(ca.ResetCertificate)
@@ -65,6 +74,7 @@ func TestMitmUserConfigurationAndHTTPAPI(t *testing.T) {
 			rawConfig := fmt.Sprintf(`
 mitm:
   h2: %t
+  capture: true
   hostname:
     - "*.example.com"
   hostname-exclude:
@@ -77,12 +87,14 @@ mitm:
 			parsedConfig, err := config.Parse([]byte(rawConfig))
 			require.NoError(t, err)
 			require.NotNil(t, parsedConfig.Mitm)
+			require.True(t, parsedConfig.Mitm.Capture)
 			require.True(t, parsedConfig.Mitm.Match(hostname, netip.MustParseAddr("127.0.0.1")))
 			require.False(t, parsedConfig.Mitm.Match("a.pinned.example.com", netip.MustParseAddr("127.0.0.1")))
 			require.False(t, parsedConfig.Mitm.Match(hostname, netip.MustParseAddr("10.0.0.1")))
 
 			upstreamCertificate := newTestServerCertificate(t, hostname, caCertificate, caKey)
 			upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("X-Upstream-Response", "visible")
 				_, _ = fmt.Fprintf(writer, "%s|%s", request.Header.Get("X-MITM-Request"), request.Proto)
 			}))
 			upstream.EnableHTTP2 = testCase.h2
@@ -90,13 +102,21 @@ mitm:
 			upstream.StartTLS()
 			defer upstream.Close()
 
-			handler := &apiHandler{requestURLs: make(chan string, 1)}
+			handler := &apiHandler{
+				requestURLs:   make(chan string, 1),
+				connectionIDs: make(chan string, 1),
+			}
+			mitm.ClearCapturedSessions()
+			mitm.SetCaptureEnabled(parsedConfig.Mitm.Capture)
 			interceptor := mitm.New(parsedConfig.Mitm, handler)
 			require.NotNil(t, interceptor)
 
 			clientConn, serverConn := net.Pipe()
 			handleResult := make(chan error, 1)
 			dialedURLs := make(chan string, 1)
+			connectionIDs := make(chan string, 2)
+			connectionIDs <- firstConnectionID
+			connectionIDs <- secondConnectionID
 			go func() {
 				handled, err := interceptor.Handle(N.NewBufferedConn(serverConn), &C.Metadata{
 					NetWork: C.TCP,
@@ -107,7 +127,11 @@ mitm:
 					DstPort: 443,
 				}, func(ctx context.Context, _, _ string) (net.Conn, error) {
 					dialedURLs <- mitm.RequestURLFromContext(ctx)
-					return (&net.Dialer{}).DialContext(ctx, "tcp", upstream.Listener.Addr().String())
+					connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", upstream.Listener.Addr().String())
+					if err != nil {
+						return nil, err
+					}
+					return &apiTrackedConnection{Conn: connection, id: <-connectionIDs}, nil
 				})
 				if !handled && err == nil {
 					err = fmt.Errorf("connection was not handled")
@@ -135,18 +159,32 @@ mitm:
 				require.NoError(t, err)
 			}
 			responseReader := bufio.NewReader(tlsClient)
-			for _, requestCase := range []struct {
-				path     string
-				rawQuery string
+			requestCases := []struct {
+				path         string
+				rawQuery     string
+				method       string
+				body         string
+				capture      bool
+				local        bool
+				connectionID string
 			}{
-				{path: "/index.html", rawQuery: "source=mitm"},
-				{path: "/statistics", rawQuery: "event=finished"},
-			} {
+				{path: "/index.html", rawQuery: "source=mitm", method: http.MethodPost, body: "request-body", capture: true, connectionID: firstConnectionID},
+				{path: "/statistics", rawQuery: "event=finished", method: http.MethodGet, capture: false, connectionID: secondConnectionID},
+				{path: "/local", rawQuery: "reason=reject", method: http.MethodGet, capture: false, local: true},
+			}
+			for _, requestCase := range requestCases {
+				mitm.SetCaptureEnabled(requestCase.capture)
 				request := &http.Request{
-					Method: http.MethodGet,
+					Method: requestCase.method,
 					URL:    &url.URL{Scheme: "https", Host: hostname, Path: requestCase.path, RawQuery: requestCase.rawQuery},
 					Host:   hostname,
 					Header: make(http.Header),
+				}
+				request.Header.Set("X-Client-Request", "visible")
+				if requestCase.body != "" {
+					request.Body = io.NopCloser(strings.NewReader(requestCase.body))
+					request.ContentLength = int64(len(requestCase.body))
+					request.Header.Set("Content-Type", "text/plain")
 				}
 				var response *http.Response
 				if testCase.h2 {
@@ -160,14 +198,24 @@ mitm:
 				body, err := io.ReadAll(response.Body)
 				require.NoError(t, err)
 				require.NoError(t, response.Body.Close())
-				require.Equal(t, "handled", response.Header.Get("X-MITM-Response"))
-				if testCase.h2 {
-					require.Equal(t, "handled|HTTP/2.0", string(body))
+				if requestCase.local {
+					require.Equal(t, http.StatusNoContent, response.StatusCode)
+					require.Empty(t, body)
+					require.Empty(t, response.Header.Get("X-MITM-Response"))
 				} else {
-					require.Equal(t, "handled|HTTP/1.1", string(body))
+					require.Equal(t, http.StatusOK, response.StatusCode)
+					require.Equal(t, "handled", response.Header.Get("X-MITM-Response"))
+					if testCase.h2 {
+						require.Equal(t, "handled|HTTP/2.0", string(body))
+					} else {
+						require.Equal(t, "handled|HTTP/1.1", string(body))
+					}
 				}
 				requestURL := "https://" + hostname + requestCase.path + "?" + requestCase.rawQuery
-				require.Equal(t, requestURL, <-dialedURLs)
+				if !requestCase.local {
+					require.Equal(t, requestURL, <-dialedURLs)
+					require.Equal(t, requestCase.connectionID, <-handler.connectionIDs)
+				}
 				require.Equal(t, requestURL, <-handler.requestURLs)
 			}
 			require.Equal(t, hostname, handler.hostname)
@@ -183,6 +231,49 @@ mitm:
 				t.Fatal("MITM handler did not stop after the client closed")
 			}
 			require.Empty(t, handler.errors)
+
+			snapshot := mitm.CapturedSessionsSnapshot()
+			require.False(t, snapshot.Capture)
+			require.Equal(t, mitm.CaptureHistoryLimit, snapshot.Limit)
+			require.Len(t, snapshot.Sessions, len(requestCases))
+			var previousRequestIndex uint64
+			for index, requestCase := range requestCases {
+				captured := snapshot.Sessions[index]
+				require.Equal(t, requestCase.connectionID, captured.ConnectionID)
+				require.Greater(t, captured.RequestIndex, previousRequestIndex)
+				previousRequestIndex = captured.RequestIndex
+				require.Equal(t, requestCase.capture, captured.Capture)
+				require.Equal(t, requestCase.method, captured.Request.Method)
+				require.Equal(t, "https://"+hostname+requestCase.path+"?"+requestCase.rawQuery, captured.Request.URL)
+				require.Equal(t, hostname, captured.Request.Headers.Get("Host"))
+				require.Equal(t, "visible", captured.Request.Headers.Get("X-Client-Request"))
+				require.NotNil(t, captured.Response)
+				if requestCase.local {
+					require.Equal(t, http.StatusNoContent, captured.Response.StatusCode)
+				} else {
+					require.Equal(t, http.StatusOK, captured.Response.StatusCode)
+					require.Equal(t, "visible", captured.Response.Headers.Get("X-Upstream-Response"))
+					require.Equal(t, "handled", captured.Response.Headers.Get("X-MITM-Response"))
+				}
+				require.NotNil(t, captured.CompletedAt)
+				if requestCase.capture {
+					require.NotNil(t, captured.Request.Body)
+					require.Equal(t, requestCase.body, captured.Request.Body.Content)
+					require.Equal(t, "utf8", captured.Request.Body.Encoding)
+					require.True(t, captured.Request.Body.Complete)
+					require.NotNil(t, captured.Response.Body)
+					require.Equal(t, "utf8", captured.Response.Body.Encoding)
+					require.True(t, captured.Response.Body.Complete)
+					if testCase.h2 {
+						require.Equal(t, "handled|HTTP/2.0", captured.Response.Body.Content)
+					} else {
+						require.Equal(t, "handled|HTTP/1.1", captured.Response.Body.Content)
+					}
+				} else {
+					require.Nil(t, captured.Request.Body)
+					require.Nil(t, captured.Response.Body)
+				}
+			}
 		})
 	}
 }
@@ -206,6 +297,7 @@ mitm:
 	parsedConfig, err := config.Parse([]byte(rawConfig))
 	require.NoError(t, err)
 	require.NotNil(t, parsedConfig.Mitm)
+	require.False(t, parsedConfig.Mitm.Capture)
 
 	ipv4 := netip.MustParseAddr("192.0.2.1")
 	ipv6 := netip.MustParseAddr("2001:db8::1")
@@ -243,19 +335,33 @@ rules:
 }
 
 type apiHandler struct {
-	hostname    string
-	requestURLs chan string
-	errors      []error
+	hostname      string
+	requestURLs   chan string
+	connectionIDs chan string
+	errors        []error
+}
+
+type apiTrackedConnection struct {
+	net.Conn
+	id string
+}
+
+func (c *apiTrackedConnection) ID() string {
+	return c.id
 }
 
 func (h *apiHandler) HandleRequest(session *mitm.Session) (*http.Request, *http.Response) {
 	h.hostname = session.Metadata().Host
 	h.requestURLs <- session.Metadata().RemoteDestination()
+	if session.Request().URL.Path == "/local" {
+		return nil, session.NewResponse(http.StatusNoContent, nil)
+	}
 	session.Request().Header.Set("X-MITM-Request", "handled")
 	return nil, nil
 }
 
-func (*apiHandler) HandleResponse(session *mitm.Session) *http.Response {
+func (h *apiHandler) HandleResponse(session *mitm.Session) *http.Response {
+	h.connectionIDs <- session.Metadata().UUID
 	session.Response().Header.Set("X-MITM-Response", "handled")
 	return nil
 }

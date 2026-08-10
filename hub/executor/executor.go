@@ -21,6 +21,7 @@ import (
 	mihomoHttp "github.com/metacubex/mihomo/component/http"
 	"github.com/metacubex/mihomo/component/iface"
 	"github.com/metacubex/mihomo/component/keepalive"
+	"github.com/metacubex/mihomo/component/mitm"
 	"github.com/metacubex/mihomo/component/profile"
 	"github.com/metacubex/mihomo/component/profile/cachefile"
 	"github.com/metacubex/mihomo/component/resolver"
@@ -374,6 +375,9 @@ func updateSniffer(snifferConfig *sniffer.Config) {
 }
 
 func updateMitm(mitmConfig *config.Mitm) {
+	if mitmConfig != nil && mitmConfig.Capture {
+		log.Warnln(mitm.CaptureWarning)
+	}
 	tunnel.UpdateMitm(mitmConfig)
 }
 
