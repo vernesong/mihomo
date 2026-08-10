@@ -113,10 +113,7 @@ mitm:
 
 			clientConn, serverConn := net.Pipe()
 			handleResult := make(chan error, 1)
-			dialedURLs := make(chan string, 1)
-			connectionIDs := make(chan string, 2)
-			connectionIDs <- firstConnectionID
-			connectionIDs <- secondConnectionID
+			dialedURLs := make(chan string, 4)
 			go func() {
 				handled, err := interceptor.Handle(N.NewBufferedConn(serverConn), &C.Metadata{
 					NetWork: C.TCP,
@@ -126,12 +123,17 @@ mitm:
 					Host:    hostname,
 					DstPort: 443,
 				}, func(ctx context.Context, _, _ string) (net.Conn, error) {
-					dialedURLs <- mitm.RequestURLFromContext(ctx)
+					requestURL := mitm.RequestURLFromContext(ctx)
+					dialedURLs <- requestURL
 					connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", upstream.Listener.Addr().String())
 					if err != nil {
 						return nil, err
 					}
-					return &apiTrackedConnection{Conn: connection, id: <-connectionIDs}, nil
+					connectionID := firstConnectionID
+					if strings.Contains(requestURL, "/statistics?") {
+						connectionID = secondConnectionID
+					}
+					return &apiTrackedConnection{Conn: connection, id: connectionID}, nil
 				})
 				if !handled && err == nil {
 					err = fmt.Errorf("connection was not handled")
@@ -166,10 +168,12 @@ mitm:
 				body         string
 				capture      bool
 				local        bool
+				dial         bool
 				connectionID string
 			}{
-				{path: "/index.html", rawQuery: "source=mitm", method: http.MethodPost, body: "request-body", capture: true, connectionID: firstConnectionID},
-				{path: "/statistics", rawQuery: "event=finished", method: http.MethodGet, capture: false, connectionID: secondConnectionID},
+				{path: "/index.html", rawQuery: "source=mitm", method: http.MethodPost, body: "request-body", capture: true, dial: true, connectionID: firstConnectionID},
+				{path: "/index.html", rawQuery: "source=mitm", method: http.MethodGet, capture: false, connectionID: firstConnectionID},
+				{path: "/statistics", rawQuery: "event=finished", method: http.MethodGet, capture: false, dial: true, connectionID: secondConnectionID},
 				{path: "/local", rawQuery: "reason=reject", method: http.MethodGet, capture: false, local: true},
 			}
 			for _, requestCase := range requestCases {
@@ -213,11 +217,14 @@ mitm:
 				}
 				requestURL := "https://" + hostname + requestCase.path + "?" + requestCase.rawQuery
 				if !requestCase.local {
-					require.Equal(t, requestURL, <-dialedURLs)
+					if requestCase.dial {
+						require.Equal(t, requestURL, <-dialedURLs)
+					}
 					require.Equal(t, requestCase.connectionID, <-handler.connectionIDs)
 				}
 				require.Equal(t, requestURL, <-handler.requestURLs)
 			}
+			require.Empty(t, dialedURLs)
 			require.Equal(t, hostname, handler.hostname)
 			if h2Client != nil {
 				require.NoError(t, h2Client.Close())

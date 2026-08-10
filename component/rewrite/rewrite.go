@@ -56,7 +56,7 @@ func (c *Config) RewriteRequest(request *http.Request) *http.Response {
 		}
 	}
 
-	c.rewriteHeaders(requestURL, directionRequest, request.Header)
+	c.rewriteHeaders(requestURL, c.requestHeaderRules, request.Header)
 	c.rewriteRequestBody(requestURL, request)
 	return nil
 }
@@ -66,16 +66,16 @@ func (c *Config) RewriteResponse(request *http.Request, response *http.Response)
 		return
 	}
 	requestURL := absoluteRequestURL(request)
-	c.rewriteHeaders(requestURL, directionResponse, response.Header)
+	c.rewriteHeaders(requestURL, c.responseHeaderRules, response.Header)
 	c.rewriteResponseBody(requestURL, request, response)
 }
 
-func (c *Config) rewriteHeaders(requestURL string, ruleDirection direction, header http.Header) {
+func (c *Config) rewriteHeaders(requestURL string, rules []headerRule, header http.Header) {
 	if header == nil {
 		return
 	}
-	for _, rule := range c.headerRules {
-		if rule.direction != ruleDirection || !rule.match.MatchString(requestURL) {
+	for _, rule := range rules {
+		if !rule.match.MatchString(requestURL) {
 			continue
 		}
 		switch rule.ruleType {
@@ -112,7 +112,7 @@ func (c *Config) rewriteRequestBody(requestURL string, request *http.Request) {
 	if request.Body == nil || request.Body == http.NoBody {
 		return
 	}
-	rule := c.matchBodyRule(requestURL, directionRequest)
+	rule := matchBodyRule(requestURL, c.requestBodyRules)
 	if rule == nil {
 		return
 	}
@@ -124,7 +124,7 @@ func (c *Config) rewriteResponseBody(requestURL string, request *http.Request, r
 	if response.Body == nil || response.Body == http.NoBody || request.Method == http.MethodHead || !statusAllowsBody(response.StatusCode) {
 		return
 	}
-	rule := c.matchBodyRule(requestURL, directionResponse)
+	rule := matchBodyRule(requestURL, c.responseBodyRules)
 	if rule == nil {
 		return
 	}
@@ -132,10 +132,10 @@ func (c *Config) rewriteResponseBody(requestURL string, request *http.Request, r
 	setResponseBody(response, rewritten)
 }
 
-func (c *Config) matchBodyRule(requestURL string, ruleDirection direction) *bodyRule {
-	for index := range c.bodyRules {
-		rule := &c.bodyRules[index]
-		if rule.direction == ruleDirection && rule.match.MatchString(requestURL) {
+func matchBodyRule(requestURL string, rules []bodyRule) *bodyRule {
+	for index := range rules {
+		rule := &rules[index]
+		if rule.match.MatchString(requestURL) {
 			return rule
 		}
 	}
@@ -163,6 +163,9 @@ func rewriteBody(body io.ReadCloser, header http.Header, rule *bodyRule) []byte 
 		for _, action := range rule.actions {
 			rewrittenBody = action.regex.ReplaceAll(rewrittenBody, action.value)
 		}
+	}
+	if bytes.Equal(rewrittenBody, decodedBody) {
+		return rawBody
 	}
 
 	rewrittenBody, err = encodeBody(rewrittenBody, codings)

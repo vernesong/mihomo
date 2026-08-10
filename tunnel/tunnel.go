@@ -261,6 +261,10 @@ func refreshProtocolDetectionLocked() {
 			protocols = append(protocols, protocol)
 		}
 	}
+	if len(protocols) == 0 {
+		protocolSniffer.Store(nil)
+		return
+	}
 	protocolSniffer.Store(sniffer.NewProtocolDispatcher(protocols))
 }
 
@@ -300,15 +304,22 @@ func UpdateSniffer(dispatcher *sniffer.Dispatcher) {
 	configMux.Unlock()
 }
 
-func UpdateMitm(config *M.Config, rewrite ...*R.Config) {
+func UpdateMitm(config *M.Config, rewriteConfig ...*R.Config) {
+	var rewrite *R.Config
+	if len(rewriteConfig) != 0 {
+		rewrite = rewriteConfig[0]
+	}
+	UpdateMitmWithRewrite(config, rewrite)
+}
+
+// UpdateMitmWithRewrite atomically replaces both MITM and rewrite configuration.
+func UpdateMitmWithRewrite(config *M.Config, rewrite *R.Config) {
 	M.SetCaptureEnabled(config != nil && config.Capture)
 	configMux.Lock()
 	defer configMux.Unlock()
-	if len(rewrite) != 0 {
-		rewriteConfig = rewrite[0]
-	}
+	rewriteConfig = rewrite
 	mitmConfig = config
-	mitmInterceptor = M.New(config, mitmHandler, rewriteConfig)
+	mitmInterceptor = M.NewWithRewrite(config, mitmHandler, rewriteConfig)
 }
 
 func SetMitmHandler(handler M.Handler) {
@@ -318,7 +329,7 @@ func SetMitmHandler(handler M.Handler) {
 	configMux.Lock()
 	defer configMux.Unlock()
 	mitmHandler = handler
-	mitmInterceptor = M.New(mitmConfig, mitmHandler, rewriteConfig)
+	mitmInterceptor = M.NewWithRewrite(mitmConfig, mitmHandler, rewriteConfig)
 }
 
 func currentMitmInterceptor() *M.Interceptor {

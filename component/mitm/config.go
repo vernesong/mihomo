@@ -124,22 +124,26 @@ func (c *Config) MatchHostname(host string) bool {
 }
 
 func (c *Config) MatchHostnamePort(host string, port uint16) bool {
-	return c.matchHostnamePort(host, port, standardHTTPPort, standardHTTPSPort)
+	implicitPort := uint16(0)
+	if port == standardHTTPPort || port == standardHTTPSPort {
+		implicitPort = port
+	}
+	return c.matchHostnamePort(host, port, implicitPort)
 }
 
-func (c *Config) matchHostnamePort(host string, port uint16, implicitPorts ...uint16) bool {
+func (c *Config) matchHostnamePort(host string, port uint16, implicitPort uint16) bool {
 	if !c.Enabled() {
 		return false
 	}
 
 	host = strings.ToLower(host)
 	for _, pattern := range c.hostnameExclude {
-		if pattern.match(host, port, implicitPorts...) {
+		if pattern.match(host, port, implicitPort) {
 			return false
 		}
 	}
 	for _, pattern := range c.hostname {
-		if pattern.match(host, port, implicitPorts...) {
+		if pattern.match(host, port, implicitPort) {
 			return true
 		}
 	}
@@ -205,17 +209,10 @@ func splitHostnamePattern(value string) (host string, port string, hasPort bool,
 	return value[:lastColon], value[lastColon+1:], true, nil
 }
 
-func (p hostnamePattern) match(host string, port uint16, implicitPorts ...uint16) bool {
-	portMatched := false
+func (p hostnamePattern) match(host string, port uint16, implicitPort uint16) bool {
+	portMatched := implicitPort != 0 && port == implicitPort
 	if p.hasPort {
 		portMatched = p.port == 0 || p.port == port
-	} else {
-		for _, implicitPort := range implicitPorts {
-			if port == implicitPort {
-				portMatched = true
-				break
-			}
-		}
 	}
 	return portMatched && wildcard.Match(p.pattern, host)
 }

@@ -371,7 +371,7 @@ func newRewriteTestClient(t *testing.T, parsedConfig *config.Config, hostname st
 	clientConnection, serverConnection := net.Pipe()
 	result := make(chan error, 1)
 	dialed := make(chan rewriteTestDial, 16)
-	interceptor := mitm.New(parsedConfig.Mitm, nil, parsedConfig.Rewrite)
+	interceptor := mitm.NewWithRewrite(parsedConfig.Mitm, nil, parsedConfig.Rewrite)
 	require.NotNil(t, interceptor)
 	go func() {
 		handled, err := interceptor.Handle(N.NewBufferedConn(serverConnection), &C.Metadata{

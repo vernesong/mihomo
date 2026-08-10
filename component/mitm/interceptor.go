@@ -2,6 +2,7 @@ package mitm
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"errors"
 	"io"
@@ -21,11 +22,15 @@ import (
 
 	"github.com/metacubex/http"
 	"github.com/metacubex/http/http2"
+	"github.com/metacubex/http/httptrace"
 	"github.com/metacubex/http/httputil"
 	"github.com/metacubex/tls"
 )
 
-const maxSniffBufferSize = 64 * 1024
+const (
+	maxSniffBufferSize         = 64 * 1024
+	maxCachedRequestTransports = 16
+)
 
 var http2ClientPreface = []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
 
@@ -35,6 +40,10 @@ type DialContext func(ctx context.Context, network, address string) (net.Conn, e
 
 type connectionIdentifier interface {
 	ID() string
+}
+
+type netConnUnwrapper interface {
+	NetConn() net.Conn
 }
 
 type downstreamProtocol uint8
@@ -67,15 +76,20 @@ type Interceptor struct {
 }
 
 func New(config *Config, handler Handler, rewriteConfig ...*R.Config) *Interceptor {
+	var rewrite *R.Config
+	if len(rewriteConfig) != 0 {
+		rewrite = rewriteConfig[0]
+	}
+	return NewWithRewrite(config, handler, rewrite)
+}
+
+// NewWithRewrite constructs an interceptor with an explicit rewrite configuration.
+func NewWithRewrite(config *Config, handler Handler, rewrite *R.Config) *Interceptor {
 	if config == nil || !config.Enabled() {
 		return nil
 	}
 	if handler == nil {
 		handler = NopHandler{}
-	}
-	var rewrite *R.Config
-	if len(rewriteConfig) != 0 {
-		rewrite = rewriteConfig[0]
 	}
 	return &Interceptor{config: config, rewrite: rewrite, handler: handler}
 }
@@ -102,7 +116,9 @@ func (i *Interceptor) Handle(conn *N.BufferedConn, metadata *C.Metadata, dial Di
 	metadata.DstIP = netip.Addr{}
 	metadata.DNSMode = C.DNSNormal
 
-	proxy := i.newReverseProxy(dial, metadata, protocol.scheme())
+	roundTripper := newRequestRoundTripper(i, dial)
+	defer roundTripper.CloseIdleConnections()
+	proxy := i.newReverseProxy(roundTripper, metadata, protocol.scheme())
 	if protocol != downstreamTLS {
 		return i.servePlainHTTP(conn, proxy)
 	}
@@ -259,9 +275,9 @@ func sniffDownstream(conn *N.BufferedConn) (string, downstreamProtocol) {
 
 type sessionContextKey struct{}
 
-func (i *Interceptor) newReverseProxy(dial DialContext, metadata *C.Metadata, defaultScheme string) http.Handler {
+func (i *Interceptor) newReverseProxy(transport http.RoundTripper, metadata *C.Metadata, defaultScheme string) http.Handler {
 	reverseProxy := &httputil.ReverseProxy{
-		Transport: &requestRoundTripper{interceptor: i, dial: dial},
+		Transport: transport,
 		Rewrite: func(proxyRequest *httputil.ProxyRequest) {
 			setRequestURLDefaults(proxyRequest.Out, defaultScheme)
 			proxyRequest.Out.Host = proxyRequest.In.Host
@@ -354,51 +370,179 @@ func setRequestURLDefaults(request *http.Request, scheme string) {
 type requestRoundTripper struct {
 	interceptor *Interceptor
 	dial        DialContext
+
+	mutex      sync.Mutex
+	transports map[requestTransportKey]*requestTransport
+	recent     list.List
+	closed     bool
+}
+
+type requestTransportKey struct {
+	// URL stays in the key because URL-REGEX rules can route paths and queries
+	// on the same origin through different outbound connections.
+	url                  string
+	unencryptedHTTP2Only bool
+}
+
+type requestTransport struct {
+	key       requestTransportKey
+	transport *http.Transport
+	element   *list.Element
+	inFlight  int
+	retired   bool
+}
+
+func newRequestRoundTripper(interceptor *Interceptor, dial DialContext) *requestRoundTripper {
+	return &requestRoundTripper{
+		interceptor: interceptor,
+		dial:        dial,
+	}
 }
 
 func (t *requestRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
 	requestURL := fullRequestURL(request)
 	session, _ := request.Context().Value(sessionContextKey{}).(*Session)
-	// A fresh transport ensures every URL gets an independent routing decision.
-	// Close its pool with the response body so it cannot leak an idle connection.
 	useUnencryptedHTTP2 := t.interceptor.config.H2 && request.URL.Scheme == "http" && request.ProtoMajor == 2
-	transport := t.interceptor.newTransport(t.dial, requestURL, session, useUnencryptedHTTP2)
-	response, err := transport.RoundTrip(request)
+	entry := t.acquire(requestTransportKey{url: requestURL, unencryptedHTTP2Only: useUnencryptedHTTP2})
+
+	trace := &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) {
+		if session != nil {
+			session.setConnectionID(connectionID(info.Conn))
+		}
+	}}
+	requestContext := withRequestURL(request.Context(), requestURL)
+	request = request.WithContext(httptrace.WithClientTrace(requestContext, trace))
+	response, err := entry.transport.RoundTrip(request)
 	if err != nil {
-		transport.CloseIdleConnections()
+		t.release(entry)
 		return nil, err
 	}
 	if response.Body == nil {
-		transport.CloseIdleConnections()
+		t.release(entry)
 		return response, nil
 	}
-	response.Body = &closeIdleResponseBody{
+	response.Body = &releaseResponseBody{
 		ReadCloser: response.Body,
-		closeIdle:  transport.CloseIdleConnections,
+		release:    func() { t.release(entry) },
 	}
 	return response, nil
 }
 
-type closeIdleResponseBody struct {
-	io.ReadCloser
-	closeIdle func()
-	closeOnce sync.Once
+func (t *requestRoundTripper) acquire(key requestTransportKey) *requestTransport {
+	var evicted *http.Transport
+
+	t.mutex.Lock()
+	if entry := t.transports[key]; entry != nil {
+		entry.inFlight++
+		t.recent.MoveToFront(entry.element)
+		t.mutex.Unlock()
+		return entry
+	}
+
+	if len(t.transports) >= maxCachedRequestTransports {
+		for element := t.recent.Back(); element != nil; element = element.Prev() {
+			candidate := element.Value.(*requestTransport)
+			if candidate.inFlight != 0 {
+				continue
+			}
+			delete(t.transports, candidate.key)
+			t.recent.Remove(element)
+			candidate.retired = true
+			evicted = candidate.transport
+			break
+		}
+	}
+
+	entry := &requestTransport{
+		key:       key,
+		transport: t.interceptor.newTransport(t.dial, key.unencryptedHTTP2Only),
+		inFlight:  1,
+	}
+	if t.closed || len(t.transports) >= maxCachedRequestTransports {
+		entry.retired = true
+	} else {
+		if t.transports == nil {
+			t.transports = make(map[requestTransportKey]*requestTransport)
+		}
+		entry.element = t.recent.PushFront(entry)
+		t.transports[key] = entry
+	}
+	t.mutex.Unlock()
+
+	if evicted != nil {
+		evicted.CloseIdleConnections()
+	}
+	return entry
 }
 
-func (b *closeIdleResponseBody) Write(buffer []byte) (int, error) {
+func (t *requestRoundTripper) release(entry *requestTransport) {
+	closeIdle := false
+	t.mutex.Lock()
+	if entry.inFlight > 0 {
+		entry.inFlight--
+	}
+	closeIdle = entry.retired && entry.inFlight == 0
+	t.mutex.Unlock()
+	if closeIdle {
+		entry.transport.CloseIdleConnections()
+	}
+}
+
+func (t *requestRoundTripper) CloseIdleConnections() {
+	t.mutex.Lock()
+	if t.closed {
+		t.mutex.Unlock()
+		return
+	}
+	t.closed = true
+	transports := make([]*http.Transport, 0, len(t.transports))
+	for _, entry := range t.transports {
+		entry.retired = true
+		transports = append(transports, entry.transport)
+	}
+	t.transports = nil
+	t.recent.Init()
+	t.mutex.Unlock()
+
+	for _, transport := range transports {
+		transport.CloseIdleConnections()
+	}
+}
+
+type releaseResponseBody struct {
+	io.ReadCloser
+	release     func()
+	releaseOnce sync.Once
+}
+
+func (b *releaseResponseBody) Write(buffer []byte) (int, error) {
 	if writer, ok := b.ReadCloser.(io.Writer); ok {
 		return writer.Write(buffer)
 	}
 	return 0, io.ErrClosedPipe
 }
 
-func (b *closeIdleResponseBody) Close() error {
+func (b *releaseResponseBody) Close() error {
 	err := b.ReadCloser.Close()
-	b.closeOnce.Do(b.closeIdle)
+	b.releaseOnce.Do(b.release)
 	return err
 }
 
-func (i *Interceptor) newTransport(dial DialContext, requestURL string, session *Session, useUnencryptedHTTP2 bool) *http.Transport {
+func connectionID(connection net.Conn) string {
+	for connection != nil {
+		if identified, ok := connection.(connectionIdentifier); ok {
+			return identified.ID()
+		}
+		unwrapped, ok := connection.(netConnUnwrapper)
+		if !ok {
+			return ""
+		}
+		connection = unwrapped.NetConn()
+	}
+	return ""
+}
+
+func (i *Interceptor) newTransport(dial DialContext, useUnencryptedHTTP2 bool) *http.Transport {
 	nextProtos := []string{"http/1.1"}
 	if i.config.H2 {
 		nextProtos = []string{"h2", "http/1.1"}
@@ -409,14 +553,7 @@ func (i *Interceptor) newTransport(dial DialContext, requestURL string, session 
 		NextProtos: nextProtos,
 	}
 	dialConnection := func(ctx context.Context, network, address string) (net.Conn, error) {
-		connection, err := dial(withRequestURL(ctx, requestURL), network, address)
-		if err != nil {
-			return nil, err
-		}
-		if identified, ok := connection.(connectionIdentifier); ok && session != nil {
-			session.setConnectionID(identified.ID())
-		}
-		return connection, nil
+		return dial(ctx, network, address)
 	}
 
 	transport := &http.Transport{
@@ -425,7 +562,7 @@ func (i *Interceptor) newTransport(dial DialContext, requestURL string, session 
 			return dialConnection(ctx, network, address)
 		},
 		ForceAttemptHTTP2:     i.config.H2,
-		MaxIdleConns:          100,
+		MaxIdleConns:          2,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   C.DefaultTLSTimeout,
 		ExpectContinueTimeout: time.Second,

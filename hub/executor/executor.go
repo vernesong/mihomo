@@ -379,7 +379,7 @@ func updateMitm(mitmConfig *config.Mitm, rewriteConfig *config.Rewrite) {
 	if mitmConfig != nil && mitmConfig.Capture {
 		log.Warnln(mitm.CaptureWarning)
 	}
-	tunnel.UpdateMitm(mitmConfig, rewriteConfig)
+	tunnel.UpdateMitmWithRewrite(mitmConfig, rewriteConfig)
 }
 
 func updateTunnels(tunnels []LC.Tunnel) {

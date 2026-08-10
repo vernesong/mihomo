@@ -36,6 +36,3 @@ rules:
 - 加密或混淆后的 BitTorrent Peer Wire 无法保证识别；HTTPS Tracker 只会显示为 `TLS`。
 - 明文 HTTP Tracker 带有 `info_hash` 参数时优先归类为 `BITTORRENT`。
 - `PROTOCOL,...,DIRECT` 仍然是在流量进入 TUN 后建立直连出站，并不会让原连接绕过 TUN。需要在进入 TUN 前排除流量时，应使用 UID、包名、地址、端口或接口等 TUN 选项。
-
-## 說明
-* 本文檔由GPT-5.6-SOL協助撰寫

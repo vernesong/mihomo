@@ -138,6 +138,7 @@ func (s *captureStore) snapshot() CaptureSnapshot {
 }
 
 func (s *captureStore) add(session CapturedSession) {
+	session = cloneCapturedSession(session)
 	var removedRequestIndex uint64
 	var removedID string
 	s.mutex.Lock()
@@ -147,7 +148,7 @@ func (s *captureStore) add(session CapturedSession) {
 		delete(s.sessions, removedRequestIndex)
 		s.order = s.order[1:]
 	}
-	s.sessions[session.RequestIndex] = cloneCapturedSession(session)
+	s.sessions[session.RequestIndex] = session
 	s.order = append(s.order, session.RequestIndex)
 	s.mutex.Unlock()
 
@@ -157,13 +158,15 @@ func (s *captureStore) add(session CapturedSession) {
 	s.publishSession(session)
 }
 
-func (s *captureStore) update(session CapturedSession) {
+func (s *captureStore) updateSnapshot(session CapturedSession) {
+	// The transaction already cloned this immutable snapshot, so the store can
+	// take ownership without cloning it a second time.
 	s.mutex.Lock()
 	if _, found := s.sessions[session.RequestIndex]; !found {
 		s.mutex.Unlock()
 		return
 	}
-	s.sessions[session.RequestIndex] = cloneCapturedSession(session)
+	s.sessions[session.RequestIndex] = session
 	s.mutex.Unlock()
 	s.publishSession(session)
 }
@@ -177,8 +180,8 @@ func (s *captureStore) clear() {
 }
 
 func (s *captureStore) publishSession(session CapturedSession) {
-	cloned := cloneCapturedSession(session)
-	s.publish(CaptureEvent{Type: "session", Session: &cloned})
+	eventSession := cloneCapturedSession(session)
+	s.publish(CaptureEvent{Type: "session", Session: &eventSession})
 }
 
 func (s *captureStore) publish(event CaptureEvent) {
@@ -262,7 +265,7 @@ func (t *captureTransaction) setRequestURL(requestURL string) {
 	t.session.Request.URL = requestURL
 	snapshot := cloneCapturedSession(t.session)
 	t.mutex.Unlock()
-	t.store.update(snapshot)
+	t.store.updateSnapshot(snapshot)
 }
 
 func (t *captureTransaction) setConnectionID(id string) {
@@ -277,7 +280,7 @@ func (t *captureTransaction) setConnectionID(id string) {
 	t.session.ConnectionID = id
 	snapshot := cloneCapturedSession(t.session)
 	t.mutex.Unlock()
-	t.store.update(snapshot)
+	t.store.updateSnapshot(snapshot)
 }
 
 func (t *captureTransaction) observeResponse(response *http.Response) {
@@ -303,7 +306,7 @@ func (t *captureTransaction) observeResponse(response *http.Response) {
 	}
 	snapshot := cloneCapturedSession(t.session)
 	t.mutex.Unlock()
-	t.store.update(snapshot)
+	t.store.updateSnapshot(snapshot)
 
 	if response.StatusCode == http.StatusSwitchingProtocols {
 		return
@@ -325,7 +328,7 @@ func (t *captureTransaction) setError(err error) {
 	t.session.Error = err.Error()
 	snapshot := cloneCapturedSession(t.session)
 	t.mutex.Unlock()
-	t.store.update(snapshot)
+	t.store.updateSnapshot(snapshot)
 }
 
 func (t *captureTransaction) finishRequestBody(data []byte, complete bool) {
@@ -336,7 +339,7 @@ func (t *captureTransaction) finishRequestBody(data []byte, complete bool) {
 	t.session.Request.Body = newCapturedBody(data, complete)
 	snapshot := cloneCapturedSession(t.session)
 	t.mutex.Unlock()
-	t.store.update(snapshot)
+	t.store.updateSnapshot(snapshot)
 }
 
 func (t *captureTransaction) finishResponseBody(data []byte, complete bool) {
@@ -350,7 +353,7 @@ func (t *captureTransaction) finishResponseBody(data []byte, complete bool) {
 	}
 	snapshot := cloneCapturedSession(t.session)
 	t.mutex.Unlock()
-	t.store.update(snapshot)
+	t.store.updateSnapshot(snapshot)
 }
 
 type observedBody struct {

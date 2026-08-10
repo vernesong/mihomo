@@ -13,7 +13,6 @@ var errProtocolMismatch = errors.New("protocol mismatch")
 
 type protocolDetector struct {
 	protocol C.SniffProtocol
-	network  C.NetWork
 	detect   func([]byte) error
 }
 
@@ -35,7 +34,7 @@ func NewProtocolDispatcher(required []C.SniffProtocol) *ProtocolDispatcher {
 		if _, ok := enabled[protocol]; !ok {
 			return
 		}
-		detector := protocolDetector{protocol: protocol, network: network, detect: detect}
+		detector := protocolDetector{protocol: protocol, detect: detect}
 		switch network {
 		case C.TCP:
 			dispatcher.tcp = append(dispatcher.tcp, detector)

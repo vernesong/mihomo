@@ -928,12 +928,8 @@ func parseMitm(raw *RawMitm) (*Mitm, error) {
 		return nil, nil
 	}
 
-	clientSourceAddress := raw.ClientSourceAddress
-	if len(clientSourceAddress) == 0 {
-		clientSourceAddress = []string{"0.0.0.0/0", "::/0"}
-	}
-	prefixes := make([]netip.Prefix, 0, len(clientSourceAddress))
-	for index, value := range clientSourceAddress {
+	prefixes := make([]netip.Prefix, 0, len(raw.ClientSourceAddress))
+	for index, value := range raw.ClientSourceAddress {
 		prefix, err := netip.ParsePrefix(value)
 		if err != nil {
 			return nil, fmt.Errorf("mitm.client-source-address[%d]: %w", index, err)

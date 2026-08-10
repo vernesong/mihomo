@@ -58,10 +58,12 @@ type Options struct {
 }
 
 type Config struct {
-	urlRules    []urlRule
-	headerRules []headerRule
-	bodyRules   []bodyRule
-	mockRules   []mockRule
+	urlRules            []urlRule
+	requestHeaderRules  []headerRule
+	responseHeaderRules []headerRule
+	requestBodyRules    []bodyRule
+	responseBodyRules   []bodyRule
+	mockRules           []mockRule
 }
 
 type direction uint8
@@ -135,7 +137,10 @@ type mockRule struct {
 }
 
 func NewConfig(options Options) (*Config, error) {
-	config := &Config{}
+	config := &Config{
+		urlRules:  make([]urlRule, 0, len(options.URL)),
+		mockRules: make([]mockRule, 0, len(options.Mock)),
+	}
 	for index, option := range options.URL {
 		rule, err := newURLRule(option)
 		if err != nil {
@@ -148,14 +153,22 @@ func NewConfig(options Options) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("rewrite.header[%d]: %w", index, err)
 		}
-		config.headerRules = append(config.headerRules, rule)
+		if rule.direction == directionRequest {
+			config.requestHeaderRules = append(config.requestHeaderRules, rule)
+		} else {
+			config.responseHeaderRules = append(config.responseHeaderRules, rule)
+		}
 	}
 	for index, option := range options.Body {
 		rule, err := newBodyRule(option)
 		if err != nil {
 			return nil, fmt.Errorf("rewrite.body[%d]: %w", index, err)
 		}
-		config.bodyRules = append(config.bodyRules, rule)
+		if rule.direction == directionRequest {
+			config.requestBodyRules = append(config.requestBodyRules, rule)
+		} else {
+			config.responseBodyRules = append(config.responseBodyRules, rule)
+		}
 	}
 	for index, option := range options.Mock {
 		rule, err := newMockRule(option)
