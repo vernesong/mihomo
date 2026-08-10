@@ -23,6 +23,7 @@ import (
 	"github.com/metacubex/mihomo/component/process"
 	"github.com/metacubex/mihomo/component/proxydialer"
 	"github.com/metacubex/mihomo/component/resolver"
+	R "github.com/metacubex/mihomo/component/rewrite"
 	"github.com/metacubex/mihomo/component/slowdown"
 	"github.com/metacubex/mihomo/component/sniffer"
 	C "github.com/metacubex/mihomo/constant"
@@ -71,6 +72,7 @@ var (
 	sniffingEnable    = false
 	protocolSniffer   = atomic.NewTypedValue[*sniffer.ProtocolDispatcher](nil)
 	mitmConfig        *M.Config
+	rewriteConfig     *R.Config
 	mitmHandler       M.Handler = M.NopHandler{}
 	mitmInterceptor   *M.Interceptor
 
@@ -298,12 +300,15 @@ func UpdateSniffer(dispatcher *sniffer.Dispatcher) {
 	configMux.Unlock()
 }
 
-func UpdateMitm(config *M.Config) {
+func UpdateMitm(config *M.Config, rewrite ...*R.Config) {
 	M.SetCaptureEnabled(config != nil && config.Capture)
 	configMux.Lock()
 	defer configMux.Unlock()
+	if len(rewrite) != 0 {
+		rewriteConfig = rewrite[0]
+	}
 	mitmConfig = config
-	mitmInterceptor = M.New(config, mitmHandler)
+	mitmInterceptor = M.New(config, mitmHandler, rewriteConfig)
 }
 
 func SetMitmHandler(handler M.Handler) {
@@ -313,7 +318,7 @@ func SetMitmHandler(handler M.Handler) {
 	configMux.Lock()
 	defer configMux.Unlock()
 	mitmHandler = handler
-	mitmInterceptor = M.New(mitmConfig, mitmHandler)
+	mitmInterceptor = M.New(mitmConfig, mitmHandler, rewriteConfig)
 }
 
 func currentMitmInterceptor() *M.Interceptor {

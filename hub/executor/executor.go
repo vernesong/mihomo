@@ -103,7 +103,7 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	updateProxies(cfg.Proxies, cfg.Providers)
 	updateRules(cfg.Rules, cfg.SubRules, cfg.RuleProviders)
 	updateSniffer(cfg.Sniffer)
-	updateMitm(cfg.Mitm)
+	updateMitm(cfg.Mitm, cfg.Rewrite)
 	updateHosts(cfg.Hosts)
 	updateGeneral(cfg.General, true)
 	updateNTP(cfg.NTP)
@@ -375,11 +375,11 @@ func updateSniffer(snifferConfig *sniffer.Config) {
 	}
 }
 
-func updateMitm(mitmConfig *config.Mitm) {
+func updateMitm(mitmConfig *config.Mitm, rewriteConfig *config.Rewrite) {
 	if mitmConfig != nil && mitmConfig.Capture {
 		log.Warnln(mitm.CaptureWarning)
 	}
-	tunnel.UpdateMitm(mitmConfig)
+	tunnel.UpdateMitm(mitmConfig, rewriteConfig)
 }
 
 func updateTunnels(tunnels []LC.Tunnel) {

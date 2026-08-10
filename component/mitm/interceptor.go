@@ -14,6 +14,7 @@ import (
 
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/component/ca"
+	R "github.com/metacubex/mihomo/component/rewrite"
 	"github.com/metacubex/mihomo/component/sniffer"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/ntp"
@@ -61,17 +62,22 @@ func (p downstreamProtocol) standardPort() uint16 {
 
 type Interceptor struct {
 	config  *Config
+	rewrite *R.Config
 	handler Handler
 }
 
-func New(config *Config, handler Handler) *Interceptor {
+func New(config *Config, handler Handler, rewriteConfig ...*R.Config) *Interceptor {
 	if config == nil || !config.Enabled() {
 		return nil
 	}
 	if handler == nil {
 		handler = NopHandler{}
 	}
-	return &Interceptor{config: config, handler: handler}
+	var rewrite *R.Config
+	if len(rewriteConfig) != 0 {
+		rewrite = rewriteConfig[0]
+	}
+	return &Interceptor{config: config, rewrite: rewrite, handler: handler}
 }
 
 func (i *Interceptor) Handle(conn *N.BufferedConn, metadata *C.Metadata, dial DialContext) (bool, error) {
@@ -280,6 +286,9 @@ func (i *Interceptor) newReverseProxy(dial DialContext, metadata *C.Metadata, de
 					_ = oldBody.Close()
 				}
 			}
+			if i.rewrite != nil {
+				i.rewrite.RewriteResponse(session.Request(), response)
+			}
 			session.SetResponse(response)
 			session.capture.observeResponse(response)
 			return nil
@@ -301,13 +310,24 @@ func (i *Interceptor) newReverseProxy(dial DialContext, metadata *C.Metadata, de
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		setRequestURLDefaults(request, defaultScheme)
 		session := newSession(request, metadata)
-		newRequest, response := i.handler.HandleRequest(session)
-		if newRequest != nil {
-			setRequestURLDefaults(newRequest, defaultScheme)
-			request = newRequest
-			session.SetRequest(newRequest)
+		var response *http.Response
+		if i.rewrite != nil {
+			response = i.rewrite.RewriteRequest(request)
+			session.SetRequest(request)
+		}
+		if response == nil {
+			newRequest, handlerResponse := i.handler.HandleRequest(session)
+			response = handlerResponse
+			if newRequest != nil {
+				setRequestURLDefaults(newRequest, defaultScheme)
+				request = newRequest
+				session.SetRequest(newRequest)
+			}
 		}
 		if response != nil {
+			if i.rewrite != nil {
+				i.rewrite.RewriteResponse(request, response)
+			}
 			session.SetResponse(response)
 			session.capture.observeResponse(response)
 			writeResponse(writer, response)

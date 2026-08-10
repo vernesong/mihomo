@@ -55,9 +55,11 @@ func (s *Session) Metadata() *C.Metadata {
 
 func (s *Session) SetRequest(request *http.Request) {
 	s.request = request
+	requestURL := fullRequestURL(request)
 	if s.metadata != nil {
-		s.metadata.URL = fullRequestURL(request)
+		s.metadata.URL = requestURL
 	}
+	s.capture.setRequestURL(requestURL)
 }
 
 func (s *Session) SetResponse(response *http.Response) {

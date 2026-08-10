@@ -43,6 +43,7 @@ GET /mitm
       "request": {
         "method": "POST",
         "url": "https://example.com/index.html?from=mitm",
+        "raw_url": "https://example.com/index.html?from=mitm",
         "proto": "HTTP/2.0",
         "headers": {
           "Content-Type": ["application/json"],
@@ -82,7 +83,8 @@ GET /mitm
 - `session.id`：对应同一上游 TCP 连接在 `/connections` 中的 Tracker UUID。它不是 MITM 另外生成的 UUID；上游连接尚未建立时暂为空，`REJECT`、本地响应或拨号失败时可能一直为空。
 - `session.requestIndex`：mihomo 进程内单调递增的 HTTP 请求序号，用于区分同一连接上的多个请求及关联 WebSocket 更新；它不是连接 ID，也不是 UUID。
 - `session.capture`：该请求开始时是否启用了正文捕获。
-- `request.url`：完整 URL，包含 `http` 或 `https` scheme、host、path 和 query，不包含 fragment。
+- `request.raw_url`：客户端发送的原始完整 URL，不包含 fragment。
+- `request.url`：当前实际连接使用的完整 URL。执行透明 URL rewrite 后为改写后的 URL；没有发生透明改写时与 `raw_url` 相同。连接列表、规则匹配和日志同样使用这个 URL。
 - `headers`：值始终是字符串数组，适合直接转换为多值 Header 列表；Go HTTP server 单独保存的请求 `Host` 也会合并到这里。
 - `response`、`completedAt`：请求仍在进行时可能不存在。
 - `error`：上游请求失败时出现，内容为错误文本。

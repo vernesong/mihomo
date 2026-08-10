@@ -81,6 +81,52 @@ tls:
 #   passphrase: "password"
 #   ca-p12: /etc/mihomo/mitm-ca.p12 # PKCS#12 文件路径或其 base64 内容
 
+# HTTP(S) 重写配置；仅处理已经被上述 mitm.hostname 拦截的流量
+# rewrite:
+#   url:
+#     - match: '^https?://cn\.bing\.com(.*)$'
+#       type: transparent # 透明改写上游 URL 与 Host；后续规则使用改写后的 URL 匹配
+#       value: 'https://duckduckgo.com$1'
+#     - match: '^https?://example\.com/temporary(.*)$'
+#       type: redirect-307 # 也支持 redirect-302
+#       value: 'https://example.net$1'
+#     - match: '^https?://example\.com/blocked$'
+#       type: reject # value 可省略（404），或填写 200、img、dict、array
+#       value: array
+#   header:
+#     - match: '^https://api\.example\.com/'
+#       direction: request # 每条规则只能是 request 或 response
+#       type: add # 也支持 del、replace、replace-regex
+#       field: X-Processed-By
+#       value: mihomo
+#     - match: '^https://api\.example\.com/'
+#       direction: response
+#       type: replace-regex
+#       field: X-Processed-By
+#       regex: '^(.*)$'
+#       value: 'mihomo-$1'
+#   body:
+#     - match: '^https://api\.example\.com/'
+#       direction: request
+#       actions: # 同一条规则中的 actions 按顺序全部执行
+#         - regex: '123'
+#           value: xray
+#         - regex: '153'
+#           value: mihomo
+#     - match: '^https://api\.example\.com/'
+#       direction: response
+#       jq-expression: '.processed_by = "mihomo"'
+#   mock:
+#     - match: '^https?://example\.com/json$'
+#       text: '{}'
+#       status-code: 200 # 默认 200；Content-Length 自动计算
+#       headers: # 接受 YAML map
+#         Content-Type: application/json
+#     - match: '^https?://example\.com/binary$'
+#       base64: 'CgVUZXJyeRAeGHRlcnJ5QGV4YW1wbGUuY29t'
+#       headers: # 也接受 map 列表；列表形式可保留重复 Header
+#         - Content-Type: application/x-protobuf
+
 external-controller: 0.0.0.0:9093 # RESTful API 监听地址
 external-controller-tls: 0.0.0.0:9443 # RESTful API HTTPS 监听地址，需要配置 tls 部分配置文件
 # secret: "123456" # `Authorization:Bearer ${secret}`

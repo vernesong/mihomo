@@ -29,6 +29,7 @@ type CapturedBody struct {
 type CapturedRequest struct {
 	Method  string        `json:"method"`
 	URL     string        `json:"url"`
+	RawURL  string        `json:"raw_url"`
 	Proto   string        `json:"proto"`
 	Headers http.Header   `json:"headers"`
 	Body    *CapturedBody `json:"body,omitempty"`
@@ -219,6 +220,7 @@ func beginCaptureSession(request *http.Request, metadata *C.Metadata) *captureTr
 	if metadata != nil && metadata.SourceValid() {
 		source = metadata.SourceDetail()
 	}
+	requestURL := fullRequestURL(request)
 	transaction := &captureTransaction{
 		store:   defaultCaptureStore,
 		capture: capture,
@@ -229,7 +231,8 @@ func beginCaptureSession(request *http.Request, metadata *C.Metadata) *captureTr
 			Capture:      capture,
 			Request: CapturedRequest{
 				Method:  request.Method,
-				URL:     fullRequestURL(request),
+				URL:     requestURL,
+				RawURL:  requestURL,
 				Proto:   request.Proto,
 				Headers: captureRequestHeaders(request),
 			},
@@ -245,6 +248,21 @@ func beginCaptureSession(request *http.Request, metadata *C.Metadata) *captureTr
 	}
 	transaction.store.add(transaction.session)
 	return transaction
+}
+
+func (t *captureTransaction) setRequestURL(requestURL string) {
+	if requestURL == "" {
+		return
+	}
+	t.mutex.Lock()
+	if t.session.Request.URL == requestURL {
+		t.mutex.Unlock()
+		return
+	}
+	t.session.Request.URL = requestURL
+	snapshot := cloneCapturedSession(t.session)
+	t.mutex.Unlock()
+	t.store.update(snapshot)
 }
 
 func (t *captureTransaction) setConnectionID(id string) {

@@ -28,6 +28,7 @@ import (
 	M "github.com/metacubex/mihomo/component/mitm"
 	"github.com/metacubex/mihomo/component/process"
 	"github.com/metacubex/mihomo/component/resolver"
+	WR "github.com/metacubex/mihomo/component/rewrite"
 	"github.com/metacubex/mihomo/component/smart/lightgbm"
 	"github.com/metacubex/mihomo/component/sniffer"
 	"github.com/metacubex/mihomo/component/trie"
@@ -201,6 +202,7 @@ type TLS struct {
 }
 
 type Mitm = M.Config
+type Rewrite = WR.Config
 
 // Config is mihomo config manager
 type Config struct {
@@ -223,6 +225,7 @@ type Config struct {
 	Sniffer       *sniffer.Config
 	TLS           *TLS
 	Mitm          *Mitm
+	Rewrite       *Rewrite
 }
 
 type RawCors struct {
@@ -489,6 +492,7 @@ type RawConfig struct {
 	Sniffer       RawSniffer                `yaml:"sniffer" json:"sniffer"`
 	TLS           RawTLS                    `yaml:"tls" json:"tls"`
 	Mitm          *RawMitm                  `yaml:"mitm" json:"mitm"`
+	Rewrite       *RawRewrite               `yaml:"rewrite" json:"rewrite"`
 
 	ClashForAndroid RawClashForAndroid `yaml:"clash-for-android" json:"clash-for-android"`
 }
@@ -705,6 +709,12 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 		return nil, err
 	}
 	config.Mitm = mitmConfig
+
+	rewriteConfig, err := parseRewrite(rawCfg.Rewrite)
+	if err != nil {
+		return nil, err
+	}
+	config.Rewrite = rewriteConfig
 
 	proxies, providers, err := parseProxies(rawCfg)
 	if err != nil {
