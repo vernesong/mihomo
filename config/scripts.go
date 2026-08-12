@@ -101,5 +101,5 @@ func parseScripts(raw *orderedmap.OrderedMap[string, RawScript]) (*Scripts, erro
 			Argument:       rawScript.Argument,
 		})
 	}
-	return S.NewManager(options)
+	return S.NewConfig(options)
 }

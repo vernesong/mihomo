@@ -43,7 +43,7 @@ type Info struct {
 	UpdatedAt *time.Time `json:"updatedAt,omitempty"`
 }
 
-type entry struct {
+type moduleSpec struct {
 	name        string
 	enable      bool
 	moduleType  string
@@ -51,7 +51,27 @@ type entry struct {
 	url         string
 	interval    time.Duration
 	intervalSec int
-	vehicle     P.Vehicle
+}
+
+type resolvedEntry struct {
+	moduleSpec
+	content   []byte
+	hash      utils.HashType
+	updatedAt time.Time
+}
+
+// Config is a resolved module configuration. It contains no watchers,
+// goroutines, cancellation state, or other runtime lifecycle.
+type Config struct {
+	entries     []resolvedEntry
+	sourcePath  string
+	sourceBytes []byte
+	effective   []byte
+}
+
+type entry struct {
+	moduleSpec
+	vehicle P.Vehicle
 
 	mu        sync.RWMutex
 	content   []byte
@@ -67,7 +87,6 @@ type Manager struct {
 	byName  map[string]*entry
 	byPath  map[string]*entry
 
-	sourceMu    sync.RWMutex
 	sourcePath  string
 	sourceBytes []byte
 	effective   []byte
@@ -80,142 +99,120 @@ type Manager struct {
 	closeOnce   sync.Once
 }
 
-func Parse(source []byte) (*Manager, []byte, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	manager := &Manager{
-		ctx:         ctx,
-		cancel:      cancel,
-		byName:      map[string]*entry{},
-		byPath:      map[string]*entry{},
+func Parse(source []byte) (*Config, []byte, error) {
+	resolved := &Config{
 		sourceBytes: append([]byte(nil), source...),
 		effective:   append([]byte(nil), source...),
 	}
 
 	document, err := parseDocument(source)
 	if err != nil {
-		manager.Close()
 		return nil, nil, err
 	}
 	root := documentRoot(document)
 	if root == nil || root.Kind != yaml.MappingNode {
-		return manager, source, nil
+		return resolved, source, nil
 	}
 
 	modulesNode, found := getMappingValue(root, "modules")
 	if !found {
-		return manager, source, nil
+		return resolved, source, nil
 	}
 	if modulesNode.Kind != yaml.MappingNode {
-		manager.Close()
 		return nil, nil, fmt.Errorf("modules must be a YAML mapping")
 	}
 
 	usedPaths := map[string]string{}
+	usedNames := map[string]struct{}{}
 	for index := 0; index < len(modulesNode.Content); index += 2 {
 		name, err := mappingKey(modulesNode.Content[index])
 		if err != nil {
-			manager.Close()
 			return nil, nil, fmt.Errorf("modules: %w", err)
 		}
 		if name == "" {
-			manager.Close()
 			return nil, nil, fmt.Errorf("module name cannot be empty")
 		}
-		if _, exists := manager.byName[name]; exists {
-			manager.Close()
+		if _, exists := usedNames[name]; exists {
 			return nil, nil, fmt.Errorf("module name %q is duplicated", name)
 		}
+		usedNames[name] = struct{}{}
 
 		raw := rawModule{}
 		if err := modulesNode.Content[index+1].Decode(&raw); err != nil {
-			manager.Close()
 			return nil, nil, fmt.Errorf("module %q: %w", name, err)
 		}
 		if raw.Enable == nil {
-			manager.Close()
 			return nil, nil, fmt.Errorf("module %q: enable is required", name)
 		}
 		if raw.Interval < 0 {
-			manager.Close()
 			return nil, nil, fmt.Errorf("module %q: interval cannot be negative", name)
 		}
 		if int64(raw.Interval) > math.MaxInt64/int64(time.Second) {
-			manager.Close()
 			return nil, nil, fmt.Errorf("module %q: interval is too large", name)
 		}
 
-		moduleEntry := &entry{
+		moduleEntry := resolvedEntry{moduleSpec: moduleSpec{
 			name:        name,
 			enable:      *raw.Enable,
 			moduleType:  raw.Type,
 			url:         raw.URL,
 			interval:    time.Duration(raw.Interval) * time.Second,
 			intervalSec: raw.Interval,
-		}
+		}}
 
 		switch raw.Type {
 		case "file":
 			if raw.Path == "" {
-				manager.Close()
 				return nil, nil, fmt.Errorf("module %q: path is required for file type", name)
 			}
 			moduleEntry.path = C.Path.Resolve(raw.Path)
-			moduleEntry.vehicle = resource.NewFileVehicle(moduleEntry.path)
 		case "http":
 			if raw.URL == "" {
-				manager.Close()
 				return nil, nil, fmt.Errorf("module %q: url is required for http type", name)
 			}
 			moduleEntry.path = C.Path.GetPathByHash("modules", raw.URL)
 			if raw.Path != "" {
 				moduleEntry.path = C.Path.Resolve(raw.Path)
 			}
-			moduleEntry.vehicle = resource.NewHTTPVehicle(raw.URL, moduleEntry.path, "", nil, resource.DefaultHttpTimeout, 0)
 		default:
-			manager.Close()
 			return nil, nil, fmt.Errorf("module %q: unsupported type %q", name, raw.Type)
 		}
 
 		if !C.Path.IsSafePath(moduleEntry.path) {
-			manager.Close()
 			return nil, nil, fmt.Errorf("module %q: %w", name, C.Path.ErrNotSafePath(moduleEntry.path))
 		}
 		pathKey := canonicalPath(moduleEntry.path)
 		if previous, exists := usedPaths[pathKey]; exists {
-			manager.Close()
 			return nil, nil, fmt.Errorf("module %q: path duplicates module %q: %s", name, previous, moduleEntry.path)
 		}
 		usedPaths[pathKey] = name
 
-		manager.entries = append(manager.entries, moduleEntry)
-		manager.byName[name] = moduleEntry
-		manager.byPath[pathKey] = moduleEntry
+		resolved.entries = append(resolved.entries, moduleEntry)
 	}
 
-	for _, moduleEntry := range manager.entries {
+	for index := range resolved.entries {
+		moduleEntry := &resolved.entries[index]
 		if !moduleEntry.enable {
 			continue
 		}
-		if err := moduleEntry.loadInitial(manager.ctx); err != nil {
-			manager.Close()
+		if err := moduleEntry.loadInitial(context.Background()); err != nil {
 			return nil, nil, fmt.Errorf("module %q: %w", moduleEntry.name, err)
 		}
 	}
 
-	overrides := make([]namedOverride, 0, len(manager.entries))
-	for _, moduleEntry := range manager.entries {
+	overrides := make([]namedOverride, 0, len(resolved.entries))
+	for _, moduleEntry := range resolved.entries {
 		if moduleEntry.enable {
-			overrides = append(overrides, namedOverride{name: moduleEntry.name, content: moduleEntry.contentCopy()})
+			overrides = append(overrides, namedOverride{name: moduleEntry.name, content: append([]byte(nil), moduleEntry.content...)})
 		}
 	}
 	merged, err := mergeConfig(source, overrides)
 	if err != nil {
-		manager.Close()
 		return nil, nil, err
 	}
-	manager.effective = append(manager.effective[:0], merged...)
+	resolved.effective = append(resolved.effective[:0], merged...)
 
-	return manager, merged, nil
+	return resolved, merged, nil
 }
 
 func canonicalPath(path string) string {
@@ -226,7 +223,15 @@ func canonicalPath(path string) string {
 	return path
 }
 
-func (e *entry) loadInitial(ctx context.Context) error {
+func (s moduleSpec) newVehicle() P.Vehicle {
+	if s.moduleType == "file" {
+		return resource.NewFileVehicle(s.path)
+	}
+	return resource.NewHTTPVehicle(s.url, s.path, "", nil, resource.DefaultHttpTimeout, 0)
+}
+
+func (e *resolvedEntry) loadInitial(ctx context.Context) error {
+	vehicle := e.newVehicle()
 	if e.moduleType == "http" {
 		if buf, err := os.ReadFile(e.path); err == nil {
 			if validateErr := validateOverride(buf); validateErr == nil {
@@ -234,13 +239,15 @@ func (e *entry) loadInitial(ctx context.Context) error {
 				if stat, statErr := os.Stat(e.path); statErr == nil {
 					updatedAt = stat.ModTime()
 				}
-				e.setContent(buf, utils.MakeHash(buf), updatedAt)
+				e.content = append(e.content[:0], buf...)
+				e.hash = utils.MakeHash(buf)
+				e.updatedAt = updatedAt
 				return nil
 			}
 		}
 	}
 
-	buf, hash, err := e.vehicle.Read(ctx, utils.HashType{})
+	buf, hash, err := vehicle.Read(ctx, utils.HashType{})
 	if err != nil {
 		return err
 	}
@@ -248,7 +255,7 @@ func (e *entry) loadInitial(ctx context.Context) error {
 		return err
 	}
 	if e.moduleType == "http" {
-		if err := e.vehicle.Write(buf); err != nil {
+		if err := vehicle.Write(buf); err != nil {
 			return err
 		}
 	}
@@ -256,8 +263,47 @@ func (e *entry) loadInitial(ctx context.Context) error {
 	if stat, statErr := os.Stat(e.path); statErr == nil {
 		updatedAt = stat.ModTime()
 	}
-	e.setContent(buf, hash, updatedAt)
+	e.content = append(e.content[:0], buf...)
+	e.hash = hash
+	e.updatedAt = updatedAt
 	return nil
+}
+
+func (c *Config) SetSourcePath(path string) {
+	if c != nil {
+		c.sourcePath = path
+	}
+}
+
+// NewManager creates an independent runtime owned by the caller.
+func (c *Config) NewManager() *Manager {
+	if c == nil {
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	manager := &Manager{
+		ctx:         ctx,
+		cancel:      cancel,
+		byName:      make(map[string]*entry, len(c.entries)),
+		byPath:      make(map[string]*entry, len(c.entries)),
+		sourcePath:  c.sourcePath,
+		sourceBytes: append([]byte(nil), c.sourceBytes...),
+		effective:   append([]byte(nil), c.effective...),
+	}
+	for index := range c.entries {
+		resolved := &c.entries[index]
+		moduleEntry := &entry{
+			moduleSpec: resolved.moduleSpec,
+			vehicle:    resolved.newVehicle(),
+			content:    append([]byte(nil), resolved.content...),
+			hash:       resolved.hash,
+			updatedAt:  resolved.updatedAt,
+		}
+		manager.entries = append(manager.entries, moduleEntry)
+		manager.byName[moduleEntry.name] = moduleEntry
+		manager.byPath[canonicalPath(moduleEntry.path)] = moduleEntry
+	}
+	return manager
 }
 
 func (e *entry) setContent(content []byte, hash utils.HashType, updatedAt time.Time) {
@@ -274,29 +320,32 @@ func (e *entry) contentCopy() []byte {
 	return append([]byte(nil), e.content...)
 }
 
-func (m *Manager) SetSourcePath(path string) {
-	m.sourceMu.Lock()
-	m.sourcePath = path
-	m.sourceMu.Unlock()
-}
-
 func (m *Manager) SourcePath() string {
-	m.sourceMu.RLock()
-	defer m.sourceMu.RUnlock()
 	return m.sourcePath
 }
 
 func (m *Manager) EffectiveConfig() []byte {
-	m.sourceMu.RLock()
-	defer m.sourceMu.RUnlock()
 	return append([]byte(nil), m.effective...)
 }
 
+// MergeSource applies the currently active module contents to source without
+// fetching, watching, or otherwise changing module runtime state.
+func (m *Manager) MergeSource(source []byte) ([]byte, error) {
+	if m == nil {
+		return append([]byte(nil), source...), nil
+	}
+	overrides := make([]namedOverride, 0, len(m.entries))
+	for _, moduleEntry := range m.entries {
+		if moduleEntry.enable {
+			overrides = append(overrides, namedOverride{name: moduleEntry.name, content: moduleEntry.contentCopy()})
+		}
+	}
+	return mergeConfig(source, overrides)
+}
+
 func (m *Manager) ReadSource() ([]byte, error) {
-	m.sourceMu.RLock()
 	path := m.sourcePath
 	buf := append([]byte(nil), m.sourceBytes...)
-	m.sourceMu.RUnlock()
 	if path != "" {
 		return os.ReadFile(path)
 	}

@@ -73,7 +73,7 @@ type Info struct {
 
 var ErrNotFound = errors.New("script not found")
 
-type entry struct {
+type entrySpec struct {
 	name           string
 	enable         bool
 	debug          bool
@@ -90,7 +90,26 @@ type entry struct {
 	maxBodySize    int64
 	indirectEval   bool
 	argument       string
-	vehicle        *resource.HTTPVehicle
+}
+
+type preparedEntry struct {
+	entrySpec
+	program   *sobek.Program
+	hash      utils.HashType
+	updatedAt time.Time
+}
+
+// Config is a resolved script configuration without scheduler, goroutine, or
+// cancellation lifecycle. Enabled sources are loaded and compiled before the
+// configuration is returned.
+type Config struct {
+	entries    []preparedEntry
+	sourcePath string
+}
+
+type entry struct {
+	entrySpec
+	vehicle *resource.HTTPVehicle
 
 	mutex     sync.RWMutex
 	program   *sobek.Program
@@ -114,8 +133,7 @@ type Manager struct {
 	pullWaitGroup  sync.WaitGroup
 	closeOnce      sync.Once
 
-	sourceMutex sync.RWMutex
-	sourcePath  string
+	sourcePath string
 }
 
 var cronParser = cron.NewParser(
@@ -127,34 +145,64 @@ var cronParser = cron.NewParser(
 		cron.Dow,
 )
 
-func NewManager(options []EntryOption) (*Manager, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	manager := &Manager{
-		ctx:       ctx,
-		cancel:    cancel,
-		entries:   make([]*entry, 0, len(options)),
-		byName:    make(map[string]*entry, len(options)),
-		scheduler: cron.New(cron.WithParser(cronParser), cron.WithLocation(time.Local)),
+func NewConfig(options []EntryOption) (*Config, error) {
+	config := &Config{
+		entries: make([]preparedEntry, 0, len(options)),
 	}
 	usedPaths := make(map[string]string, len(options))
 	for index, option := range options {
-		scriptEntry, err := newEntry(option)
+		scriptEntry, err := newPreparedEntry(option)
 		if err != nil {
-			_ = manager.Close()
 			return nil, fmt.Errorf("scripts.%s: %w", displayName(option.Name, index), err)
 		}
 		pathKey := canonicalPath(scriptEntry.path)
 		if previous, found := usedPaths[pathKey]; found {
-			_ = manager.Close()
 			return nil, fmt.Errorf("scripts.%s: path duplicates script %q: %s", scriptEntry.name, previous, scriptEntry.path)
 		}
 		usedPaths[pathKey] = scriptEntry.name
 
 		if scriptEntry.enable {
-			if err = scriptEntry.loadInitial(manager.ctx); err != nil {
-				_ = manager.Close()
+			if err = scriptEntry.loadInitial(context.Background()); err != nil {
 				return nil, fmt.Errorf("scripts.%s: %w", scriptEntry.name, err)
 			}
+		}
+		config.entries = append(config.entries, *scriptEntry)
+	}
+	return config, nil
+}
+
+// NewManager preserves the original constructor for callers that build a
+// standalone script runtime directly.
+func NewManager(options []EntryOption) (*Manager, error) {
+	config, err := NewConfig(options)
+	if err != nil {
+		return nil, err
+	}
+	return config.NewManager(), nil
+}
+
+// NewManager creates an independent runtime owned by the caller.
+func (c *Config) NewManager() *Manager {
+	if c == nil {
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	manager := &Manager{
+		ctx:        ctx,
+		cancel:     cancel,
+		entries:    make([]*entry, 0, len(c.entries)),
+		byName:     make(map[string]*entry, len(c.entries)),
+		scheduler:  cron.New(cron.WithParser(cronParser), cron.WithLocation(time.Local)),
+		sourcePath: c.sourcePath,
+	}
+	for index := range c.entries {
+		prepared := &c.entries[index]
+		scriptEntry := &entry{
+			entrySpec: prepared.entrySpec,
+			vehicle:   prepared.newHTTPVehicle(),
+			program:   prepared.program,
+			hash:      prepared.hash,
+			updatedAt: prepared.updatedAt,
 		}
 		manager.entries = append(manager.entries, scriptEntry)
 		manager.byName[scriptEntry.name] = scriptEntry
@@ -167,7 +215,7 @@ func NewManager(options []EntryOption) (*Manager, error) {
 			manager.cronEntries = append(manager.cronEntries, scriptEntry)
 		}
 	}
-	return manager, nil
+	return manager
 }
 
 func displayName(name string, index int) string {
@@ -177,7 +225,7 @@ func displayName(name string, index int) string {
 	return fmt.Sprintf("[%d]", index)
 }
 
-func newEntry(option EntryOption) (*entry, error) {
+func newPreparedEntry(option EntryOption) (*preparedEntry, error) {
 	if option.Name == "" {
 		return nil, errors.New("name cannot be empty")
 	}
@@ -194,7 +242,7 @@ func newEntry(option EntryOption) (*entry, error) {
 		return nil, errors.New("options.max-body-size must be -1 or greater")
 	}
 
-	scriptEntry := &entry{
+	scriptEntry := &preparedEntry{entrySpec: entrySpec{
 		name:           option.Name,
 		enable:         option.Enable,
 		debug:          option.Debug,
@@ -208,7 +256,7 @@ func newEntry(option EntryOption) (*entry, error) {
 		maxBodySize:    option.MaxBodySize,
 		indirectEval:   option.IndirectEval,
 		argument:       option.Argument,
-	}
+	}}
 
 	switch option.Type {
 	case TypeHTTPRequest, TypeHTTPResponse:
@@ -257,9 +305,6 @@ func newEntry(option EntryOption) (*entry, error) {
 		return nil, C.Path.ErrNotSafePath(path)
 	}
 	scriptEntry.path = path
-	if option.URL != "" {
-		scriptEntry.vehicle = resource.NewHTTPVehicle(option.URL, path, "", nil, resource.DefaultHttpTimeout, 0)
-	}
 	return scriptEntry, nil
 }
 
@@ -271,8 +316,16 @@ func canonicalPath(path string) string {
 	return path
 }
 
-func (e *entry) loadInitial(ctx context.Context) error {
-	if e.vehicle == nil {
+func (s entrySpec) newHTTPVehicle() *resource.HTTPVehicle {
+	if s.url == "" {
+		return nil
+	}
+	return resource.NewHTTPVehicle(s.url, s.path, "", nil, resource.DefaultHttpTimeout, 0)
+}
+
+func (e *preparedEntry) loadInitial(ctx context.Context) error {
+	vehicle := e.newHTTPVehicle()
+	if vehicle == nil {
 		content, err := os.ReadFile(e.path)
 		if err != nil {
 			return fmt.Errorf("read local script: %w", err)
@@ -280,10 +333,10 @@ func (e *entry) loadInitial(ctx context.Context) error {
 		return e.install(content, utils.MakeHash(content), fileUpdatedAt(e.path))
 	}
 
-	content, hash, downloadErr := e.vehicle.Read(ctx, utils.HashType{})
+	content, hash, downloadErr := vehicle.Read(ctx, utils.HashType{})
 	if downloadErr == nil {
 		if err := e.compile(content); err == nil {
-			if err = e.vehicle.Write(content); err != nil {
+			if err = vehicle.Write(content); err != nil {
 				return fmt.Errorf("write script cache: %w", err)
 			}
 			return e.install(content, hash, fileUpdatedAt(e.path))
@@ -304,7 +357,7 @@ func (e *entry) loadInitial(ctx context.Context) error {
 	return fmt.Errorf("download script: %w; cached script unavailable: %v", downloadErr, cacheErr)
 }
 
-func (e *entry) compile(content []byte) error {
+func (e *entrySpec) compile(content []byte) error {
 	_, err := e.compileProgram(content)
 	return err
 }
@@ -316,16 +369,14 @@ func fileUpdatedAt(path string) time.Time {
 	return time.Now()
 }
 
-func (e *entry) install(content []byte, hash utils.HashType, updatedAt time.Time) error {
+func (e *preparedEntry) install(content []byte, hash utils.HashType, updatedAt time.Time) error {
 	program, err := e.compileProgram(content)
 	if err != nil {
 		return err
 	}
-	e.mutex.Lock()
 	e.program = program
 	e.hash = hash
 	e.updatedAt = updatedAt
-	e.mutex.Unlock()
 	return nil
 }
 
@@ -436,15 +487,13 @@ func (m *Manager) Close() error {
 	return nil
 }
 
-func (m *Manager) SetSourcePath(path string) {
-	m.sourceMutex.Lock()
-	m.sourcePath = path
-	m.sourceMutex.Unlock()
+func (c *Config) SetSourcePath(path string) {
+	if c != nil {
+		c.sourcePath = path
+	}
 }
 
 func (m *Manager) SourcePath() string {
-	m.sourceMutex.RLock()
-	defer m.sourceMutex.RUnlock()
 	return m.sourcePath
 }
 

@@ -55,7 +55,7 @@ Body 会依照 `Content-Encoding` 自动解压和重新压缩 `gzip`、`deflate`
 
 - `GET /scripts`：按配置顺序返回所有脚本及其运行参数。
 - `GET /scripts/{name}`：返回指定脚本；名称中的 `/` 需要进行 URL 编码。
-- `PATCH /scripts/{name}`：使用 `{"enable": true}` 或 `{"enable": false}` 持久化脚本开关并立即重载配置。嵌入模式下不提供此写接口。
+- `PATCH /scripts/{name}`：使用 `{"enable": true}` 或 `{"enable": false}` 持久化脚本开关并立即重建脚本运行时；不会重载其他 mihomo 配置。嵌入模式下不提供此写接口。
 
 启用脚本前会加载并编译脚本；加载或编译失败时返回 `400`，配置文件与当前运行状态保持不变。
 

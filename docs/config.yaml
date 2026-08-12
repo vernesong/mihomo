@@ -145,7 +145,7 @@ tls:
 
 # JavaScript 脚本；HTTP 脚本仅处理已经被 mitm.hostname 拦截的流量，并按配置顺序依次执行
 # 可通过 GET /scripts 查询，并通过 PATCH /scripts/{name} {"enable":true/false}
-# 持久化开关并立即重载。
+# 持久化开关并立即重建脚本运行时，不重载其他配置。
 # scripts:
 #   request-script:
 #     enable: true # 必填

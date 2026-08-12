@@ -52,10 +52,14 @@ var (
 	mux sync.RWMutex
 
 	moduleAccessMux sync.RWMutex
-	configReloadMux sync.Mutex
+	// configApplyMux is the single coordinator for full configuration applies,
+	// module-triggered reloads, and runtime control API changes.
+	configApplyMux  sync.Mutex
 	activeModules   *modules.Manager
 	scriptAccessMux sync.RWMutex
 	activeScripts   *script.Manager
+	activeMitm      *config.Mitm
+	activeRewrite   *config.Rewrite
 )
 
 func readConfig(path string) ([]byte, error) {
@@ -106,12 +110,21 @@ func ParseWithBytes(buf []byte) (*config.Config, error) {
 
 // ApplyConfig dispatch configure to all parts without ExternalController
 func ApplyConfig(cfg *config.Config, force bool) {
+	configApplyMux.Lock()
+	defer configApplyMux.Unlock()
+	applyConfigWithLock(cfg, force)
+}
+
+func applyConfigWithLock(cfg *config.Config, force bool) {
 	mux.Lock()
 	defer mux.Unlock()
 	applyConfig(cfg, force)
 }
 
 func applyConfig(cfg *config.Config, force bool) {
+	nextScripts := cfg.Scripts.NewManager()
+	nextModules := cfg.Modules.NewManager()
+
 	log.SetLevel(cfg.General.LogLevel)
 
 	tunnel.OnSuspend()
@@ -129,7 +142,7 @@ func applyConfig(cfg *config.Config, force bool) {
 	updateProxies(cfg.Proxies, cfg.Providers)
 	updateRules(cfg.Rules, cfg.SubRules, cfg.RuleProviders)
 	updateSniffer(cfg.Sniffer)
-	updateMitm(cfg.Mitm, cfg.Rewrite, cfg.Scripts)
+	updateMitm(cfg.Mitm, cfg.Rewrite, nextScripts)
 	updateHosts(cfg.Hosts)
 	updateGeneral(cfg.General, true)
 	updateNTP(cfg.NTP)
@@ -151,7 +164,7 @@ func applyConfig(cfg *config.Config, force bool) {
 	updateUpdater(cfg)
 
 	resolver.ResetConnection()
-	updateModuleManager(cfg.Modules)
+	updateModuleManager(nextModules)
 }
 
 func updateModuleManager(next *modules.Manager) {
@@ -169,8 +182,8 @@ func updateModuleManager(next *modules.Manager) {
 }
 
 func reloadModules(expected *modules.Manager) error {
-	configReloadMux.Lock()
-	defer configReloadMux.Unlock()
+	configApplyMux.Lock()
+	defer configApplyMux.Unlock()
 
 	if !isActiveModuleManager(expected) {
 		return nil
@@ -200,9 +213,6 @@ func applyModuleConfig(cfg *config.Config, expected *modules.Manager) {
 	mux.Lock()
 	defer mux.Unlock()
 	if !isActiveModuleManager(expected) {
-		if cfg.Modules != nil {
-			_ = cfg.Modules.Close()
-		}
 		return
 	}
 	applyConfig(cfg, true)
@@ -245,8 +255,8 @@ func GetModuleConfig() ([]byte, bool) {
 }
 
 func SetModuleEnabled(name string, enabled bool) error {
-	configReloadMux.Lock()
-	defer configReloadMux.Unlock()
+	configApplyMux.Lock()
+	defer configApplyMux.Unlock()
 
 	path := C.Path.Config()
 	moduleAccessMux.RLock()
@@ -265,6 +275,9 @@ func SetModuleEnabled(name string, enabled bool) error {
 	if err != nil {
 		return err
 	}
+	if !changed {
+		return nil
+	}
 
 	cfg, err := ParseWithBytes(updated)
 	if err != nil {
@@ -277,19 +290,11 @@ func SetModuleEnabled(name string, enabled bool) error {
 		cfg.Scripts.SetSourcePath(path)
 	}
 
-	if changed {
-		if err := writeConfigAtomic(path, updated); err != nil {
-			if cfg.Modules != nil {
-				_ = cfg.Modules.Close()
-			}
-			if cfg.Scripts != nil {
-				_ = cfg.Scripts.Close()
-			}
-			return err
-		}
+	if err := writeConfigAtomic(path, updated); err != nil {
+		return err
 	}
 
-	ApplyConfig(cfg, true)
+	applyConfigWithLock(cfg, true)
 	return nil
 }
 
@@ -314,8 +319,8 @@ func GetScript(name string) (script.Info, bool) {
 }
 
 func SetScriptEnabled(name string, enabled bool) error {
-	configReloadMux.Lock()
-	defer configReloadMux.Unlock()
+	configApplyMux.Lock()
+	defer configApplyMux.Unlock()
 
 	path := C.Path.Config()
 	scriptAccessMux.RLock()
@@ -334,31 +339,33 @@ func SetScriptEnabled(name string, enabled bool) error {
 	if err != nil {
 		return err
 	}
+	if !changed {
+		return nil
+	}
 
-	cfg, err := ParseWithBytes(updated)
+	moduleAccessMux.RLock()
+	moduleManager := activeModules
+	moduleAccessMux.RUnlock()
+	effective, err := moduleManager.MergeSource(updated)
 	if err != nil {
 		return err
 	}
-	if cfg.Modules != nil {
-		cfg.Modules.SetSourcePath(path)
+	cfg, err := config.ParseResolved(effective)
+	if err != nil {
+		return err
 	}
 	if cfg.Scripts != nil {
 		cfg.Scripts.SetSourcePath(path)
 	}
 
-	if changed {
-		if err := writeConfigAtomic(path, updated); err != nil {
-			if cfg.Modules != nil {
-				_ = cfg.Modules.Close()
-			}
-			if cfg.Scripts != nil {
-				_ = cfg.Scripts.Close()
-			}
-			return err
-		}
+	if err := writeConfigAtomic(path, updated); err != nil {
+		return err
 	}
 
-	ApplyConfig(cfg, true)
+	nextScripts := cfg.Scripts.NewManager()
+	mux.Lock()
+	updateMitm(activeMitm, activeRewrite, nextScripts)
+	mux.Unlock()
 	return nil
 }
 
@@ -645,7 +652,7 @@ func updateSniffer(snifferConfig *sniffer.Config) {
 	}
 }
 
-func updateMitm(mitmConfig *config.Mitm, rewriteConfig *config.Rewrite, scripts *config.Scripts) {
+func updateMitm(mitmConfig *config.Mitm, rewriteConfig *config.Rewrite, scripts *script.Manager) {
 	if mitmConfig != nil && mitmConfig.Capture {
 		log.Warnln(mitm.CaptureWarning)
 	}
@@ -656,6 +663,8 @@ func updateMitm(mitmConfig *config.Mitm, rewriteConfig *config.Rewrite, scripts 
 	previousScripts := activeScripts
 	activeScripts = scripts
 	scriptAccessMux.Unlock()
+	activeMitm = mitmConfig
+	activeRewrite = rewriteConfig
 	tunnel.UpdateMitmWithRewriteAndScripts(mitmConfig, rewriteConfig, scripts)
 	if previousScripts != nil && previousScripts != scripts {
 		_ = previousScripts.Close()
@@ -846,6 +855,14 @@ func Shutdown() {
 	resolver.StoreFakePoolState()
 
 	closeSmart()
+	moduleAccessMux.Lock()
+	moduleManager := activeModules
+	activeModules = nil
+	moduleAccessMux.Unlock()
+	if moduleManager != nil {
+		_ = moduleManager.Close()
+	}
+
 	scriptAccessMux.Lock()
 	scripts := activeScripts
 	activeScripts = nil

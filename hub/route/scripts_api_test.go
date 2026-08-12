@@ -91,6 +91,13 @@ scripts:
 	require.Equal(t, cronScriptPath, cronInfo.Path)
 	require.Nil(t, cronInfo.UpdatedAt)
 
+	response = scriptsAPIRequest(t, server.Client(), http.MethodPatch, server.URL+"/configs", map[string]any{
+		"log-level": "debug",
+	})
+	require.Equal(t, http.StatusNoContent, response.StatusCode)
+	require.NoError(t, response.Body.Close())
+	require.Equal(t, "debug", modulesAPILogLevel(t, server))
+
 	escapedName := strings.ReplaceAll("request/script", "/", "%2F")
 	response = scriptsAPIRequest(t, server.Client(), http.MethodPatch, server.URL+"/scripts/"+escapedName, map[string]any{
 		"enable": false,
@@ -105,6 +112,7 @@ scripts:
 	require.NoError(t, response.Body.Close())
 	require.False(t, disabledInfo.Enable)
 	require.Nil(t, disabledInfo.UpdatedAt)
+	require.Equal(t, "debug", modulesAPILogLevel(t, server))
 
 	persisted, err := os.ReadFile(configPath)
 	require.NoError(t, err)

@@ -205,9 +205,10 @@ type TLS struct {
 
 type Mitm = M.Config
 type Rewrite = WR.Config
-type Scripts = S.Manager
+type Scripts = S.Config
 
-// Config is mihomo config manager
+// Config is the parsed mihomo configuration. Runtime managers are created and
+// owned by the executor when this configuration is applied.
 type Config struct {
 	General       *General
 	Controller    *Controller
@@ -230,7 +231,7 @@ type Config struct {
 	Mitm          *Mitm
 	Rewrite       *Rewrite
 	Scripts       *Scripts
-	Modules       *modules.Manager
+	Modules       *modules.Config
 }
 
 type RawCors struct {
@@ -510,24 +511,27 @@ func Parse(buf []byte) (*Config, error) {
 		return nil, fmt.Errorf("decrypt config error: %w", err)
 	}
 
-	moduleManager, merged, err := modules.Parse(decrypted)
+	moduleConfig, merged, err := modules.Parse(decrypted)
 	if err != nil {
 		return nil, err
 	}
 
-	rawCfg, err := UnmarshalRawConfig(merged)
+	parsed, err := ParseResolved(merged)
 	if err != nil {
-		_ = moduleManager.Close()
 		return nil, err
 	}
-
-	parsed, err := ParseRawConfig(rawCfg)
-	if err != nil {
-		_ = moduleManager.Close()
-		return nil, err
-	}
-	parsed.Modules = moduleManager
+	parsed.Modules = moduleConfig
 	return parsed, nil
+}
+
+// ParseResolved parses an effective configuration whose module overrides have
+// already been applied.
+func ParseResolved(buf []byte) (*Config, error) {
+	rawCfg, err := UnmarshalRawConfig(buf)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRawConfig(rawCfg)
 }
 
 func DefaultRawConfig() *RawConfig {
@@ -744,12 +748,6 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 		return nil, err
 	}
 	config.Scripts = scripts
-	scriptsParsed := scripts != nil
-	defer func() {
-		if scriptsParsed && config.Scripts != nil {
-			_ = config.Scripts.Close()
-		}
-	}()
 
 	proxies, providers, err := parseProxies(rawCfg)
 	if err != nil {
@@ -828,7 +826,6 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 	elapsedTime := time.Since(startTime) / time.Millisecond                     // duration in ms
 	log.Infoln("Initial configuration complete, total time: %dms", elapsedTime) //Segment finished in xxm
 
-	scriptsParsed = false
 	return config, nil
 }
 

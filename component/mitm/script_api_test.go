@@ -18,6 +18,7 @@ import (
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/component/mitm"
 	"github.com/metacubex/mihomo/component/profile/cachefile"
+	"github.com/metacubex/mihomo/component/script"
 	"github.com/metacubex/mihomo/config"
 	C "github.com/metacubex/mihomo/constant"
 
@@ -460,8 +461,9 @@ scripts:
 `, scriptURL, scriptURL)))
 	require.NoError(t, err)
 	require.NotNil(t, parsedConfig.Scripts)
-	parsedConfig.Scripts.Start()
-	t.Cleanup(func() { require.NoError(t, parsedConfig.Scripts.Close()) })
+	scriptManager := parsedConfig.Scripts.NewManager()
+	scriptManager.Start()
+	t.Cleanup(func() { require.NoError(t, scriptManager.Close()) })
 
 	cachePath := C.Path.GetPathByHash("scripts", scriptURL)
 	require.Equal(t, filepath.Join(homeDir, "scripts", filepath.Base(cachePath)), cachePath)
@@ -520,7 +522,13 @@ func TestScriptUserConfigurationValidationAPI(t *testing.T) {
 	}
 }
 
-func parseScriptTestConfig(t *testing.T, hostname string, scripts string) *config.Config {
+type scriptTestConfig struct {
+	Mitm    *config.Mitm
+	Rewrite *config.Rewrite
+	Scripts *script.Manager
+}
+
+func parseScriptTestConfig(t *testing.T, hostname string, scripts string) *scriptTestConfig {
 	t.Helper()
 	const passphrase = "password"
 	_, _, caP12 := newTestAuthority(t, passphrase)
@@ -536,7 +544,11 @@ mitm:
 	require.NoError(t, err)
 	require.NotNil(t, parsedConfig.Mitm)
 	require.NotNil(t, parsedConfig.Scripts)
-	return parsedConfig
+	return &scriptTestConfig{
+		Mitm:    parsedConfig.Mitm,
+		Rewrite: parsedConfig.Rewrite,
+		Scripts: parsedConfig.Scripts.NewManager(),
+	}
 }
 
 func useScriptTestHome(t *testing.T) string {
@@ -580,7 +592,7 @@ func expectScriptTestConnectionAbort(t *testing.T, client *rewriteTestClient, pa
 	require.Error(t, err)
 }
 
-func newScriptTestClient(t *testing.T, parsedConfig *config.Config, hostname string, upstreamAddress string) *rewriteTestClient {
+func newScriptTestClient(t *testing.T, parsedConfig *scriptTestConfig, hostname string, upstreamAddress string) *rewriteTestClient {
 	t.Helper()
 	clientConnection, serverConnection := net.Pipe()
 	result := make(chan error, 1)

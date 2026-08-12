@@ -14,7 +14,7 @@ type sourceSpan struct {
 	end   int
 }
 
-func (e *entry) compileProgram(content []byte) (*sobek.Program, error) {
+func (e *entrySpec) compileProgram(content []byte) (*sobek.Program, error) {
 	source := string(content)
 	if e.indirectEval {
 		var err error
