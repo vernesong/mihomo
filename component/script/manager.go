@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/metacubex/mihomo/common/orderedmap"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/resource"
 	C "github.com/metacubex/mihomo/constant"
@@ -48,6 +49,30 @@ type EntryOption struct {
 	Argument       string
 }
 
+type InfoOptions struct {
+	Timeout        int64 `json:"timeout"`
+	BinaryBodyMode bool  `json:"binary-body-mode"`
+	RequiresBody   bool  `json:"requires-body"`
+	MaxBodySize    int64 `json:"max-body-size"`
+	IndirectEval   bool  `json:"indirect-eval"`
+}
+
+type Info struct {
+	Enable    bool        `json:"enable"`
+	Debug     bool        `json:"debug"`
+	Type      Type        `json:"type"`
+	Match     string      `json:"match,omitempty"`
+	Cron      string      `json:"cron,omitempty"`
+	Path      string      `json:"path"`
+	URL       string      `json:"url,omitempty"`
+	Interval  int64       `json:"interval"`
+	Options   InfoOptions `json:"options"`
+	Argument  string      `json:"argument"`
+	UpdatedAt *time.Time  `json:"updatedAt,omitempty"`
+}
+
+var ErrNotFound = errors.New("script not found")
+
 type entry struct {
 	name           string
 	enable         bool
@@ -57,6 +82,7 @@ type entry struct {
 	cronExpression string
 	cronSchedule   cron.Schedule
 	path           string
+	url            string
 	interval       time.Duration
 	timeout        time.Duration
 	binaryBodyMode bool
@@ -66,9 +92,10 @@ type entry struct {
 	argument       string
 	vehicle        *resource.HTTPVehicle
 
-	mutex   sync.RWMutex
-	program *sobek.Program
-	hash    utils.HashType
+	mutex     sync.RWMutex
+	program   *sobek.Program
+	hash      utils.HashType
+	updatedAt time.Time
 }
 
 type Manager struct {
@@ -76,6 +103,7 @@ type Manager struct {
 	cancel context.CancelFunc
 
 	entries         []*entry
+	byName          map[string]*entry
 	requestEntries  []*entry
 	responseEntries []*entry
 	cronEntries     []*entry
@@ -85,6 +113,9 @@ type Manager struct {
 	scheduler      *cron.Cron
 	pullWaitGroup  sync.WaitGroup
 	closeOnce      sync.Once
+
+	sourceMutex sync.RWMutex
+	sourcePath  string
 }
 
 var cronParser = cron.NewParser(
@@ -102,6 +133,7 @@ func NewManager(options []EntryOption) (*Manager, error) {
 		ctx:       ctx,
 		cancel:    cancel,
 		entries:   make([]*entry, 0, len(options)),
+		byName:    make(map[string]*entry, len(options)),
 		scheduler: cron.New(cron.WithParser(cronParser), cron.WithLocation(time.Local)),
 	}
 	usedPaths := make(map[string]string, len(options))
@@ -125,6 +157,7 @@ func NewManager(options []EntryOption) (*Manager, error) {
 			}
 		}
 		manager.entries = append(manager.entries, scriptEntry)
+		manager.byName[scriptEntry.name] = scriptEntry
 		switch scriptEntry.scriptType {
 		case TypeHTTPRequest:
 			manager.requestEntries = append(manager.requestEntries, scriptEntry)
@@ -167,6 +200,7 @@ func newEntry(option EntryOption) (*entry, error) {
 		debug:          option.Debug,
 		scriptType:     option.Type,
 		cronExpression: option.Cron,
+		url:            option.URL,
 		interval:       option.Interval,
 		timeout:        option.Timeout,
 		binaryBodyMode: option.BinaryBodyMode,
@@ -243,7 +277,7 @@ func (e *entry) loadInitial(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("read local script: %w", err)
 		}
-		return e.install(content, utils.MakeHash(content))
+		return e.install(content, utils.MakeHash(content), fileUpdatedAt(e.path))
 	}
 
 	content, hash, downloadErr := e.vehicle.Read(ctx, utils.HashType{})
@@ -252,7 +286,7 @@ func (e *entry) loadInitial(ctx context.Context) error {
 			if err = e.vehicle.Write(content); err != nil {
 				return fmt.Errorf("write script cache: %w", err)
 			}
-			return e.install(content, hash)
+			return e.install(content, hash, fileUpdatedAt(e.path))
 		} else {
 			downloadErr = err
 		}
@@ -260,7 +294,7 @@ func (e *entry) loadInitial(ctx context.Context) error {
 
 	cached, cacheErr := os.ReadFile(e.path)
 	if cacheErr == nil {
-		if err := e.install(cached, utils.MakeHash(cached)); err == nil {
+		if err := e.install(cached, utils.MakeHash(cached), fileUpdatedAt(e.path)); err == nil {
 			log.Warnln("[Script] %s update failed, using cached script: %s", e.name, downloadErr)
 			return nil
 		} else {
@@ -275,7 +309,14 @@ func (e *entry) compile(content []byte) error {
 	return err
 }
 
-func (e *entry) install(content []byte, hash utils.HashType) error {
+func fileUpdatedAt(path string) time.Time {
+	if stat, err := os.Stat(path); err == nil {
+		return stat.ModTime()
+	}
+	return time.Now()
+}
+
+func (e *entry) install(content []byte, hash utils.HashType, updatedAt time.Time) error {
 	program, err := e.compileProgram(content)
 	if err != nil {
 		return err
@@ -283,6 +324,7 @@ func (e *entry) install(content []byte, hash utils.HashType) error {
 	e.mutex.Lock()
 	e.program = program
 	e.hash = hash
+	e.updatedAt = updatedAt
 	e.mutex.Unlock()
 	return nil
 }
@@ -355,6 +397,9 @@ func (e *entry) refresh(ctx context.Context) error {
 	if oldHash.Equal(hash) {
 		now := time.Now()
 		_ = os.Chtimes(e.path, now, now)
+		e.mutex.Lock()
+		e.updatedAt = now
+		e.mutex.Unlock()
 		return nil
 	}
 	program, err := e.compileProgram(content)
@@ -367,6 +412,7 @@ func (e *entry) refresh(ctx context.Context) error {
 	e.mutex.Lock()
 	e.program = program
 	e.hash = hash
+	e.updatedAt = fileUpdatedAt(e.path)
 	e.mutex.Unlock()
 	log.Infoln("[Script] %s's content update", e.name)
 	return nil
@@ -388,4 +434,69 @@ func (m *Manager) Close() error {
 		m.pullWaitGroup.Wait()
 	})
 	return nil
+}
+
+func (m *Manager) SetSourcePath(path string) {
+	m.sourceMutex.Lock()
+	m.sourcePath = path
+	m.sourceMutex.Unlock()
+}
+
+func (m *Manager) SourcePath() string {
+	m.sourceMutex.RLock()
+	defer m.sourceMutex.RUnlock()
+	return m.sourcePath
+}
+
+func (m *Manager) Snapshot() *orderedmap.OrderedMap[string, Info] {
+	snapshot := orderedmap.New[string, Info](len(m.entries))
+	for _, scriptEntry := range m.entries {
+		snapshot.Set(scriptEntry.name, scriptEntry.info())
+	}
+	return snapshot
+}
+
+func (m *Manager) Get(name string) (Info, bool) {
+	scriptEntry, found := m.byName[name]
+	if !found {
+		return Info{}, false
+	}
+	return scriptEntry.info(), true
+}
+
+func (e *entry) info() Info {
+	e.mutex.RLock()
+	defer e.mutex.RUnlock()
+
+	match := ""
+	if e.match != nil {
+		match = e.match.String()
+	}
+	maxBodySize := e.maxBodySize
+	if maxBodySize >= 0 {
+		maxBodySize /= 1024
+	}
+	info := Info{
+		Enable:   e.enable,
+		Debug:    e.debug,
+		Type:     e.scriptType,
+		Match:    match,
+		Cron:     e.cronExpression,
+		Path:     e.path,
+		URL:      e.url,
+		Interval: int64(e.interval / time.Second),
+		Options: InfoOptions{
+			Timeout:        int64(e.timeout / time.Second),
+			BinaryBodyMode: e.binaryBodyMode,
+			RequiresBody:   e.requiresBody,
+			MaxBodySize:    maxBodySize,
+			IndirectEval:   e.indirectEval,
+		},
+		Argument: e.argument,
+	}
+	if !e.updatedAt.IsZero() {
+		updatedAt := e.updatedAt
+		info.UpdatedAt = &updatedAt
+	}
+	return info
 }

@@ -52,8 +52,9 @@ var (
 	mux sync.RWMutex
 
 	moduleAccessMux sync.RWMutex
-	moduleReloadMux sync.Mutex
+	configReloadMux sync.Mutex
 	activeModules   *modules.Manager
+	scriptAccessMux sync.RWMutex
 	activeScripts   *script.Manager
 )
 
@@ -91,6 +92,9 @@ func ParseWithPath(path string) (*config.Config, error) {
 	}
 	if cfg.Modules != nil {
 		cfg.Modules.SetSourcePath(path)
+	}
+	if cfg.Scripts != nil {
+		cfg.Scripts.SetSourcePath(path)
 	}
 	return cfg, nil
 }
@@ -165,8 +169,8 @@ func updateModuleManager(next *modules.Manager) {
 }
 
 func reloadModules(expected *modules.Manager) error {
-	moduleReloadMux.Lock()
-	defer moduleReloadMux.Unlock()
+	configReloadMux.Lock()
+	defer configReloadMux.Unlock()
 
 	if !isActiveModuleManager(expected) {
 		return nil
@@ -241,8 +245,8 @@ func GetModuleConfig() ([]byte, bool) {
 }
 
 func SetModuleEnabled(name string, enabled bool) error {
-	moduleReloadMux.Lock()
-	defer moduleReloadMux.Unlock()
+	configReloadMux.Lock()
+	defer configReloadMux.Unlock()
 
 	path := C.Path.Config()
 	moduleAccessMux.RLock()
@@ -269,11 +273,86 @@ func SetModuleEnabled(name string, enabled bool) error {
 	if cfg.Modules != nil {
 		cfg.Modules.SetSourcePath(path)
 	}
+	if cfg.Scripts != nil {
+		cfg.Scripts.SetSourcePath(path)
+	}
 
 	if changed {
 		if err := writeConfigAtomic(path, updated); err != nil {
 			if cfg.Modules != nil {
 				_ = cfg.Modules.Close()
+			}
+			if cfg.Scripts != nil {
+				_ = cfg.Scripts.Close()
+			}
+			return err
+		}
+	}
+
+	ApplyConfig(cfg, true)
+	return nil
+}
+
+func GetScripts() *orderedmap.OrderedMap[string, script.Info] {
+	scriptAccessMux.RLock()
+	manager := activeScripts
+	scriptAccessMux.RUnlock()
+	if manager == nil {
+		return orderedmap.New[string, script.Info]()
+	}
+	return manager.Snapshot()
+}
+
+func GetScript(name string) (script.Info, bool) {
+	scriptAccessMux.RLock()
+	manager := activeScripts
+	scriptAccessMux.RUnlock()
+	if manager == nil {
+		return script.Info{}, false
+	}
+	return manager.Get(name)
+}
+
+func SetScriptEnabled(name string, enabled bool) error {
+	configReloadMux.Lock()
+	defer configReloadMux.Unlock()
+
+	path := C.Path.Config()
+	scriptAccessMux.RLock()
+	manager := activeScripts
+	scriptAccessMux.RUnlock()
+	if manager != nil {
+		if sourcePath := manager.SourcePath(); sourcePath != "" {
+			path = sourcePath
+		}
+	}
+	source, err := readConfig(path)
+	if err != nil {
+		return err
+	}
+	updated, changed, err := script.SetEnabled(source, name, enabled)
+	if err != nil {
+		return err
+	}
+
+	cfg, err := ParseWithBytes(updated)
+	if err != nil {
+		return err
+	}
+	if cfg.Modules != nil {
+		cfg.Modules.SetSourcePath(path)
+	}
+	if cfg.Scripts != nil {
+		cfg.Scripts.SetSourcePath(path)
+	}
+
+	if changed {
+		if err := writeConfigAtomic(path, updated); err != nil {
+			if cfg.Modules != nil {
+				_ = cfg.Modules.Close()
+			}
+			if cfg.Scripts != nil {
+				_ = cfg.Scripts.Close()
 			}
 			return err
 		}
@@ -573,8 +652,10 @@ func updateMitm(mitmConfig *config.Mitm, rewriteConfig *config.Rewrite, scripts 
 	if scripts != nil {
 		scripts.Start()
 	}
+	scriptAccessMux.Lock()
 	previousScripts := activeScripts
 	activeScripts = scripts
+	scriptAccessMux.Unlock()
 	tunnel.UpdateMitmWithRewriteAndScripts(mitmConfig, rewriteConfig, scripts)
 	if previousScripts != nil && previousScripts != scripts {
 		_ = previousScripts.Close()
@@ -765,9 +846,12 @@ func Shutdown() {
 	resolver.StoreFakePoolState()
 
 	closeSmart()
-	if activeScripts != nil {
-		_ = activeScripts.Close()
-		activeScripts = nil
+	scriptAccessMux.Lock()
+	scripts := activeScripts
+	activeScripts = nil
+	scriptAccessMux.Unlock()
+	if scripts != nil {
+		_ = scripts.Close()
 	}
 
 	log.Warnln("Mihomo shutting down")
