@@ -17,29 +17,76 @@ type contentCoding struct {
 	rawDeflate bool
 }
 
+// BodyEncoding records the Content-Encoding chain needed to restore a decoded HTTP body.
+type BodyEncoding struct {
+	codings []contentCoding
+}
+
+// DecodeBodyContent decodes an HTTP body according to its Content-Encoding header values.
+func DecodeBodyContent(body []byte, headerValues []string, maxSize int64) ([]byte, BodyEncoding, bool, error) {
+	decoded, codings, tooLarge, err := decodeBodyLimit(body, headerValues, maxSize)
+	return decoded, BodyEncoding{codings: codings}, tooLarge, err
+}
+
+// ParseBodyEncoding records a Content-Encoding chain without decoding a body.
+func ParseBodyEncoding(headerValues []string) BodyEncoding {
+	return BodyEncoding{codings: parseContentCodings(headerValues)}
+}
+
+// Matches reports whether headerValues describe the same Content-Encoding chain.
+func (e BodyEncoding) Matches(headerValues []string) bool {
+	other := parseContentCodings(headerValues)
+	if len(e.codings) != len(other) {
+		return false
+	}
+	for index := range e.codings {
+		if e.codings[index].name != other[index].name {
+			return false
+		}
+	}
+	return true
+}
+
+// Encode restores the recorded Content-Encoding chain to a decoded HTTP body.
+func (e BodyEncoding) Encode(body []byte) ([]byte, error) {
+	return encodeBody(body, e.codings)
+}
+
 func decodeBody(body []byte, headerValues []string) ([]byte, []contentCoding, error) {
+	decoded, codings, _, err := decodeBodyLimit(body, headerValues, -1)
+	return decoded, codings, err
+}
+
+func decodeBodyLimit(body []byte, headerValues []string, maxSize int64) ([]byte, []contentCoding, bool, error) {
 	codings := parseContentCodings(headerValues)
 	decoded := body
+	if maxSize >= 0 && int64(len(decoded)) > maxSize {
+		return nil, codings, true, nil
+	}
 	for index := len(codings) - 1; index >= 0; index-- {
 		coding := &codings[index]
+		var tooLarge bool
 		var err error
 		switch coding.name {
 		case "identity":
 			continue
 		case "gzip", "x-gzip":
-			decoded, err = readGzip(decoded)
+			decoded, tooLarge, err = readGzip(decoded, maxSize)
 		case "deflate":
-			decoded, coding.rawDeflate, err = readDeflate(decoded)
+			decoded, coding.rawDeflate, tooLarge, err = readDeflate(decoded, maxSize)
 		case "br":
-			decoded, err = io.ReadAll(brotli.NewReader(bytes.NewReader(decoded)))
+			decoded, tooLarge, err = readBodyLimit(brotli.NewReader(bytes.NewReader(decoded)), maxSize)
 		default:
-			return nil, nil, fmt.Errorf("unsupported content encoding %q", coding.name)
+			return nil, nil, false, fmt.Errorf("unsupported content encoding %q", coding.name)
 		}
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
+		}
+		if tooLarge {
+			return nil, codings, true, nil
 		}
 	}
-	return decoded, codings, nil
+	return decoded, codings, false, nil
 }
 
 func encodeBody(body []byte, codings []contentCoding) ([]byte, error) {
@@ -78,27 +125,42 @@ func parseContentCodings(headerValues []string) []contentCoding {
 	return codings
 }
 
-func readGzip(body []byte) ([]byte, error) {
+func readGzip(body []byte, maxSize int64) ([]byte, bool, error) {
 	reader, err := gzip.NewReader(bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer reader.Close()
-	return io.ReadAll(reader)
+	return readBodyLimit(reader, maxSize)
 }
 
-func readDeflate(body []byte) ([]byte, bool, error) {
+func readDeflate(body []byte, maxSize int64) ([]byte, bool, bool, error) {
 	reader, err := zlib.NewReader(bytes.NewReader(body))
 	if err == nil {
 		defer reader.Close()
-		decoded, readErr := io.ReadAll(reader)
-		return decoded, false, readErr
+		decoded, tooLarge, readErr := readBodyLimit(reader, maxSize)
+		return decoded, false, tooLarge, readErr
 	}
 
 	rawReader := flate.NewReader(bytes.NewReader(body))
 	defer rawReader.Close()
-	decoded, rawErr := io.ReadAll(rawReader)
-	return decoded, true, rawErr
+	decoded, tooLarge, rawErr := readBodyLimit(rawReader, maxSize)
+	return decoded, true, tooLarge, rawErr
+}
+
+func readBodyLimit(reader io.Reader, maxSize int64) ([]byte, bool, error) {
+	if maxSize < 0 {
+		content, err := io.ReadAll(reader)
+		return content, false, err
+	}
+	content, err := io.ReadAll(io.LimitReader(reader, maxSize+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(content)) > maxSize {
+		return nil, true, nil
+	}
+	return content, false, nil
 }
 
 func writeGzip(body []byte) ([]byte, error) {

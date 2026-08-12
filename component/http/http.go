@@ -44,6 +44,9 @@ func HttpRequest(ctx context.Context, url, method string, header map[string][]st
 	if err != nil {
 		return nil, err
 	}
+	if opt.host != nil {
+		req.Host = *opt.host
+	}
 
 	for k, v := range header {
 		for _, v := range v {
@@ -86,7 +89,12 @@ func HttpRequest(ctx context.Context, url, method string, header map[string][]st
 		TLSClientConfig: tlsConfig,
 	}
 
-	client := http.Client{Transport: transport}
+	client := http.Client{Transport: transport, Jar: opt.jar}
+	if opt.autoRedirect != nil && !*opt.autoRedirect {
+		client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
 	return client.Do(req)
 }
 
@@ -96,6 +104,9 @@ type option struct {
 	specialProxy string
 	dialer       C.Dialer
 	caOption     ca.Option
+	jar          http.CookieJar
+	autoRedirect *bool
+	host         *string
 }
 
 func WithSpecialProxy(name string) Option {
@@ -113,5 +124,23 @@ func WithDialer(dialer C.Dialer) Option {
 func WithCAOption(caOption ca.Option) Option {
 	return func(opt *option) {
 		opt.caOption = caOption
+	}
+}
+
+func WithCookieJar(jar http.CookieJar) Option {
+	return func(opt *option) {
+		opt.jar = jar
+	}
+}
+
+func WithAutoRedirect(enabled bool) Option {
+	return func(opt *option) {
+		opt.autoRedirect = &enabled
+	}
+}
+
+func WithHost(host string) Option {
+	return func(opt *option) {
+		opt.host = &host
 	}
 }

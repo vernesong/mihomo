@@ -24,6 +24,7 @@ import (
 	"github.com/metacubex/mihomo/component/proxydialer"
 	"github.com/metacubex/mihomo/component/resolver"
 	R "github.com/metacubex/mihomo/component/rewrite"
+	S "github.com/metacubex/mihomo/component/script"
 	"github.com/metacubex/mihomo/component/slowdown"
 	"github.com/metacubex/mihomo/component/sniffer"
 	C "github.com/metacubex/mihomo/constant"
@@ -73,6 +74,7 @@ var (
 	protocolSniffer   = atomic.NewTypedValue[*sniffer.ProtocolDispatcher](nil)
 	mitmConfig        *M.Config
 	rewriteConfig     *R.Config
+	scriptManager     *S.Manager
 	mitmHandler       M.Handler = M.NopHandler{}
 	mitmInterceptor   *M.Interceptor
 
@@ -314,12 +316,17 @@ func UpdateMitm(config *M.Config, rewriteConfig ...*R.Config) {
 
 // UpdateMitmWithRewrite atomically replaces both MITM and rewrite configuration.
 func UpdateMitmWithRewrite(config *M.Config, rewrite *R.Config) {
+	UpdateMitmWithRewriteAndScripts(config, rewrite, nil)
+}
+
+func UpdateMitmWithRewriteAndScripts(config *M.Config, rewrite *R.Config, scripts *S.Manager) {
 	M.SetCaptureEnabled(config != nil && config.Capture)
 	configMux.Lock()
 	defer configMux.Unlock()
 	rewriteConfig = rewrite
+	scriptManager = scripts
 	mitmConfig = config
-	mitmInterceptor = M.NewWithRewrite(config, mitmHandler, rewriteConfig)
+	mitmInterceptor = M.NewWithRewriteAndScripts(config, mitmHandler, rewriteConfig, scriptManager)
 }
 
 func SetMitmHandler(handler M.Handler) {
@@ -329,7 +336,7 @@ func SetMitmHandler(handler M.Handler) {
 	configMux.Lock()
 	defer configMux.Unlock()
 	mitmHandler = handler
-	mitmInterceptor = M.NewWithRewrite(mitmConfig, mitmHandler, rewriteConfig)
+	mitmInterceptor = M.NewWithRewriteAndScripts(mitmConfig, mitmHandler, rewriteConfig, scriptManager)
 }
 
 func currentMitmInterceptor() *M.Interceptor {
@@ -571,7 +578,7 @@ func handleUDPConn(packet C.PacketAdapter) {
 			logMetadata(metadata, rule, rawPc)
 
 			// recover info to dialMetadata for smart
-			dialMetadata.Host = metadata.Host 
+			dialMetadata.Host = metadata.Host
 			dialMetadata.SmartTarget = metadata.SmartTarget
 			dialMetadata.SmartBlock = metadata.SmartBlock
 
@@ -868,7 +875,7 @@ func match(metadata *C.Metadata, helper C.RuleMatchHelper) (C.Proxy, C.Rule, err
 					}
 				}
 
-				if ! smart {
+				if !smart {
 					metadata.SmartTarget = ""
 				} else {
 					metadata.SmartBlock = "normal"

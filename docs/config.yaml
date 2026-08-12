@@ -143,6 +143,36 @@ tls:
 #       headers: # 也接受 map 列表；列表形式可保留重复 Header
 #         - Content-Type: application/x-protobuf
 
+# JavaScript 脚本；HTTP 脚本仅处理已经被 mitm.hostname 拦截的流量，并按配置顺序依次执行
+# scripts:
+#   request-script:
+#     enable: true # 必填
+#     debug: false # 输出脚本开始、完成、console 与耗时信息
+#     type: http-request # http-request、http-response 或 cron
+#     match: '^https://api\.example\.com/' # http-request/http-response 必填
+#     path: ./scripts/request.js # 仅 path 时为本地脚本，不自动更新
+#     url: https://example.com/request.js # url 会在加载时更新并保存到 path
+#     interval: 600 # 远端脚本更新间隔（秒）；0 表示不定时更新
+#     options:
+#       timeout: 5 # 脚本与异步回调的总超时（秒）
+#       binary-body-mode: false # true 时 body 使用 Uint8Array，否则使用 UTF-8 字符串
+#       requires-body: false # 是否缓冲并向脚本提供 body
+#       max-body-size: 1024 # KiB；-1 表示无限制，超过时跳过当前脚本
+#     argument: '{"region":"sg"}' # 通过 $argument 获取
+#   response-script:
+#     enable: true
+#     type: http-response
+#     match: '^https://api\.example\.com/'
+#     url: https://example.com/response.js # 省略 path 时保存到 scripts/<URL 的 MD5>
+#   scheduled-script:
+#     enable: true
+#     type: cron
+#     cron: '0 2 * * *' # 支持 5 栏或带秒的 6 栏表达式，使用系统时区
+#     path: ./scripts/cron.js
+# 脚本提供 Surge 兼容的 $request、$response、$argument、$done()、$httpClient 与 $persistentStore；
+# 不提供 $notification。多个脚本匹配时共享前一个脚本修改后的请求/响应，并按本节从上到下执行。
+# 脚本超时或执行失败时记录错误，保留当前请求/响应，并继续执行后续匹配脚本。
+
 external-controller: 0.0.0.0:9093 # RESTful API 监听地址
 external-controller-tls: 0.0.0.0:9443 # RESTful API HTTPS 监听地址，需要配置 tls 部分配置文件
 # secret: "123456" # `Authorization:Bearer ${secret}`

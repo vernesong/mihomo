@@ -29,6 +29,7 @@ import (
 	"github.com/metacubex/mihomo/component/profile/cachefile"
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/component/resource"
+	"github.com/metacubex/mihomo/component/script"
 	"github.com/metacubex/mihomo/component/smart/lightgbm"
 	"github.com/metacubex/mihomo/component/sniffer"
 	"github.com/metacubex/mihomo/component/trie"
@@ -53,6 +54,7 @@ var (
 	moduleAccessMux sync.RWMutex
 	moduleReloadMux sync.Mutex
 	activeModules   *modules.Manager
+	activeScripts   *script.Manager
 )
 
 func readConfig(path string) ([]byte, error) {
@@ -123,7 +125,7 @@ func applyConfig(cfg *config.Config, force bool) {
 	updateProxies(cfg.Proxies, cfg.Providers)
 	updateRules(cfg.Rules, cfg.SubRules, cfg.RuleProviders)
 	updateSniffer(cfg.Sniffer)
-	updateMitm(cfg.Mitm, cfg.Rewrite)
+	updateMitm(cfg.Mitm, cfg.Rewrite, cfg.Scripts)
 	updateHosts(cfg.Hosts)
 	updateGeneral(cfg.General, true)
 	updateNTP(cfg.NTP)
@@ -564,11 +566,19 @@ func updateSniffer(snifferConfig *sniffer.Config) {
 	}
 }
 
-func updateMitm(mitmConfig *config.Mitm, rewriteConfig *config.Rewrite) {
+func updateMitm(mitmConfig *config.Mitm, rewriteConfig *config.Rewrite, scripts *config.Scripts) {
 	if mitmConfig != nil && mitmConfig.Capture {
 		log.Warnln(mitm.CaptureWarning)
 	}
-	tunnel.UpdateMitmWithRewrite(mitmConfig, rewriteConfig)
+	if scripts != nil {
+		scripts.Start()
+	}
+	previousScripts := activeScripts
+	activeScripts = scripts
+	tunnel.UpdateMitmWithRewriteAndScripts(mitmConfig, rewriteConfig, scripts)
+	if previousScripts != nil && previousScripts != scripts {
+		_ = previousScripts.Close()
+	}
 }
 
 func updateTunnels(tunnels []LC.Tunnel) {
@@ -755,6 +765,10 @@ func Shutdown() {
 	resolver.StoreFakePoolState()
 
 	closeSmart()
+	if activeScripts != nil {
+		_ = activeScripts.Close()
+		activeScripts = nil
+	}
 
 	log.Warnln("Mihomo shutting down")
 }

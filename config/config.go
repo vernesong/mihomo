@@ -30,6 +30,7 @@ import (
 	"github.com/metacubex/mihomo/component/process"
 	"github.com/metacubex/mihomo/component/resolver"
 	WR "github.com/metacubex/mihomo/component/rewrite"
+	S "github.com/metacubex/mihomo/component/script"
 	"github.com/metacubex/mihomo/component/smart/lightgbm"
 	"github.com/metacubex/mihomo/component/sniffer"
 	"github.com/metacubex/mihomo/component/trie"
@@ -204,6 +205,7 @@ type TLS struct {
 
 type Mitm = M.Config
 type Rewrite = WR.Config
+type Scripts = S.Manager
 
 // Config is mihomo config manager
 type Config struct {
@@ -227,6 +229,7 @@ type Config struct {
 	TLS           *TLS
 	Mitm          *Mitm
 	Rewrite       *Rewrite
+	Scripts       *Scripts
 	Modules       *modules.Manager
 }
 
@@ -475,26 +478,27 @@ type RawConfig struct {
 	LgbmUpdateInterval            int                     `yaml:"lgbm-update-interval" json:"lgbm-update-interval"`
 	LgbmUrl                       string                  `yaml:"lgbm-url" json:"lgbm-url"`
 
-	ProxyProvider map[string]map[string]any `yaml:"proxy-providers" json:"proxy-providers"`
-	RuleProvider  map[string]map[string]any `yaml:"rule-providers" json:"rule-providers"`
-	Proxy         []map[string]any          `yaml:"proxies" json:"proxies"`
-	ProxyGroup    []map[string]any          `yaml:"proxy-groups" json:"proxy-groups"`
-	Rule          []string                  `yaml:"rules" json:"rule"`
-	SubRules      map[string][]string       `yaml:"sub-rules" json:"sub-rules"`
-	Listeners     []map[string]any          `yaml:"listeners" json:"listeners"`
-	Hosts         map[string]any            `yaml:"hosts" json:"hosts"`
-	DNS           RawDNS                    `yaml:"dns" json:"dns"`
-	NTP           RawNTP                    `yaml:"ntp" json:"ntp"`
-	Tun           RawTun                    `yaml:"tun" json:"tun"`
-	TuicServer    RawTuicServer             `yaml:"tuic-server" json:"tuic-server"`
-	IPTables      RawIPTables               `yaml:"iptables" json:"iptables"`
-	Experimental  RawExperimental           `yaml:"experimental" json:"experimental"`
-	Profile       RawProfile                `yaml:"profile" json:"profile"`
-	GeoXUrl       RawGeoXUrl                `yaml:"geox-url" json:"geox-url"`
-	Sniffer       RawSniffer                `yaml:"sniffer" json:"sniffer"`
-	TLS           RawTLS                    `yaml:"tls" json:"tls"`
-	Mitm          *RawMitm                  `yaml:"mitm" json:"mitm"`
-	Rewrite       *RawRewrite               `yaml:"rewrite" json:"rewrite"`
+	ProxyProvider map[string]map[string]any                 `yaml:"proxy-providers" json:"proxy-providers"`
+	RuleProvider  map[string]map[string]any                 `yaml:"rule-providers" json:"rule-providers"`
+	Proxy         []map[string]any                          `yaml:"proxies" json:"proxies"`
+	ProxyGroup    []map[string]any                          `yaml:"proxy-groups" json:"proxy-groups"`
+	Rule          []string                                  `yaml:"rules" json:"rule"`
+	SubRules      map[string][]string                       `yaml:"sub-rules" json:"sub-rules"`
+	Listeners     []map[string]any                          `yaml:"listeners" json:"listeners"`
+	Hosts         map[string]any                            `yaml:"hosts" json:"hosts"`
+	DNS           RawDNS                                    `yaml:"dns" json:"dns"`
+	NTP           RawNTP                                    `yaml:"ntp" json:"ntp"`
+	Tun           RawTun                                    `yaml:"tun" json:"tun"`
+	TuicServer    RawTuicServer                             `yaml:"tuic-server" json:"tuic-server"`
+	IPTables      RawIPTables                               `yaml:"iptables" json:"iptables"`
+	Experimental  RawExperimental                           `yaml:"experimental" json:"experimental"`
+	Profile       RawProfile                                `yaml:"profile" json:"profile"`
+	GeoXUrl       RawGeoXUrl                                `yaml:"geox-url" json:"geox-url"`
+	Sniffer       RawSniffer                                `yaml:"sniffer" json:"sniffer"`
+	TLS           RawTLS                                    `yaml:"tls" json:"tls"`
+	Mitm          *RawMitm                                  `yaml:"mitm" json:"mitm"`
+	Rewrite       *RawRewrite                               `yaml:"rewrite" json:"rewrite"`
+	Scripts       *orderedmap.OrderedMap[string, RawScript] `yaml:"scripts" json:"scripts"`
 
 	ClashForAndroid RawClashForAndroid `yaml:"clash-for-android" json:"clash-for-android"`
 }
@@ -528,29 +532,29 @@ func Parse(buf []byte) (*Config, error) {
 
 func DefaultRawConfig() *RawConfig {
 	return &RawConfig{
-		AllowLan:          false,
-		BindAddress:       "*",
-		LanAllowedIPs:     []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")},
-		IPv6:              true,
-		Mode:              T.Rule,
-		GeoAutoUpdate:     false,
-		GeoUpdateInterval: 24,
-		GeodataMode:       geodata.GeodataMode(),
-		GeodataLoader:     "memconservative",
-		LgbmAutoUpdate:    false,
-		LgbmUpdateInterval:72,
-		LgbmUrl:           lightgbm.GetModelDownloadURL(),
-		UnifiedDelay:      false,
-		Authentication:    []string{},
-		LogLevel:          log.INFO,
-		Hosts:             map[string]any{},
-		Rule:              []string{},
-		Proxy:             []map[string]any{},
-		ProxyGroup:        []map[string]any{},
-		TCPConcurrent:     false,
-		FindProcessMode:   process.FindProcessStrict,
-		GlobalUA:          "clash.meta/" + C.Version,
-		ETagSupport:       true,
+		AllowLan:           false,
+		BindAddress:        "*",
+		LanAllowedIPs:      []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")},
+		IPv6:               true,
+		Mode:               T.Rule,
+		GeoAutoUpdate:      false,
+		GeoUpdateInterval:  24,
+		GeodataMode:        geodata.GeodataMode(),
+		GeodataLoader:      "memconservative",
+		LgbmAutoUpdate:     false,
+		LgbmUpdateInterval: 72,
+		LgbmUrl:            lightgbm.GetModelDownloadURL(),
+		UnifiedDelay:       false,
+		Authentication:     []string{},
+		LogLevel:           log.INFO,
+		Hosts:              map[string]any{},
+		Rule:               []string{},
+		Proxy:              []map[string]any{},
+		ProxyGroup:         []map[string]any{},
+		TCPConcurrent:      false,
+		FindProcessMode:    process.FindProcessStrict,
+		GlobalUA:           "clash.meta/" + C.Version,
+		ETagSupport:        true,
 		DNS: RawDNS{
 			Enable:         false,
 			IPv6:           false,
@@ -735,6 +739,18 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 	}
 	config.Rewrite = rewriteConfig
 
+	scripts, err := parseScripts(rawCfg.Scripts)
+	if err != nil {
+		return nil, err
+	}
+	config.Scripts = scripts
+	scriptsParsed := scripts != nil
+	defer func() {
+		if scriptsParsed && config.Scripts != nil {
+			_ = config.Scripts.Close()
+		}
+	}()
+
 	proxies, providers, err := parseProxies(rawCfg)
 	if err != nil {
 		return nil, err
@@ -812,6 +828,7 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 	elapsedTime := time.Since(startTime) / time.Millisecond                     // duration in ms
 	log.Infoln("Initial configuration complete, total time: %dms", elapsedTime) //Segment finished in xxm
 
+	scriptsParsed = false
 	return config, nil
 }
 

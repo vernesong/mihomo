@@ -16,6 +16,7 @@ import (
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/component/ca"
 	R "github.com/metacubex/mihomo/component/rewrite"
+	S "github.com/metacubex/mihomo/component/script"
 	"github.com/metacubex/mihomo/component/sniffer"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/ntp"
@@ -72,6 +73,7 @@ func (p downstreamProtocol) standardPort() uint16 {
 type Interceptor struct {
 	config  *Config
 	rewrite *R.Config
+	scripts *S.Manager
 	handler Handler
 }
 
@@ -85,13 +87,17 @@ func New(config *Config, handler Handler, rewriteConfig ...*R.Config) *Intercept
 
 // NewWithRewrite constructs an interceptor with an explicit rewrite configuration.
 func NewWithRewrite(config *Config, handler Handler, rewrite *R.Config) *Interceptor {
+	return NewWithRewriteAndScripts(config, handler, rewrite, nil)
+}
+
+func NewWithRewriteAndScripts(config *Config, handler Handler, rewrite *R.Config, scripts *S.Manager) *Interceptor {
 	if config == nil || !config.Enabled() {
 		return nil
 	}
 	if handler == nil {
 		handler = NopHandler{}
 	}
-	return &Interceptor{config: config, rewrite: rewrite, handler: handler}
+	return &Interceptor{config: config, rewrite: rewrite, scripts: scripts, handler: handler}
 }
 
 func (i *Interceptor) Handle(conn *N.BufferedConn, metadata *C.Metadata, dial DialContext) (bool, error) {
@@ -305,11 +311,19 @@ func (i *Interceptor) newReverseProxy(transport http.RoundTripper, metadata *C.M
 			if i.rewrite != nil {
 				i.rewrite.RewriteResponse(session.Request(), response)
 			}
+			if i.scripts != nil {
+				if i.scripts.ProcessResponse(session.Request(), response, session.ID()) {
+					return http.ErrAbortHandler
+				}
+			}
 			session.SetResponse(response)
 			session.capture.observeResponse(response)
 			return nil
 		},
 		ErrorHandler: func(writer http.ResponseWriter, request *http.Request, err error) {
+			if errors.Is(err, http.ErrAbortHandler) {
+				panic(http.ErrAbortHandler)
+			}
 			session, _ := request.Context().Value(sessionContextKey{}).(*Session)
 			if session == nil {
 				session = newSession(request, metadata)
@@ -331,6 +345,14 @@ func (i *Interceptor) newReverseProxy(transport http.RoundTripper, metadata *C.M
 			response = i.rewrite.RewriteRequest(request)
 			session.SetRequest(request)
 		}
+		if response == nil && i.scripts != nil {
+			var abort bool
+			response, abort = i.scripts.ProcessRequest(request, session.ID())
+			session.SetRequest(request)
+			if abort {
+				panic(http.ErrAbortHandler)
+			}
+		}
 		if response == nil {
 			newRequest, handlerResponse := i.handler.HandleRequest(session)
 			response = handlerResponse
@@ -343,6 +365,11 @@ func (i *Interceptor) newReverseProxy(transport http.RoundTripper, metadata *C.M
 		if response != nil {
 			if i.rewrite != nil {
 				i.rewrite.RewriteResponse(request, response)
+			}
+			if i.scripts != nil {
+				if i.scripts.ProcessResponse(request, response, session.ID()) {
+					panic(http.ErrAbortHandler)
+				}
 			}
 			session.SetResponse(response)
 			session.capture.observeResponse(response)

@@ -1078,7 +1078,7 @@ func (p *overrideExprParser) match(kind overrideTokenKind) bool {
 func (p *overrideExprParser) expect(kind overrideTokenKind, message string) (overrideToken, error) {
 	token := p.next()
 	if token.kind != kind {
-		return overrideToken{}, p.errorf(token, message)
+		return overrideToken{}, p.errorf(token, "%s", message)
 	}
 	return token, nil
 }

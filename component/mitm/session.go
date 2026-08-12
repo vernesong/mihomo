@@ -6,6 +6,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
 
 	"github.com/metacubex/http"
@@ -32,6 +33,7 @@ func (NopHandler) HandleResponse(*Session) *http.Response {
 func (NopHandler) HandleError(*Session, error) {}
 
 type Session struct {
+	id       string
 	request  *http.Request
 	response *http.Response
 	metadata *C.Metadata
@@ -39,6 +41,10 @@ type Session struct {
 
 	propsMutex sync.RWMutex
 	props      map[string]any
+}
+
+func (s *Session) ID() string {
+	return s.id
 }
 
 func (s *Session) Request() *http.Request {
@@ -135,6 +141,7 @@ func newSession(request *http.Request, metadata *C.Metadata) *Session {
 	sessionMetadata := metadata.Clone()
 	sessionMetadata.URL = fullRequestURL(request)
 	session := &Session{
+		id:       utils.NewUUIDV4().String(),
 		request:  request,
 		metadata: sessionMetadata,
 		props:    make(map[string]any),
