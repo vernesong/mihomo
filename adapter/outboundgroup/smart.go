@@ -558,7 +558,7 @@ func (s *Smart) filterProxies(metadata *C.Metadata, wildcardTarget string, names
 		if weights != nil && w < smart.AllowedWeight {
 			continue
 		}
-		if wtFailNodes[name] {
+		if wtFailNodes[name] != 0 {
 			failedSelected = append(failedSelected, proxy)
 		} else {
 			selected = append(selected, proxy)
@@ -566,7 +566,11 @@ func (s *Smart) filterProxies(metadata *C.Metadata, wildcardTarget string, names
 	}
 
 	if wtBlocked {
-		selected = append(selected, failedSelected...)
+		for _, p := range failedSelected {
+			if wtFailNodes[p.Name()] != 1 {
+				selected = append(selected, p)
+			}
+		}
 	}
 
 	for name := range wtFailNodes {
@@ -1726,7 +1730,7 @@ func (s *Smart) markNodeFailure(metadata *C.Metadata, proxyName string, isDegrad
 	return failedBlock
 }
 
-func (s *Smart) closeSameConnection(metadata *C.Metadata, proxyName, target, asnNumber string, isDegraded bool) {
+func (s *Smart) closeSameConnection(metadata *C.Metadata, proxyName, target, asnNumber string, force bool) {
 	statistic.DefaultManager.RangeSmartTarget(target, func(id string) bool {
 		if id == metadata.UUID {
 			return true
@@ -1738,7 +1742,7 @@ func (s *Smart) closeSameConnection(metadata *C.Metadata, proxyName, target, asn
 		if !lo.Contains(tracker.Chains(), s.Name()) {
 			return true
 		}
-		if isDegraded {
+		if force {
 			tracker.Info().Metadata.SmartBlock = "degraded"
 			_ = tracker.Close()
 		} else if proxyName != "" {
@@ -1810,11 +1814,12 @@ func (s *Smart) getPriorityFactor(proxyName string) float64 {
 }
 
 func (s *Smart) applyMaxFailedTimes() {
-	if proxyCount := len(s.GetProxies(true)); proxyCount > 0 && s.hostFailLimit >= proxyCount {
-		s.hostFailLimit = proxyCount - 1
-		if s.hostFailLimit < 1 {
-			s.hostFailLimit = 1
+	if proxyCount := len(s.GetProxies(true)); proxyCount > 0 {
+		hostFailLimit := proxyCount / 3
+		if hostFailLimit < 2 {
+			hostFailLimit = 2
 		}
+		s.hostFailLimit = hostFailLimit
 	}
 }
 

@@ -34,8 +34,8 @@ type tcpInfoV0 struct {
 func readTCPStats(rawConn syscall.RawConn) *Stats {
 	var info tcpInfoV0
 	var ctrlErr error
+	var bytesReturned uint32
 	rawConn.Control(func(fd uintptr) {
-		var bytesReturned uint32
 		version := uint32(0)
 		ctrlErr = syscall.WSAIoctl(
 			syscall.Handle(fd),

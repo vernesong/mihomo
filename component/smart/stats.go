@@ -1214,10 +1214,10 @@ func (s *Store) GetAllNodesForGroup(group, config string) ([]string, error) {
 }
 
 // 域名失败屏蔽
-func (s *Store) GetHostStatus(group, config, wildcardTarget string, extraTargets ...string) (failNodes map[string]bool, lastCheck int64, lastFailure int64, blocked bool) {
+func (s *Store) GetHostStatus(group, config, wildcardTarget string, extraTargets ...string) (failNodes map[string]int, lastCheck int64, lastFailure int64, blocked bool) {
 	now := time.Now().Unix()
 
-	lookup := func(pathPrefix string) (nodes map[string]bool, lastCheck int64, lastFailure int64, blocked bool) {
+	lookup := func(pathPrefix string) (nodes map[string]int, lastCheck int64, lastFailure int64, blocked bool) {
 		hs, _ := hostStatusCache.GetOrStore(pathPrefix, func() *HostStatus { return &HostStatus{} })
 		hs.initOnce.Do(func() {
 			if rawResult, err := s.GetSubBytesByPath(pathPrefix); err == nil {
@@ -1230,16 +1230,18 @@ func (s *Store) GetHostStatus(group, config, wildcardTarget string, extraTargets
 		})
 		hs.mu.RLock()
 		defer hs.mu.RUnlock()
-		for _, codeSet := range hs.Codes {
+		for code, codeSet := range hs.Codes {
 			if codeSet == nil {
 				continue
 			}
 			for nodeName, nodeEntry := range codeSet.Nodes {
 				if nodeEntry == 0 || nodeEntry > now {
 					if nodes == nil {
-						nodes = make(map[string]bool)
+						nodes = make(map[string]int)
 					}
-					nodes[nodeName] = true
+					if oldCode, exists := nodes[nodeName]; !exists || code < oldCode {
+						nodes[nodeName] = code
+					}
 				}
 			}
 		}
@@ -1257,7 +1259,9 @@ func (s *Store) GetHostStatus(group, config, wildcardTarget string, extraTargets
 				failNodes = extraNodes
 			} else {
 				for k, v := range extraNodes {
-					failNodes[k] = v
+					if oldCode, exists := failNodes[k]; !exists || v < oldCode {
+						failNodes[k] = v
+					}
 				}
 			}
 		}
