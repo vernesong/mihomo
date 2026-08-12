@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/metacubex/mihomo/common/utils"
+	F "github.com/metacubex/mihomo/component/httpflow"
 	C "github.com/metacubex/mihomo/constant"
 
 	"github.com/metacubex/http"
@@ -47,6 +48,10 @@ func (s *Session) ID() string {
 	return s.id
 }
 
+func (s *Session) TransactionID() string {
+	return s.id
+}
+
 func (s *Session) Request() *http.Request {
 	return s.request
 }
@@ -80,6 +85,26 @@ func (s *Session) setConnectionID(id string) {
 		s.metadata.UUID = id
 	}
 	s.capture.setConnectionID(id)
+}
+
+func (s *Session) recordResult(result F.Result) {
+	s.recordActions(result.Actions)
+}
+
+func (s *Session) recordActions(actions []F.Action) {
+	recorded := s.capture.recordActions(actions)
+	for _, action := range recorded {
+		logTransactionAction(s.id, action)
+	}
+}
+
+func (s *Session) fail(stage string, source F.Source, err error) {
+	s.capture.setError(stage, source, err)
+	logTransactionFailure(s.id, stage, source, err)
+}
+
+func (s *Session) abort() {
+	s.capture.setAborted()
 }
 
 func (s *Session) GetProperties(key string) (any, bool) {
@@ -140,13 +165,14 @@ func NewResponse(code int, body io.Reader, request *http.Request) *http.Response
 func newSession(request *http.Request, metadata *C.Metadata) *Session {
 	sessionMetadata := metadata.Clone()
 	sessionMetadata.URL = fullRequestURL(request)
+	transactionID := utils.NewUUIDV4().String()
 	session := &Session{
-		id:       utils.NewUUIDV4().String(),
+		id:       transactionID,
 		request:  request,
 		metadata: sessionMetadata,
 		props:    make(map[string]any),
 	}
-	session.capture = beginCaptureSession(request, sessionMetadata)
+	session.capture = beginCaptureSession(request, sessionMetadata, transactionID)
 	return session
 }
 

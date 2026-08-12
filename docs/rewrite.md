@@ -107,7 +107,7 @@ rewrite:
 
 每条 body 规则必须在 `actions` 与 `jq-expression` 中二选一。JQ 使用标准 jq filter 语义。JSON 解析失败或 filter 运行失败时保留原 body。
 
-Body rewrite 会按 `Content-Encoding` 自动解压和重新压缩 `gzip`、`deflate`、`br`，也支持多个编码叠加；修改后会重新计算 `Content-Length`。遇到不支持或损坏的编码时保留原 body。
+Body rewrite 会按 `Content-Encoding` 自动解压和重新压缩 `gzip`、`deflate`、`br`，也支持多个编码叠加；修改后会重新计算 `Content-Length`。遇到不支持或损坏的编码时保留原 body，并在 HTTP 交易中记录 `outcome=failed` 的 rewrite action；交易本身继续执行。
 
 ## Mock
 
@@ -139,3 +139,7 @@ rewrite:
 ```
 
 透明改写后，MITM 抓包接口的 `request.raw_url` 保存客户端原始 URL，`request.url` 保存当前实际连接使用的改写后 URL。没有发生透明改写时两者相同。
+
+## 交易动作与日志
+
+每个命中的 URL、Header、body 或 mock 规则都会在 `/mitm` 交易中生成有序 action。`redirect-302`、`redirect-307`、`reject` 和 `mock` 等本地响应也会写入 `/logs`；结构化字段、动作结果和前端状态处理方式见 [logs.md](./logs.md)。

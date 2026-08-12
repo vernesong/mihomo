@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strconv"
 
+	F "github.com/metacubex/mihomo/component/httpflow"
+
 	"github.com/metacubex/http"
 )
 
@@ -22,8 +24,13 @@ var transparentGIF = []byte{
 }
 
 func (c *Config) RewriteRequest(request *http.Request) *http.Response {
+	return c.ProcessRequest(request).Response
+}
+
+func (c *Config) ProcessRequest(request *http.Request) F.Result {
+	result := F.Result{Decision: F.DecisionContinue}
 	if c == nil || request == nil || request.URL == nil {
-		return nil
+		return result
 	}
 
 	requestURL := absoluteRequestURL(request)
@@ -35,16 +42,57 @@ func (c *Config) RewriteRequest(request *http.Request) *http.Response {
 		switch rule.ruleType {
 		case urlRuleTransparent:
 			if rewrittenURL, err := url.Parse(replacement); err == nil && validUpstreamURL(rewrittenURL) {
+				originalURL := requestURL
+				originalHost := request.Host
 				request.URL = rewrittenURL
 				request.Host = rewrittenURL.Host
 				request.RequestURI = ""
+				var fields []string
+				if originalURL != absoluteRequestURL(request) {
+					fields = append(fields, "url")
+				}
+				if originalHost != request.Host {
+					fields = append(fields, "host")
+				}
+				modified := len(fields) != 0
+				result.Add(F.Action{
+					Phase:    F.PhaseRequest,
+					Source:   F.SourceRewrite,
+					Kind:     F.KindURL,
+					Outcome:  modificationOutcome(modified),
+					Name:     "transparent",
+					Rule:     rule.match.String(),
+					Modified: modified,
+					Target:   absoluteRequestURL(request),
+					Fields:   fields,
+				})
+			} else {
+				result.Add(F.Action{
+					Phase:   F.PhaseRequest,
+					Source:  F.SourceRewrite,
+					Kind:    F.KindURL,
+					Outcome: F.OutcomeFailed,
+					Name:    "transparent",
+					Rule:    rule.match.String(),
+					Target:  replacement,
+					Message: "replacement is not a valid absolute HTTP URL",
+				})
 			}
 		case urlRuleRedirect302:
-			return redirectResponse(request, http.StatusFound, replacement)
+			result.Decision = F.DecisionRespond
+			result.Response = redirectResponse(request, http.StatusFound, replacement)
+			result.Add(localRewriteAction(F.KindRedirect, "redirect-302", rule.match.String(), http.StatusFound, replacement))
+			return result
 		case urlRuleRedirect307:
-			return redirectResponse(request, http.StatusTemporaryRedirect, replacement)
+			result.Decision = F.DecisionRespond
+			result.Response = redirectResponse(request, http.StatusTemporaryRedirect, replacement)
+			result.Add(localRewriteAction(F.KindRedirect, "redirect-307", rule.match.String(), http.StatusTemporaryRedirect, replacement))
+			return result
 		case urlRuleReject:
-			return rejectResponse(request, rule.rejectType)
+			result.Decision = F.DecisionRespond
+			result.Response = rejectResponse(request, rule.rejectType)
+			result.Add(localRewriteAction(F.KindReject, rejectTypeName(rule.rejectType), rule.match.String(), result.Response.StatusCode, ""))
+			return result
 		}
 		break
 	}
@@ -52,52 +100,83 @@ func (c *Config) RewriteRequest(request *http.Request) *http.Response {
 	requestURL = absoluteRequestURL(request)
 	for _, rule := range c.mockRules {
 		if rule.match.MatchString(requestURL) {
-			return rule.response(request)
+			result.Decision = F.DecisionRespond
+			result.Response = rule.response(request)
+			result.Add(localRewriteAction(F.KindMock, "mock", rule.match.String(), result.Response.StatusCode, ""))
+			return result
 		}
 	}
 
-	c.rewriteHeaders(requestURL, c.requestHeaderRules, request.Header)
-	c.rewriteRequestBody(requestURL, request)
-	return nil
+	result.Actions = append(result.Actions, c.rewriteHeaders(F.PhaseRequest, requestURL, c.requestHeaderRules, request.Header)...)
+	if action := c.rewriteRequestBody(requestURL, request); action != nil {
+		result.Add(*action)
+	}
+	return result
 }
 
 func (c *Config) RewriteResponse(request *http.Request, response *http.Response) {
-	if c == nil || request == nil || response == nil {
-		return
-	}
-	requestURL := absoluteRequestURL(request)
-	c.rewriteHeaders(requestURL, c.responseHeaderRules, response.Header)
-	c.rewriteResponseBody(requestURL, request, response)
+	_ = c.ProcessResponse(request, response)
 }
 
-func (c *Config) rewriteHeaders(requestURL string, rules []headerRule, header http.Header) {
+func (c *Config) ProcessResponse(request *http.Request, response *http.Response) F.Result {
+	result := F.Result{Decision: F.DecisionContinue}
+	if c == nil || request == nil || response == nil {
+		return result
+	}
+	requestURL := absoluteRequestURL(request)
+	result.Actions = append(result.Actions, c.rewriteHeaders(F.PhaseResponse, requestURL, c.responseHeaderRules, response.Header)...)
+	if action := c.rewriteResponseBody(requestURL, request, response); action != nil {
+		result.Add(*action)
+	}
+	return result
+}
+
+func (c *Config) rewriteHeaders(phase F.Phase, requestURL string, rules []headerRule, header http.Header) []F.Action {
+	var actions []F.Action
 	if header == nil {
-		return
+		return actions
 	}
 	for _, rule := range rules {
 		if !rule.match.MatchString(requestURL) {
 			continue
 		}
+		modified := false
 		switch rule.ruleType {
 		case headerRuleAdd:
 			header.Add(rule.field, rule.value)
+			modified = true
 		case headerRuleDelete:
+			modified = headerValues(header, rule.field) != nil
 			header.Del(rule.field)
 		case headerRuleReplace:
-			if headerValues(header, rule.field) != nil {
+			values := headerValues(header, rule.field)
+			if values != nil {
 				header.Set(rule.field, rule.value)
+				modified = len(values) != 1 || values[0] != rule.value
 			}
 		case headerRuleReplaceRegex:
 			values := headerValues(header, rule.field)
-			if values == nil {
-				continue
+			if values != nil {
+				for index := range values {
+					replaced := rule.regex.ReplaceAllString(values[index], rule.value)
+					modified = modified || replaced != values[index]
+					values[index] = replaced
+				}
+				header[textproto.CanonicalMIMEHeaderKey(rule.field)] = values
 			}
-			for index := range values {
-				values[index] = rule.regex.ReplaceAllString(values[index], rule.value)
-			}
-			header[textproto.CanonicalMIMEHeaderKey(rule.field)] = values
 		}
+		actions = append(actions, F.Action{
+			Phase:    phase,
+			Source:   F.SourceRewrite,
+			Kind:     F.KindHeader,
+			Outcome:  modificationOutcome(modified),
+			Name:     headerRuleTypeName(rule.ruleType),
+			Rule:     rule.match.String(),
+			Modified: modified,
+			Fields:   []string{textproto.CanonicalMIMEHeaderKey(rule.field)},
+		})
 	}
+	return actions
 }
 
 func headerValues(header http.Header, field string) []string {
@@ -108,28 +187,30 @@ func headerValues(header http.Header, field string) []string {
 	return append([]string(nil), values...)
 }
 
-func (c *Config) rewriteRequestBody(requestURL string, request *http.Request) {
+func (c *Config) rewriteRequestBody(requestURL string, request *http.Request) *F.Action {
 	if request.Body == nil || request.Body == http.NoBody {
-		return
+		return nil
 	}
 	rule := matchBodyRule(requestURL, c.requestBodyRules)
 	if rule == nil {
-		return
+		return nil
 	}
-	rewritten := rewriteBody(request.Body, request.Header, rule)
+	rewritten, modified, err := rewriteBody(request.Body, request.Header, rule)
 	setRequestBody(request, rewritten)
+	return bodyRewriteAction(F.PhaseRequest, rule, modified, err)
 }
 
-func (c *Config) rewriteResponseBody(requestURL string, request *http.Request, response *http.Response) {
+func (c *Config) rewriteResponseBody(requestURL string, request *http.Request, response *http.Response) *F.Action {
 	if response.Body == nil || response.Body == http.NoBody || request.Method == http.MethodHead || !statusAllowsBody(response.StatusCode) {
-		return
+		return nil
 	}
 	rule := matchBodyRule(requestURL, c.responseBodyRules)
 	if rule == nil {
-		return
+		return nil
 	}
-	rewritten := rewriteBody(response.Body, response.Header, rule)
+	rewritten, modified, err := rewriteBody(response.Body, response.Header, rule)
 	setResponseBody(response, rewritten)
+	return bodyRewriteAction(F.PhaseResponse, rule, modified, err)
 }
 
 func matchBodyRule(requestURL string, rules []bodyRule) *bodyRule {
@@ -142,22 +223,22 @@ func matchBodyRule(requestURL string, rules []bodyRule) *bodyRule {
 	return nil
 }
 
-func rewriteBody(body io.ReadCloser, header http.Header, rule *bodyRule) []byte {
+func rewriteBody(body io.ReadCloser, header http.Header, rule *bodyRule) ([]byte, bool, error) {
 	rawBody, err := io.ReadAll(body)
 	_ = body.Close()
 	if err != nil {
-		return rawBody
+		return rawBody, false, err
 	}
 	decodedBody, codings, err := decodeBody(rawBody, header.Values("Content-Encoding"))
 	if err != nil {
-		return rawBody
+		return rawBody, false, err
 	}
 
 	rewrittenBody := decodedBody
 	if rule.jqExpression != nil {
 		rewrittenBody, err = applyJQ(rule, decodedBody)
 		if err != nil {
-			return rawBody
+			return rawBody, false, err
 		}
 	} else {
 		for _, action := range rule.actions {
@@ -165,14 +246,88 @@ func rewriteBody(body io.ReadCloser, header http.Header, rule *bodyRule) []byte 
 		}
 	}
 	if bytes.Equal(rewrittenBody, decodedBody) {
-		return rawBody
+		return rawBody, false, nil
 	}
 
 	rewrittenBody, err = encodeBody(rewrittenBody, codings)
 	if err != nil {
-		return rawBody
+		return rawBody, false, err
 	}
-	return rewrittenBody
+	return rewrittenBody, true, nil
+}
+
+func modificationOutcome(modified bool) F.Outcome {
+	if modified {
+		return F.OutcomeApplied
+	}
+	return F.OutcomeUnchanged
+}
+
+func localRewriteAction(kind F.Kind, name, rule string, statusCode int, target string) F.Action {
+	return F.Action{
+		Phase:      F.PhaseRequest,
+		Source:     F.SourceRewrite,
+		Kind:       kind,
+		Outcome:    F.OutcomeResponded,
+		Name:       name,
+		Rule:       rule,
+		Modified:   true,
+		StatusCode: statusCode,
+		Target:     target,
+	}
+}
+
+func headerRuleTypeName(ruleType headerRuleType) string {
+	switch ruleType {
+	case headerRuleAdd:
+		return "add"
+	case headerRuleDelete:
+		return "delete"
+	case headerRuleReplace:
+		return "replace"
+	case headerRuleReplaceRegex:
+		return "replace-regex"
+	default:
+		return "unknown"
+	}
+}
+
+func rejectTypeName(responseType rejectResponseType) string {
+	switch responseType {
+	case rejectResponseOK:
+		return "reject-200"
+	case rejectResponseImage:
+		return "reject-image"
+	case rejectResponseDict:
+		return "reject-dict"
+	case rejectResponseArray:
+		return "reject-array"
+	default:
+		return "reject"
+	}
+}
+
+func bodyRewriteAction(phase F.Phase, rule *bodyRule, modified bool, err error) *F.Action {
+	name := "regex"
+	if rule.jqExpression != nil {
+		name = "jq"
+	}
+	action := &F.Action{
+		Phase:    phase,
+		Source:   F.SourceRewrite,
+		Kind:     F.KindBody,
+		Outcome:  modificationOutcome(modified),
+		Name:     name,
+		Rule:     rule.match.String(),
+		Modified: modified,
+		Fields:   []string{"body"},
+	}
+	if err != nil {
+		action.Outcome = F.OutcomeFailed
+		action.Modified = false
+		action.Message = err.Error()
+	}
+	return action
 }
 
 func applyJQ(rule *bodyRule, body []byte) ([]byte, error) {

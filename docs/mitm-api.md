@@ -35,9 +35,12 @@ GET /mitm
   "sessions": [
     {
       "id": "6c47d457-56de-4e14-9555-957ec2122149",
+      "transactionId": "0f1d94d5-9061-42cf-89b8-1c844c2a6a67",
       "requestIndex": 42,
       "startedAt": "2026-08-08T15:04:05.123456+08:00",
       "completedAt": "2026-08-08T15:04:05.223456+08:00",
+      "state": "completed",
+      "modified": true,
       "source": "192.0.2.10:54321",
       "capture": true,
       "request": {
@@ -69,7 +72,21 @@ GET /mitm
           "content": "{\"ok\":true}",
           "complete": true
         }
-      }
+      },
+      "actions": [
+        {
+          "index": 1,
+          "at": "2026-08-08T15:04:05.133456+08:00",
+          "phase": "request",
+          "source": "rewrite",
+          "kind": "header",
+          "outcome": "applied",
+          "name": "add",
+          "rule": "^https://example\\.com/(.*)$",
+          "modified": true,
+          "fields": ["X-Processed-By"]
+        }
+      ]
     }
   ]
 }
@@ -80,14 +97,19 @@ GET /mitm
 - `capture`（顶层）：当前全局正文捕获开关。
 - `limit`：服务端保留的最大请求数，当前为 256。
 - `sessions`：按开始时间从旧到新排列。
+- `session.transactionId`：每个 HTTP 请求唯一的 UUID，也就是 JavaScript `$request.id`。本地 redirect、reject、mock 或脚本响应即使没有上游连接也会拥有它。
 - `session.id`：对应同一上游 TCP 连接在 `/connections` 中的 Tracker UUID。它不是 MITM 另外生成的 UUID；上游连接尚未建立时暂为空，`REJECT`、本地响应或拨号失败时可能一直为空。
 - `session.requestIndex`：mihomo 进程内单调递增的 HTTP 请求序号，用于区分同一连接上的多个请求及关联 WebSocket 更新；它不是连接 ID，也不是 UUID。
+- `session.state`：`active`、`completed`、`failed`、`aborted` 或 `cancelled`。HTTP 4xx/5xx 本身不会自动视为代理失败。
+- `session.modified`：至少一个 action 实际修改了请求、响应或生成了本地响应。它与 `state` 相互独立。
+- `session.actions`：rewrite、JavaScript 和 Handler 按实际执行顺序生成的结构化动作。字段与日志输出详见 [logs.md](./logs.md)。
 - `session.capture`：该请求开始时是否启用了正文捕获。
 - `request.raw_url`：客户端发送的原始完整 URL，不包含 fragment。
 - `request.url`：当前实际连接使用的完整 URL。执行透明 URL rewrite 后为改写后的 URL；没有发生透明改写时与 `raw_url` 相同。连接列表、规则匹配和日志同样使用这个 URL。
 - `headers`：值始终是字符串数组，适合直接转换为多值 Header 列表；Go HTTP server 单独保存的请求 `Host` 也会合并到这里。
 - `response`、`completedAt`：请求仍在进行时可能不存在。
-- `error`：上游请求失败时出现，内容为错误文本。
+- `failure`：交易无法继续时出现，包含失败时间、`stage`、`source` 和错误文本。
+- `error`：为兼容旧客户端保留的失败文本；新客户端应优先使用 `failure`。
 - `body`：仅当该 session 的 `capture` 为 `true` 时出现；流尚未读完时也可能暂时不存在。
 - `body.size`：捕获后的原始字节数。
 - `body.encoding`：正文为有效 UTF-8 时是 `utf8`，否则是 `base64`。
@@ -108,8 +130,8 @@ wss://<controller>/mitm
 
 ```json
 {"type":"snapshot","capture":false,"limit":256,"sessions":[]}
-{"type":"session","capture":true,"session":{"id":"","requestIndex":42,"request":{"method":"GET","url":"https://example.com/","proto":"HTTP/1.1","headers":{}}}}
-{"type":"session","capture":true,"session":{"id":"6c47d457-56de-4e14-9555-957ec2122149","requestIndex":42,"request":{"method":"GET","url":"https://example.com/","proto":"HTTP/1.1","headers":{}}}}
+{"type":"session","capture":true,"session":{"id":"","transactionId":"0f1d94d5-9061-42cf-89b8-1c844c2a6a67","requestIndex":42,"state":"active","modified":false,"actions":[],"request":{"method":"GET","url":"https://example.com/","proto":"HTTP/1.1","headers":{}}}}
+{"type":"session","capture":true,"session":{"id":"6c47d457-56de-4e14-9555-957ec2122149","transactionId":"0f1d94d5-9061-42cf-89b8-1c844c2a6a67","requestIndex":42,"state":"active","modified":false,"actions":[],"request":{"method":"GET","url":"https://example.com/","proto":"HTTP/1.1","headers":{}}}}
 {"type":"capture","capture":false}
 {"type":"remove","capture":false,"id":"6c47d457-56de-4e14-9555-957ec2122149","requestIndex":42}
 {"type":"clear","capture":false}
@@ -159,6 +181,6 @@ Content-Type: application/json
 ## 前端接入建议
 
 1. 建立 `/mitm` WebSocket，以首个 `snapshot` 初始化列表。
-2. 按 `session.requestIndex` 更新记录，并处理 `remove` 和 `clear`；`session.id` 用于关联 `/connections` 中的连接详情。
+2. 按 `session.requestIndex` 更新记录，并处理 `remove` 和 `clear`；使用 `state` 显示交易状态、`modified` 显示修改标记，`transactionId` 关联结构化日志，`session.id` 关联 `/connections` 中的连接详情。
 3. `encoding` 为 `base64` 时再解码正文；展示前根据 Content-Type 选择文本、JSON、图片或十六进制视图。
 4. 明确提示用户 Headers 和 body 可能包含 Cookie、Authorization、Token、密码等敏感数据，并避免把抓包结果写入持久日志。

@@ -53,6 +53,8 @@ func TestMain(m *testing.M) {
 
 func TestScriptUserRequestResponsePipelineAPI(t *testing.T) {
 	const hostname = "script.example.com"
+	mitm.ClearCapturedSessions()
+	t.Cleanup(mitm.ClearCapturedSessions)
 	responseCodings := []string{"gzip"}
 	encodedUpstreamBody := encodeRewriteTestBody(t, []byte("upstream"), responseCodings)
 	homeDir := useScriptTestHome(t)
@@ -220,10 +222,36 @@ scripts:
 	require.Equal(t, http.StatusCreated, response.StatusCode)
 	require.Equal(t, "first,second", response.Header.Get("X-Response-Order"))
 	require.Equal(t, "rewritten-complete", string(responseBody))
+
+	snapshot := mitm.CapturedSessionsSnapshot()
+	require.Len(t, snapshot.Sessions, 1)
+	transaction := snapshot.Sessions[0]
+	require.Equal(t, seen.headers.Get("X-Script-Id"), transaction.TransactionID)
+	require.Equal(t, "completed", string(transaction.State))
+	require.True(t, transaction.Modified)
+	require.Nil(t, transaction.Failure)
+	require.Len(t, transaction.Actions, 6)
+	require.Equal(t, "request-first", transaction.Actions[0].Name)
+	require.Equal(t, "applied", string(transaction.Actions[0].Outcome))
+	require.ElementsMatch(t, []string{"url", "headers", "host", "body"}, transaction.Actions[0].Fields)
+	require.Equal(t, "request-error", transaction.Actions[1].Name)
+	require.Equal(t, "failed", string(transaction.Actions[1].Outcome))
+	require.Contains(t, transaction.Actions[1].Message, "timed out")
+	require.Equal(t, "request-second", transaction.Actions[2].Name)
+	require.Equal(t, "applied", string(transaction.Actions[2].Outcome))
+	require.Equal(t, "response-first", transaction.Actions[3].Name)
+	require.Equal(t, "applied", string(transaction.Actions[3].Outcome))
+	require.Equal(t, http.StatusCreated, transaction.Actions[3].StatusCode)
+	require.Equal(t, "response-error", transaction.Actions[4].Name)
+	require.Equal(t, "failed", string(transaction.Actions[4].Outcome))
+	require.Equal(t, "response-second", transaction.Actions[5].Name)
+	require.Equal(t, "applied", string(transaction.Actions[5].Outcome))
 }
 
 func TestScriptUserMockAndBodyLimitAPI(t *testing.T) {
 	const hostname = "script-limit.example.com"
+	mitm.ClearCapturedSessions()
+	t.Cleanup(mitm.ClearCapturedSessions)
 	homeDir := useScriptTestHome(t)
 	writeScriptTestFile(t, homeDir, "body-limit.js", `
 const headers = $request.headers;
@@ -295,6 +323,34 @@ scripts:
 	expectScriptTestConnectionAbort(t, requestAbortClient, "/abort-request")
 	responseAbortClient := newScriptTestClient(t, parsedConfig, hostname, upstream.Listener.Addr().String())
 	expectScriptTestConnectionAbort(t, responseAbortClient, "/abort-response")
+
+	snapshot := mitm.CapturedSessionsSnapshot()
+	require.Len(t, snapshot.Sessions, 4)
+	passthrough := snapshot.Sessions[0]
+	require.Equal(t, "completed", string(passthrough.State))
+	require.False(t, passthrough.Modified)
+	require.Equal(t, "skipped", string(passthrough.Actions[0].Outcome))
+	require.Contains(t, passthrough.Actions[0].Message, "max-body-size")
+
+	mocked := snapshot.Sessions[1]
+	require.Equal(t, "completed", string(mocked.State))
+	require.True(t, mocked.Modified)
+	require.Empty(t, mocked.ConnectionID)
+	require.Equal(t, "mock", mocked.Actions[1].Name)
+	require.Equal(t, "responded", string(mocked.Actions[1].Outcome))
+	require.Equal(t, http.StatusAccepted, mocked.Actions[1].StatusCode)
+
+	requestAborted := snapshot.Sessions[2]
+	require.Equal(t, "aborted", string(requestAborted.State))
+	require.NotNil(t, requestAborted.CompletedAt)
+	require.Equal(t, "mock", requestAborted.Actions[len(requestAborted.Actions)-1].Name)
+	require.Equal(t, "aborted", string(requestAborted.Actions[len(requestAborted.Actions)-1].Outcome))
+
+	responseAborted := snapshot.Sessions[3]
+	require.Equal(t, "aborted", string(responseAborted.State))
+	require.NotNil(t, responseAborted.Response)
+	require.Equal(t, "response-abort", responseAborted.Actions[len(responseAborted.Actions)-1].Name)
+	require.Equal(t, "aborted", string(responseAborted.Actions[len(responseAborted.Actions)-1].Outcome))
 }
 
 func TestScriptUserIndirectEvalAndTimerAPI(t *testing.T) {

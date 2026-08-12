@@ -9,12 +9,14 @@ import (
 	stdlog "log"
 	"net"
 	"net/netip"
+	"reflect"
 	"strconv"
 	"sync"
 	"time"
 
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/component/ca"
+	F "github.com/metacubex/mihomo/component/httpflow"
 	R "github.com/metacubex/mihomo/component/rewrite"
 	S "github.com/metacubex/mihomo/component/script"
 	"github.com/metacubex/mihomo/component/sniffer"
@@ -293,30 +295,12 @@ func (i *Interceptor) newReverseProxy(transport http.RoundTripper, metadata *C.M
 			if session == nil {
 				return nil
 			}
-			session.SetResponse(response)
-			replacement := i.handler.HandleResponse(session)
-			if replacement != nil && replacement != response {
-				oldBody := response.Body
-				if replacement.Request == nil {
-					replacement.Request = response.Request
-				}
-				if replacement.Body == nil {
-					replacement.Body = http.NoBody
-				}
-				*response = *replacement
-				if oldBody != nil && oldBody != response.Body {
-					_ = oldBody.Close()
-				}
+			if i.runResponsePipeline(session, response, true) {
+				session.abort()
+				session.SetResponse(response)
+				session.capture.observeResponse(response)
+				return http.ErrAbortHandler
 			}
-			if i.rewrite != nil {
-				i.rewrite.RewriteResponse(session.Request(), response)
-			}
-			if i.scripts != nil {
-				if i.scripts.ProcessResponse(session.Request(), response, session.ID()) {
-					return http.ErrAbortHandler
-				}
-			}
-			session.SetResponse(response)
 			session.capture.observeResponse(response)
 			return nil
 		},
@@ -330,7 +314,7 @@ func (i *Interceptor) newReverseProxy(transport http.RoundTripper, metadata *C.M
 			}
 			session.SetResponse(session.NewErrorResponse(err))
 			i.handler.HandleError(session, err)
-			session.capture.setError(err)
+			session.fail("upstream", F.SourceUpstream, err)
 			session.capture.observeResponse(session.Response())
 			writeResponse(writer, session.Response())
 		},
@@ -340,38 +324,18 @@ func (i *Interceptor) newReverseProxy(transport http.RoundTripper, metadata *C.M
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		setRequestURLDefaults(request, defaultScheme)
 		session := newSession(request, metadata)
-		var response *http.Response
-		if i.rewrite != nil {
-			response = i.rewrite.RewriteRequest(request)
-			session.SetRequest(request)
-		}
-		if response == nil && i.scripts != nil {
-			var abort bool
-			response, abort = i.scripts.ProcessRequest(request, session.ID())
-			session.SetRequest(request)
-			if abort {
-				panic(http.ErrAbortHandler)
-			}
-		}
-		if response == nil {
-			newRequest, handlerResponse := i.handler.HandleRequest(session)
-			response = handlerResponse
-			if newRequest != nil {
-				setRequestURLDefaults(newRequest, defaultScheme)
-				request = newRequest
-				session.SetRequest(newRequest)
-			}
+		request, response, abort := i.runRequestPipeline(session, request, defaultScheme)
+		if abort {
+			session.abort()
+			panic(http.ErrAbortHandler)
 		}
 		if response != nil {
-			if i.rewrite != nil {
-				i.rewrite.RewriteResponse(request, response)
+			if i.runResponsePipeline(session, response, false) {
+				session.abort()
+				session.SetResponse(response)
+				session.capture.observeResponse(response)
+				panic(http.ErrAbortHandler)
 			}
-			if i.scripts != nil {
-				if i.scripts.ProcessResponse(request, response, session.ID()) {
-					panic(http.ErrAbortHandler)
-				}
-			}
-			session.SetResponse(response)
 			session.capture.observeResponse(response)
 			writeResponse(writer, response)
 			return
@@ -380,6 +344,206 @@ func (i *Interceptor) newReverseProxy(transport http.RoundTripper, metadata *C.M
 		requestContext := context.WithValue(request.Context(), sessionContextKey{}, session)
 		reverseProxy.ServeHTTP(writer, request.WithContext(requestContext))
 	})
+}
+
+func (i *Interceptor) runRequestPipeline(session *Session, request *http.Request, defaultScheme string) (*http.Request, *http.Response, bool) {
+	var response *http.Response
+	if i.rewrite != nil {
+		result := i.rewrite.ProcessRequest(request)
+		session.SetRequest(request)
+		session.recordResult(result)
+		response = result.Response
+		if result.Decision == F.DecisionAbort {
+			return request, response, true
+		}
+	}
+	if response == nil && i.scripts != nil {
+		result := i.scripts.ProcessRequestFlow(request, session.ID())
+		session.SetRequest(request)
+		session.recordResult(result)
+		response = result.Response
+		if result.Decision == F.DecisionAbort {
+			return request, response, true
+		}
+	}
+	if response != nil {
+		return request, response, false
+	}
+
+	beforeHandler := snapshotRequestMutation(request)
+	newRequest, handlerResponse := i.handler.HandleRequest(session)
+	response = handlerResponse
+	if newRequest != nil {
+		setRequestURLDefaults(newRequest, defaultScheme)
+		request = newRequest
+	}
+	session.SetRequest(request)
+	fields := beforeHandler.changedFields(request)
+	if newRequest != nil && len(fields) == 0 {
+		fields = append(fields, "request")
+	}
+	if len(fields) != 0 {
+		target := ""
+		if newRequest != nil || containsFlowField(fields, "url") || containsFlowField(fields, "host") {
+			target = fullRequestURL(request)
+		}
+		session.recordActions([]F.Action{{
+			Phase:    F.PhaseRequest,
+			Source:   F.SourceHandler,
+			Kind:     F.KindRequest,
+			Outcome:  F.OutcomeApplied,
+			Modified: true,
+			Target:   target,
+			Fields:   fields,
+		}})
+	}
+	if response != nil {
+		session.recordActions([]F.Action{{
+			Phase:      F.PhaseRequest,
+			Source:     F.SourceHandler,
+			Kind:       F.KindLocalResponse,
+			Outcome:    F.OutcomeResponded,
+			Modified:   true,
+			StatusCode: response.StatusCode,
+		}})
+	}
+	return request, response, false
+}
+
+func (i *Interceptor) runResponsePipeline(session *Session, response *http.Response, runHandler bool) bool {
+	if runHandler {
+		session.SetResponse(response)
+		beforeHandler := snapshotResponseMutation(response)
+		replacement := i.handler.HandleResponse(session)
+		if replacement != nil && replacement != response {
+			oldBody := response.Body
+			if replacement.Request == nil {
+				replacement.Request = response.Request
+			}
+			if replacement.Body == nil {
+				replacement.Body = http.NoBody
+			}
+			*response = *replacement
+			if oldBody != nil && oldBody != response.Body {
+				_ = oldBody.Close()
+			}
+		}
+		fields := beforeHandler.changedFields(response)
+		if replacement != nil && replacement != response && len(fields) == 0 {
+			fields = append(fields, "response")
+		}
+		if len(fields) != 0 {
+			session.recordActions([]F.Action{{
+				Phase:      F.PhaseResponse,
+				Source:     F.SourceHandler,
+				Kind:       F.KindResponse,
+				Outcome:    F.OutcomeApplied,
+				Modified:   true,
+				StatusCode: response.StatusCode,
+				Fields:     fields,
+			}})
+		}
+	}
+	if i.rewrite != nil {
+		result := i.rewrite.ProcessResponse(session.Request(), response)
+		session.recordResult(result)
+	}
+	if i.scripts != nil {
+		result := i.scripts.ProcessResponseFlow(session.Request(), response, session.ID())
+		session.recordResult(result)
+		if result.Decision == F.DecisionAbort {
+			return true
+		}
+	}
+	session.SetResponse(response)
+	return false
+}
+
+type requestMutationSnapshot struct {
+	url           string
+	host          string
+	header        http.Header
+	bodyPointer   uintptr
+	contentLength int64
+}
+
+func snapshotRequestMutation(request *http.Request) requestMutationSnapshot {
+	return requestMutationSnapshot{
+		url:           fullRequestURL(request),
+		host:          request.Host,
+		header:        request.Header.Clone(),
+		bodyPointer:   readCloserPointer(request.Body),
+		contentLength: request.ContentLength,
+	}
+}
+
+func (s requestMutationSnapshot) changedFields(request *http.Request) []string {
+	var fields []string
+	if s.url != fullRequestURL(request) {
+		fields = append(fields, "url")
+	}
+	if s.host != request.Host {
+		fields = append(fields, "host")
+	}
+	if !reflect.DeepEqual(s.header, request.Header) {
+		fields = append(fields, "headers")
+	}
+	if s.bodyPointer != readCloserPointer(request.Body) || s.contentLength != request.ContentLength {
+		fields = append(fields, "body")
+	}
+	return fields
+}
+
+type responseMutationSnapshot struct {
+	statusCode    int
+	header        http.Header
+	bodyPointer   uintptr
+	contentLength int64
+}
+
+func snapshotResponseMutation(response *http.Response) responseMutationSnapshot {
+	return responseMutationSnapshot{
+		statusCode:    response.StatusCode,
+		header:        response.Header.Clone(),
+		bodyPointer:   readCloserPointer(response.Body),
+		contentLength: response.ContentLength,
+	}
+}
+
+func (s responseMutationSnapshot) changedFields(response *http.Response) []string {
+	var fields []string
+	if s.statusCode != response.StatusCode {
+		fields = append(fields, "status")
+	}
+	if !reflect.DeepEqual(s.header, response.Header) {
+		fields = append(fields, "headers")
+	}
+	if s.bodyPointer != readCloserPointer(response.Body) || s.contentLength != response.ContentLength {
+		fields = append(fields, "body")
+	}
+	return fields
+}
+
+func readCloserPointer(body io.ReadCloser) uintptr {
+	if body == nil {
+		return 0
+	}
+	value := reflect.ValueOf(body)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Map, reflect.Pointer, reflect.Slice, reflect.UnsafePointer:
+		return value.Pointer()
+	default:
+		return 0
+	}
+}
+
+func containsFlowField(fields []string, wanted string) bool {
+	for _, field := range fields {
+		if field == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func setRequestURLDefaults(request *http.Request, scheme string) {

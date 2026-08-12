@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 
+	F "github.com/metacubex/mihomo/component/httpflow"
 	R "github.com/metacubex/mihomo/component/rewrite"
 	"github.com/metacubex/mihomo/log"
 
@@ -16,47 +18,110 @@ import (
 )
 
 func (m *Manager) ProcessRequest(request *http.Request, requestID string) (*http.Response, bool) {
+	result := m.ProcessRequestFlow(request, requestID)
+	logStandaloneScriptActions(result.Actions)
+	return result.Response, result.Decision == F.DecisionAbort
+}
+
+func (m *Manager) ProcessRequestFlow(request *http.Request, requestID string) F.Result {
+	result := F.Result{Decision: F.DecisionContinue}
 	if m == nil || request == nil || request.URL == nil {
-		return nil, false
+		return result
 	}
 	requestURL := absoluteRequestURL(request)
 	matched := matchingEntries(m.requestEntries, requestURL)
 	for _, scriptEntry := range matched {
-		response, abort, skipped, err := m.processRequest(scriptEntry, request, requestID)
-		if skipped {
-			continue
+		execution, err := m.processRequest(scriptEntry, request, requestID)
+		action := scriptAction(F.PhaseRequest, scriptEntry)
+		action.Fields = execution.fields
+		action.Target = execution.target
+		action.StatusCode = execution.statusCode
+		switch {
+		case err != nil:
+			action.Outcome = F.OutcomeFailed
+			action.Message = err.Error()
+		case execution.skipped != "":
+			action.Outcome = F.OutcomeSkipped
+			action.Message = execution.skipped
+		case execution.abort:
+			action.Outcome = F.OutcomeAborted
+			action.Modified = len(execution.fields) != 0
+			action.Fields = execution.fields
+			result.Decision = F.DecisionAbort
+		case execution.response != nil:
+			action.Outcome = F.OutcomeResponded
+			action.Modified = true
+			action.Fields = execution.fields
+			action.StatusCode = execution.response.StatusCode
+			result.Decision = F.DecisionRespond
+			result.Response = execution.response
+		case len(execution.fields) != 0:
+			action.Outcome = F.OutcomeApplied
+			action.Modified = true
+			action.Fields = execution.fields
+		default:
+			action.Outcome = F.OutcomeUnchanged
 		}
-		if err != nil {
-			log.Errorln("[Script] %s request execution error: %s", scriptEntry.name, err.Error())
-			continue
-		}
-		if abort || response != nil {
-			return response, abort
+		result.Add(action)
+		if result.Decision != F.DecisionContinue {
+			return result
 		}
 	}
-	return nil, false
+	return result
 }
 
 func (m *Manager) ProcessResponse(request *http.Request, response *http.Response, requestID string) bool {
+	result := m.ProcessResponseFlow(request, response, requestID)
+	logStandaloneScriptActions(result.Actions)
+	return result.Decision == F.DecisionAbort
+}
+
+func (m *Manager) ProcessResponseFlow(request *http.Request, response *http.Response, requestID string) F.Result {
+	result := F.Result{Decision: F.DecisionContinue}
 	if m == nil || request == nil || request.URL == nil || response == nil {
-		return false
+		return result
 	}
 	requestURL := absoluteRequestURL(request)
 	matched := matchingEntries(m.responseEntries, requestURL)
 	for _, scriptEntry := range matched {
-		abort, skipped, err := m.processResponse(scriptEntry, request, response, requestID)
-		if skipped {
-			continue
+		execution, err := m.processResponse(scriptEntry, request, response, requestID)
+		action := scriptAction(F.PhaseResponse, scriptEntry)
+		action.Fields = execution.fields
+		action.StatusCode = execution.statusCode
+		switch {
+		case err != nil:
+			action.Outcome = F.OutcomeFailed
+			action.Message = err.Error()
+		case execution.skipped != "":
+			action.Outcome = F.OutcomeSkipped
+			action.Message = execution.skipped
+		case execution.abort:
+			action.Outcome = F.OutcomeAborted
+			action.Modified = len(execution.fields) != 0
+			action.Fields = execution.fields
+			result.Decision = F.DecisionAbort
+		case len(execution.fields) != 0:
+			action.Outcome = F.OutcomeApplied
+			action.Modified = true
+			action.Fields = execution.fields
+		default:
+			action.Outcome = F.OutcomeUnchanged
 		}
-		if err != nil {
-			log.Errorln("[Script] %s response execution error: %s", scriptEntry.name, err.Error())
-			continue
-		}
-		if abort {
-			return true
+		result.Add(action)
+		if result.Decision == F.DecisionAbort {
+			return result
 		}
 	}
-	return false
+	return result
+}
+
+type scriptExecution struct {
+	response   *http.Response
+	abort      bool
+	skipped    string
+	fields     []string
+	target     string
+	statusCode int
 }
 
 func matchingEntries(entries []*entry, requestURL string) []*entry {
@@ -69,7 +134,7 @@ func matchingEntries(entries []*entry, requestURL string) []*entry {
 	return matched
 }
 
-func (m *Manager) processRequest(scriptEntry *entry, request *http.Request, requestID string) (*http.Response, bool, bool, error) {
+func (m *Manager) processRequest(scriptEntry *entry, request *http.Request, requestID string) (scriptExecution, error) {
 	body, bodyPresent, tooLarge, err := prepareBody(
 		&request.Body,
 		request.ContentLength,
@@ -77,23 +142,17 @@ func (m *Manager) processRequest(scriptEntry *entry, request *http.Request, requ
 		scriptEntry.maxBodySize,
 	)
 	if err != nil {
-		return nil, false, false, err
+		return scriptExecution{}, err
 	}
 	if tooLarge {
-		if scriptEntry.debug {
-			log.Infoln("[Script] %s skipped: request body exceeds max-body-size", scriptEntry.name)
-		}
-		return nil, false, true, nil
+		return scriptExecution{skipped: "request body exceeds max-body-size"}, nil
 	}
 	body, bodyEncoding, tooLarge, err := decodeScriptBody(body, bodyPresent, request.Header, scriptEntry.maxBodySize)
 	if err != nil {
-		return nil, false, false, err
+		return scriptExecution{}, err
 	}
 	if tooLarge {
-		if scriptEntry.debug {
-			log.Infoln("[Script] %s skipped: decoded request body exceeds max-body-size", scriptEntry.name)
-		}
-		return nil, false, true, nil
+		return scriptExecution{skipped: "decoded request body exceeds max-body-size"}, nil
 	}
 
 	patch, err := m.evaluate(scriptEntry, evaluationInput{
@@ -103,15 +162,16 @@ func (m *Manager) processRequest(scriptEntry *entry, request *http.Request, requ
 		bodyPresent: bodyPresent,
 	})
 	if err != nil {
-		return nil, false, false, err
+		return scriptExecution{}, err
 	}
 	if patch == nil {
-		return nil, false, false, nil
+		return scriptExecution{}, nil
 	}
 	mutation, err := parseRequestMutation(patch, scriptEntry.requiresBody, request)
 	if err != nil {
-		return nil, false, false, err
+		return scriptExecution{}, err
 	}
+	fields := mutation.changedFields(request, body, bodyPresent)
 	if mutation.setBody {
 		targetHeaders := request.Header
 		if mutation.headers != nil {
@@ -119,14 +179,24 @@ func (m *Manager) processRequest(scriptEntry *entry, request *http.Request, requ
 		}
 		mutation.body, err = encodeScriptBody(mutation.body, bodyEncoding, targetHeaders)
 		if err != nil {
-			return nil, false, false, fmt.Errorf("encode $done.body: %w", err)
+			return scriptExecution{}, fmt.Errorf("encode $done.body: %w", err)
 		}
 	}
 	mutation.apply(request)
-	return mutation.response, mutation.abort, false, nil
+	target := ""
+	if hasField(fields, "url") {
+		target = absoluteRequestURL(request)
+	}
+	return scriptExecution{
+		response:   mutation.response,
+		abort:      mutation.abort,
+		fields:     fields,
+		target:     target,
+		statusCode: responseStatusCode(mutation.response),
+	}, nil
 }
 
-func (m *Manager) processResponse(scriptEntry *entry, request *http.Request, response *http.Response, requestID string) (bool, bool, error) {
+func (m *Manager) processResponse(scriptEntry *entry, request *http.Request, response *http.Response, requestID string) (scriptExecution, error) {
 	requiresBody := scriptEntry.requiresBody && request.Method != http.MethodHead && statusAllowsBody(response.StatusCode)
 	body, bodyPresent, tooLarge, err := prepareBody(
 		&response.Body,
@@ -135,23 +205,17 @@ func (m *Manager) processResponse(scriptEntry *entry, request *http.Request, res
 		scriptEntry.maxBodySize,
 	)
 	if err != nil {
-		return false, false, err
+		return scriptExecution{}, err
 	}
 	if tooLarge {
-		if scriptEntry.debug {
-			log.Infoln("[Script] %s skipped: response body exceeds max-body-size", scriptEntry.name)
-		}
-		return false, true, nil
+		return scriptExecution{skipped: "response body exceeds max-body-size"}, nil
 	}
 	body, bodyEncoding, tooLarge, err := decodeScriptBody(body, bodyPresent, response.Header, scriptEntry.maxBodySize)
 	if err != nil {
-		return false, false, err
+		return scriptExecution{}, err
 	}
 	if tooLarge {
-		if scriptEntry.debug {
-			log.Infoln("[Script] %s skipped: decoded response body exceeds max-body-size", scriptEntry.name)
-		}
-		return false, true, nil
+		return scriptExecution{skipped: "decoded response body exceeds max-body-size"}, nil
 	}
 
 	patch, err := m.evaluate(scriptEntry, evaluationInput{
@@ -162,15 +226,16 @@ func (m *Manager) processResponse(scriptEntry *entry, request *http.Request, res
 		bodyPresent: bodyPresent,
 	})
 	if err != nil {
-		return false, false, err
+		return scriptExecution{}, err
 	}
 	if patch == nil {
-		return false, false, nil
+		return scriptExecution{}, nil
 	}
 	mutation, err := parseResponseMutation(patch, requiresBody)
 	if err != nil {
-		return false, false, err
+		return scriptExecution{}, err
 	}
+	fields := mutation.changedFields(response, body, bodyPresent)
 	if mutation.setBody {
 		targetHeaders := response.Header
 		if mutation.headers != nil {
@@ -178,11 +243,15 @@ func (m *Manager) processResponse(scriptEntry *entry, request *http.Request, res
 		}
 		mutation.body, err = encodeScriptBody(mutation.body, bodyEncoding, targetHeaders)
 		if err != nil {
-			return false, false, fmt.Errorf("encode $done.body: %w", err)
+			return scriptExecution{}, fmt.Errorf("encode $done.body: %w", err)
 		}
 	}
 	mutation.apply(response)
-	return mutation.abort, false, nil
+	statusCode := 0
+	if hasField(fields, "status") {
+		statusCode = response.StatusCode
+	}
+	return scriptExecution{abort: mutation.abort, fields: fields, statusCode: statusCode}, nil
 }
 
 type requestMutation struct {
@@ -258,6 +327,23 @@ func (m *requestMutation) apply(request *http.Request) {
 	}
 }
 
+func (m *requestMutation) changedFields(request *http.Request, body []byte, bodyPresent bool) []string {
+	var fields []string
+	if m.url != nil && (request.URL == nil || m.url.String() != request.URL.String()) {
+		fields = append(fields, "url")
+	}
+	if m.headers != nil && !reflect.DeepEqual(m.headers, request.Header) {
+		fields = append(fields, "headers")
+	}
+	if m.host != nil && *m.host != request.Host {
+		fields = append(fields, "host")
+	}
+	if m.setBody && (!bodyPresent || !bytes.Equal(m.body, body)) {
+		fields = append(fields, "body")
+	}
+	return fields
+}
+
 type responseMutation struct {
 	status  int
 	headers http.Header
@@ -315,6 +401,65 @@ func (m *responseMutation) apply(response *http.Response) {
 	}
 	if !statusAllowsBody(response.StatusCode) {
 		setResponseBody(response, nil)
+	}
+}
+
+func (m *responseMutation) changedFields(response *http.Response, body []byte, bodyPresent bool) []string {
+	var fields []string
+	if m.status != 0 && m.status != response.StatusCode {
+		fields = append(fields, "status")
+	}
+	if m.headers != nil && !reflect.DeepEqual(m.headers, response.Header) {
+		fields = append(fields, "headers")
+	}
+	if m.setBody && (!bodyPresent || !bytes.Equal(m.body, body)) {
+		fields = append(fields, "body")
+	}
+	targetStatus := response.StatusCode
+	if m.status != 0 {
+		targetStatus = m.status
+	}
+	if !statusAllowsBody(targetStatus) && !hasField(fields, "body") &&
+		(response.Body != nil && response.Body != http.NoBody || response.ContentLength != 0) {
+		fields = append(fields, "body")
+	}
+	return fields
+}
+
+func scriptAction(phase F.Phase, scriptEntry *entry) F.Action {
+	return F.Action{
+		Phase:  phase,
+		Source: F.SourceScript,
+		Kind:   F.KindScript,
+		Name:   scriptEntry.name,
+		Rule:   scriptEntry.match.String(),
+	}
+}
+
+func hasField(fields []string, wanted string) bool {
+	for _, field := range fields {
+		if field == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func responseStatusCode(response *http.Response) int {
+	if response == nil {
+		return 0
+	}
+	return response.StatusCode
+}
+
+func logStandaloneScriptActions(actions []F.Action) {
+	for _, action := range actions {
+		switch action.Outcome {
+		case F.OutcomeFailed:
+			log.Errorln("[Script] %s %s execution error: %s", action.Name, action.Phase, action.Message)
+		case F.OutcomeSkipped:
+			log.Debugln("[Script] %s skipped: %s", action.Name, action.Message)
+		}
 	}
 }
 

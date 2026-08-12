@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	F "github.com/metacubex/mihomo/component/httpflow"
 	C "github.com/metacubex/mihomo/constant"
 
 	"github.com/metacubex/http"
@@ -44,15 +45,20 @@ type CapturedResponse struct {
 }
 
 type CapturedSession struct {
-	ConnectionID string            `json:"id"`
-	RequestIndex uint64            `json:"requestIndex"`
-	StartedAt    time.Time         `json:"startedAt"`
-	CompletedAt  *time.Time        `json:"completedAt,omitempty"`
-	Source       string            `json:"source"`
-	Capture      bool              `json:"capture"`
-	Request      CapturedRequest   `json:"request"`
-	Response     *CapturedResponse `json:"response,omitempty"`
-	Error        string            `json:"error,omitempty"`
+	ConnectionID  string            `json:"id"`
+	TransactionID string            `json:"transactionId"`
+	RequestIndex  uint64            `json:"requestIndex"`
+	StartedAt     time.Time         `json:"startedAt"`
+	CompletedAt   *time.Time        `json:"completedAt,omitempty"`
+	State         F.State           `json:"state"`
+	Modified      bool              `json:"modified"`
+	Source        string            `json:"source"`
+	Capture       bool              `json:"capture"`
+	Request       CapturedRequest   `json:"request"`
+	Response      *CapturedResponse `json:"response,omitempty"`
+	Actions       []F.Action        `json:"actions"`
+	Failure       *F.Failure        `json:"failure,omitempty"`
+	Error         string            `json:"error,omitempty"`
 }
 
 type CaptureSnapshot struct {
@@ -217,7 +223,7 @@ func (s *captureStore) subscribe() (<-chan CaptureEvent, func()) {
 	}
 }
 
-func beginCaptureSession(request *http.Request, metadata *C.Metadata) *captureTransaction {
+func beginCaptureSession(request *http.Request, metadata *C.Metadata, transactionID string) *captureTransaction {
 	capture := defaultCaptureStore.enabled.Load()
 	source := ""
 	if metadata != nil && metadata.SourceValid() {
@@ -228,10 +234,13 @@ func beginCaptureSession(request *http.Request, metadata *C.Metadata) *captureTr
 		store:   defaultCaptureStore,
 		capture: capture,
 		session: CapturedSession{
-			RequestIndex: defaultCaptureStore.nextRequestIndex.Add(1),
-			StartedAt:    time.Now(),
-			Source:       source,
-			Capture:      capture,
+			TransactionID: transactionID,
+			RequestIndex:  defaultCaptureStore.nextRequestIndex.Add(1),
+			StartedAt:     time.Now(),
+			State:         F.StateActive,
+			Source:        source,
+			Capture:       capture,
+			Actions:       make([]F.Action, 0),
 			Request: CapturedRequest{
 				Method:  request.Method,
 				URL:     requestURL,
@@ -283,6 +292,30 @@ func (t *captureTransaction) setConnectionID(id string) {
 	t.store.updateSnapshot(snapshot)
 }
 
+func (t *captureTransaction) recordActions(actions []F.Action) []F.Action {
+	if len(actions) == 0 {
+		return nil
+	}
+	t.mutex.Lock()
+	recorded := make([]F.Action, 0, len(actions))
+	for _, action := range actions {
+		action.Index = uint64(len(t.session.Actions) + 1)
+		if action.At.IsZero() {
+			action.At = time.Now()
+		}
+		action.Fields = append([]string(nil), action.Fields...)
+		t.session.Actions = append(t.session.Actions, action)
+		recorded = append(recorded, action)
+		if action.Modified {
+			t.session.Modified = true
+		}
+	}
+	snapshot := cloneCapturedSession(t.session)
+	t.mutex.Unlock()
+	t.store.updateSnapshot(snapshot)
+	return recorded
+}
+
 func (t *captureTransaction) observeResponse(response *http.Response) {
 	if response == nil {
 		return
@@ -298,11 +331,11 @@ func (t *captureTransaction) observeResponse(response *http.Response) {
 	if response.StatusCode == http.StatusSwitchingProtocols {
 		now := time.Now()
 		t.session.CompletedAt = &now
+		t.completeLocked(F.StateCompleted)
 	}
 	if t.capture && (response.Body == nil || response.Body == http.NoBody) {
 		t.session.Response.Body = newCapturedBody(nil, true)
-		now := time.Now()
-		t.session.CompletedAt = &now
+		t.completeLocked(F.StateCompleted)
 	}
 	snapshot := cloneCapturedSession(t.session)
 	t.mutex.Unlock()
@@ -320,12 +353,28 @@ func (t *captureTransaction) observeResponse(response *http.Response) {
 	response.Body = newObservedBody(response.Body, t.capture, response.ContentLength, t.finishResponseBody)
 }
 
-func (t *captureTransaction) setError(err error) {
+func (t *captureTransaction) setError(stage string, source F.Source, err error) {
 	if err == nil {
 		return
 	}
 	t.mutex.Lock()
 	t.session.Error = err.Error()
+	now := time.Now()
+	t.session.Failure = &F.Failure{
+		At:      now,
+		Stage:   stage,
+		Source:  source,
+		Message: err.Error(),
+	}
+	t.completeLocked(F.StateFailed)
+	snapshot := cloneCapturedSession(t.session)
+	t.mutex.Unlock()
+	t.store.updateSnapshot(snapshot)
+}
+
+func (t *captureTransaction) setAborted() {
+	t.mutex.Lock()
+	t.completeLocked(F.StateAborted)
 	snapshot := cloneCapturedSession(t.session)
 	t.mutex.Unlock()
 	t.store.updateSnapshot(snapshot)
@@ -347,13 +396,26 @@ func (t *captureTransaction) finishResponseBody(data []byte, complete bool) {
 	if t.session.Response != nil && t.capture {
 		t.session.Response.Body = newCapturedBody(data, complete)
 	}
-	if t.session.CompletedAt == nil {
-		now := time.Now()
-		t.session.CompletedAt = &now
+	if t.session.State == F.StateActive {
+		state := F.StateCompleted
+		if !complete {
+			state = F.StateCancelled
+		}
+		t.completeLocked(state)
 	}
 	snapshot := cloneCapturedSession(t.session)
 	t.mutex.Unlock()
 	t.store.updateSnapshot(snapshot)
+}
+
+func (t *captureTransaction) completeLocked(state F.State) {
+	if t.session.State == F.StateActive {
+		t.session.State = state
+	}
+	if t.session.CompletedAt == nil {
+		now := time.Now()
+		t.session.CompletedAt = &now
+	}
 }
 
 type observedBody struct {
@@ -431,6 +493,11 @@ func newCapturedBody(data []byte, complete bool) *CapturedBody {
 
 func cloneCapturedSession(session CapturedSession) CapturedSession {
 	cloned := session
+	cloned.Actions = make([]F.Action, len(session.Actions))
+	for index, action := range session.Actions {
+		cloned.Actions[index] = action
+		cloned.Actions[index].Fields = append([]string(nil), action.Fields...)
+	}
 	cloned.Request.Headers = cloneHTTPHeader(session.Request.Headers)
 	if session.Request.Body != nil {
 		body := *session.Request.Body
@@ -448,6 +515,10 @@ func cloneCapturedSession(session CapturedSession) CapturedSession {
 	if session.CompletedAt != nil {
 		completedAt := *session.CompletedAt
 		cloned.CompletedAt = &completedAt
+	}
+	if session.Failure != nil {
+		failure := *session.Failure
+		cloned.Failure = &failure
 	}
 	return cloned
 }

@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -437,6 +438,89 @@ mitm:
 			require.NotNil(t, captured.CompletedAt)
 		})
 	}
+}
+
+func TestMitmUserUpstreamFailureTransactionAPI(t *testing.T) {
+	const (
+		passphrase = "password"
+		hostname   = "failure.example.com"
+	)
+	_, _, caP12 := newTestAuthority(t, passphrase)
+	parsedConfig, err := config.Parse([]byte(fmt.Sprintf(`
+mitm:
+  hostname:
+    - %s
+  passphrase: %q
+  ca-p12: %q
+`, hostname, passphrase, base64.StdEncoding.EncodeToString(caP12))))
+	require.NoError(t, err)
+
+	mitm.SetCaptureEnabled(false)
+	mitm.ClearCapturedSessions()
+	t.Cleanup(func() {
+		mitm.SetCaptureEnabled(false)
+		mitm.ClearCapturedSessions()
+	})
+
+	interceptor := mitm.New(parsedConfig.Mitm, nil)
+	require.NotNil(t, interceptor)
+	clientConnection, serverConnection := net.Pipe()
+	handleResult := make(chan error, 1)
+	go func() {
+		handled, handleErr := interceptor.Handle(N.NewBufferedConn(serverConnection), &C.Metadata{
+			NetWork: C.TCP,
+			Type:    C.HTTP,
+			SrcIP:   netip.MustParseAddr("127.0.0.1"),
+			SrcPort: 54321,
+			Host:    hostname,
+			DstPort: 80,
+		}, func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("upstream unavailable")
+		})
+		if !handled && handleErr == nil {
+			handleErr = errors.New("connection was not handled")
+		}
+		handleResult <- handleErr
+	}()
+
+	request := &http.Request{
+		Method: http.MethodGet,
+		URL:    mustParseURL(t, "http://"+hostname+"/failure"),
+		Host:   hostname,
+		Header: make(http.Header),
+	}
+	require.NoError(t, request.Write(clientConnection))
+	response, err := http.ReadResponse(bufio.NewReader(clientConnection), request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadGateway, response.StatusCode)
+	_, err = io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	require.Contains(t, response.Header.Get("Warning"), "upstream unavailable")
+	require.NoError(t, clientConnection.Close())
+
+	select {
+	case handleErr := <-handleResult:
+		require.NoError(t, handleErr)
+	case <-time.After(3 * time.Second):
+		t.Fatal("failed HTTP transaction did not stop after the client closed")
+	}
+
+	snapshot := mitm.CapturedSessionsSnapshot()
+	require.Len(t, snapshot.Sessions, 1)
+	transaction := snapshot.Sessions[0]
+	require.NotEmpty(t, transaction.TransactionID)
+	require.Empty(t, transaction.ConnectionID)
+	require.Equal(t, "failed", string(transaction.State))
+	require.NotNil(t, transaction.CompletedAt)
+	require.False(t, transaction.Modified)
+	require.Equal(t, "upstream unavailable", transaction.Error)
+	require.NotNil(t, transaction.Failure)
+	require.Equal(t, "upstream", transaction.Failure.Stage)
+	require.Equal(t, "upstream", string(transaction.Failure.Source))
+	require.Equal(t, "upstream unavailable", transaction.Failure.Message)
+	require.NotNil(t, transaction.Response)
+	require.Equal(t, http.StatusBadGateway, transaction.Response.StatusCode)
 }
 
 func TestMitmUserConfigurationDefaultsAndHostnamePorts(t *testing.T) {

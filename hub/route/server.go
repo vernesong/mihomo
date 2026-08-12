@@ -547,11 +547,19 @@ func getLogs(w http.ResponseWriter, r *http.Request) {
 			if newLevel == "warning" {
 				newLevel = "warn"
 			}
+			fields := make([]LogStructuredField, 0, len(logM.Fields))
+			for _, field := range logM.Fields {
+				fields = append(fields, LogStructuredField{Key: field.Key, Value: field.Value})
+			}
+			eventTime := logM.Time
+			if eventTime.IsZero() {
+				eventTime = time.Now()
+			}
 			if err := json.NewEncoder(buf).Encode(LogStructured{
-				Time:    time.Now().Format(time.TimeOnly),
+				Time:    eventTime.Format(time.TimeOnly),
 				Level:   newLevel,
 				Message: logM.Payload,
-				Fields:  []LogStructuredField{},
+				Fields:  fields,
 			}); err != nil {
 				break
 			}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sync/atomic"
+	"time"
 
 	"github.com/metacubex/mihomo/common/observable"
 
@@ -30,6 +31,13 @@ func init() {
 type Event struct {
 	LogLevel LogLevel
 	Payload  string
+	Time     time.Time
+	Fields   []Field
+}
+
+type Field struct {
+	Key   string
+	Value string
 }
 
 func (e *Event) Type() string {
@@ -37,25 +45,38 @@ func (e *Event) Type() string {
 }
 
 func Infoln(format string, v ...any) {
-	event := newLog(INFO, format, v...)
-	logCh <- event
-	print(event)
+	emit(newLog(INFO, nil, format, v...))
 }
 
 func Warnln(format string, v ...any) {
-	event := newLog(WARNING, format, v...)
-	logCh <- event
-	print(event)
+	emit(newLog(WARNING, nil, format, v...))
 }
 
 func Errorln(format string, v ...any) {
-	event := newLog(ERROR, format, v...)
-	logCh <- event
-	print(event)
+	emit(newLog(ERROR, nil, format, v...))
 }
 
 func Debugln(format string, v ...any) {
-	event := newLog(DEBUG, format, v...)
+	emit(newLog(DEBUG, nil, format, v...))
+}
+
+func InfoFields(fields []Field, format string, v ...any) {
+	emit(newLog(INFO, fields, format, v...))
+}
+
+func WarnFields(fields []Field, format string, v ...any) {
+	emit(newLog(WARNING, fields, format, v...))
+}
+
+func ErrorFields(fields []Field, format string, v ...any) {
+	emit(newLog(ERROR, fields, format, v...))
+}
+
+func DebugFields(fields []Field, format string, v ...any) {
+	emit(newLog(DEBUG, fields, format, v...))
+}
+
+func emit(event Event) {
 	logCh <- event
 	print(event)
 }
@@ -98,9 +119,11 @@ func print(data Event) {
 	}
 }
 
-func newLog(logLevel LogLevel, format string, v ...any) Event {
+func newLog(logLevel LogLevel, fields []Field, format string, v ...any) Event {
 	return Event{
 		LogLevel: logLevel,
 		Payload:  fmt.Sprintf(format, v...),
+		Time:     time.Now(),
+		Fields:   append([]Field(nil), fields...),
 	}
 }

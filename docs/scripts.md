@@ -121,4 +121,6 @@ $httpClient.get({
 
 ## 错误处理
 
-脚本编译错误会使配置加载或远端更新失败。单次执行超时、JavaScript 异常、无效 `$done()` 结果或异步回调异常会写入日志；当前请求或响应保持执行该脚本前的状态，并继续运行后续匹配脚本。显式 `{abort: true}` 和本地 `response` 属于成功结果，会停止当前方向的后续处理。
+脚本编译错误会使配置加载或远端更新失败。单次执行超时、JavaScript 异常、无效 `$done()` 结果或异步回调异常会写入日志，并在 `/mitm` 交易中记录 `outcome=failed` 的 script action；当前请求或响应保持执行该脚本前的状态，并继续运行后续匹配脚本。显式 `{abort: true}` 会记录 `outcome=aborted` 并将交易状态设为 `aborted`；本地 `response` 会记录 `outcome=responded`。两者都属于成功的脚本返回，并停止当前方向的后续处理。
+
+URL、Header、body 和 status 修改也会记录在同一个 action 的 `fields` 中。`transactionId` 与 `$request.id` 相同，可用于关联 `/mitm` 和结构化 `/logs`；完整字段说明见 [logs.md](./logs.md)。

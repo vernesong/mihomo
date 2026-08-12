@@ -208,14 +208,47 @@ rewrite:
 	snapshot := mitm.CapturedSessionsSnapshot()
 	require.Len(t, snapshot.Sessions, 3)
 	transformed := snapshot.Sessions[0]
+	require.NotEmpty(t, transformed.TransactionID)
+	require.Equal(t, "completed", string(transformed.State))
+	require.True(t, transformed.Modified)
+	require.Nil(t, transformed.Failure)
 	require.Equal(t, "http://"+originalHost+"/transform?source=client", transformed.Request.RawURL)
 	require.Equal(t, "http://"+modifiedHost+"/transform?source=client", transformed.Request.URL)
+	require.Len(t, transformed.Actions, 14)
+	for index, action := range transformed.Actions {
+		require.Equal(t, uint64(index+1), action.Index)
+		require.False(t, action.At.IsZero())
+	}
+	require.Equal(t, "url", string(transformed.Actions[0].Kind))
+	require.Equal(t, "applied", string(transformed.Actions[0].Outcome))
+	require.Equal(t, "http://"+modifiedHost+"/transform?source=client", transformed.Actions[0].Target)
+	require.Equal(t, "body", string(transformed.Actions[len(transformed.Actions)-1].Kind))
+	require.Equal(t, "response", string(transformed.Actions[len(transformed.Actions)-1].Phase))
+	require.Equal(t, "applied", string(transformed.Actions[len(transformed.Actions)-1].Outcome))
+
+	invalidJSON := snapshot.Sessions[1]
+	require.Equal(t, "completed", string(invalidJSON.State))
+	require.True(t, invalidJSON.Modified)
+	require.Equal(t, "failed", string(invalidJSON.Actions[len(invalidJSON.Actions)-1].Outcome))
+	require.Contains(t, invalidJSON.Actions[len(invalidJSON.Actions)-1].Message, "invalid character")
+	require.Nil(t, invalidJSON.Failure)
+
+	runtimeFailure := snapshot.Sessions[2]
+	require.Equal(t, "completed", string(runtimeFailure.State))
+	require.Equal(t, "failed", string(runtimeFailure.Actions[len(runtimeFailure.Actions)-1].Outcome))
+	require.Contains(t, runtimeFailure.Actions[len(runtimeFailure.Actions)-1].Message, "keep original")
+	require.Nil(t, runtimeFailure.Failure)
 	encodedSnapshot, err := json.Marshal(snapshot)
 	require.NoError(t, err)
 	var snapshotJSON map[string]any
 	require.NoError(t, json.Unmarshal(encodedSnapshot, &snapshotJSON))
 	sessions := snapshotJSON["sessions"].([]any)
-	requestJSON := sessions[0].(map[string]any)["request"].(map[string]any)
+	transactionJSON := sessions[0].(map[string]any)
+	require.Equal(t, transformed.TransactionID, transactionJSON["transactionId"])
+	require.Equal(t, "completed", transactionJSON["state"])
+	require.Equal(t, true, transactionJSON["modified"])
+	require.Len(t, transactionJSON["actions"], len(transformed.Actions))
+	requestJSON := transactionJSON["request"].(map[string]any)
 	require.Equal(t, transformed.Request.RawURL, requestJSON["raw_url"])
 	require.Equal(t, transformed.Request.URL, requestJSON["url"])
 }
@@ -323,9 +356,38 @@ rewrite:
 
 	snapshot := mitm.CapturedSessionsSnapshot()
 	require.Len(t, snapshot.Sessions, 9)
+	redirect302 := snapshot.Sessions[0]
+	require.Equal(t, "completed", string(redirect302.State))
+	require.True(t, redirect302.Modified)
+	require.Empty(t, redirect302.ConnectionID)
+	require.Len(t, redirect302.Actions, 1)
+	require.Equal(t, "redirect", string(redirect302.Actions[0].Kind))
+	require.Equal(t, "responded", string(redirect302.Actions[0].Outcome))
+	require.Equal(t, http.StatusFound, redirect302.Actions[0].StatusCode)
+	require.Equal(t, "https://example.com/found?x=1", redirect302.Actions[0].Target)
+
+	redirect307 := snapshot.Sessions[1]
+	require.Equal(t, http.StatusTemporaryRedirect, redirect307.Actions[0].StatusCode)
+	require.Equal(t, "https://example.com/temporary?x=1", redirect307.Actions[0].Target)
+
+	rejected := snapshot.Sessions[2]
+	require.Equal(t, "reject", string(rejected.Actions[0].Kind))
+	require.Equal(t, "responded", string(rejected.Actions[0].Outcome))
+	require.Equal(t, http.StatusNotFound, rejected.Actions[0].StatusCode)
+
 	mockCapture := snapshot.Sessions[7].Request
 	require.Equal(t, "http://"+originalHost+"/mock-map", mockCapture.RawURL)
 	require.Equal(t, "http://mock-target.example.com/mock-map", mockCapture.URL)
+	mocked := snapshot.Sessions[7]
+	require.Equal(t, "completed", string(mocked.State))
+	require.True(t, mocked.Modified)
+	require.Empty(t, mocked.ConnectionID)
+	require.Len(t, mocked.Actions, 3)
+	require.Equal(t, "url", string(mocked.Actions[0].Kind))
+	require.Equal(t, "mock", string(mocked.Actions[1].Kind))
+	require.Equal(t, "responded", string(mocked.Actions[1].Outcome))
+	require.Equal(t, http.StatusCreated, mocked.Actions[1].StatusCode)
+	require.Equal(t, "header", string(mocked.Actions[2].Kind))
 }
 
 func TestRewriteUserConfigurationValidationAPI(t *testing.T) {
