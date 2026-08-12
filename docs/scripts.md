@@ -19,6 +19,7 @@ scripts:
       binary-body-mode: false
       requires-body: true
       max-body-size: 1024
+      indirect-eval: false
     argument: '{"region":"sg"}'
 
   scheduled-script:
@@ -36,6 +37,7 @@ scripts:
 - `requires-body` 默认为 `false`。未启用时不向脚本提供 body，也不接受 `$done()` 返回的 body 修改。
 - `max-body-size` 的单位是 KiB，默认为 `1024`，`-1` 表示无限制。超过限制时跳过当前脚本。
 - `binary-body-mode` 为 `true` 时 body 是 `Uint8Array`；否则是 UTF-8 字符串。
+- `indirect-eval` 默认为 `false`。启用后，加载时会将语法上的直接 `eval(...)` 调用改为间接全局 eval，用于兼容会触发 Sobek 直接 eval 词法作用域问题的打包脚本。间接 eval 无法读取调用函数的局部变量。
 - `argument` 原样作为字符串放入 `$argument`。
 
 Body 会依照 `Content-Encoding` 自动解压和重新压缩 `gzip`、`deflate` 与 `br`。脚本执行完毕后释放解码缓冲；转发所需的最终 body 会保留到 HTTP 层消费完毕。
@@ -92,6 +94,7 @@ $done();   // 不修改
 - `$cronexp`：当前 Cron 表达式，仅 Cron 脚本存在。
 - `$script`：包含 `name`、`type`、`startTime` 与 `binaryBodyMode`。
 - `$persistentStore.read([key])` 与 `$persistentStore.write(data[, key])`：持久化字符串。省略 key 时，同一路径的脚本共享默认存储区；显式 key 可跨脚本共享。
+- `setTimeout(callback, delay[, ...args])` 与 `clearTimeout(id)`：延迟单位为毫秒，计时器受脚本总 `timeout` 限制，脚本结束时自动取消。
 - `console.log/info/warn/error`：写入 mihomo 日志。
 
 `$httpClient` 提供 `get`、`post`、`put`、`delete`、`head`、`options` 与 `patch`：

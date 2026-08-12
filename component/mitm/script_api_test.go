@@ -297,6 +297,66 @@ scripts:
 	expectScriptTestConnectionAbort(t, responseAbortClient, "/abort-response")
 }
 
+func TestScriptUserIndirectEvalAndTimerAPI(t *testing.T) {
+	const hostname = "script-timer.example.com"
+	homeDir := useScriptTestHome(t)
+	writeScriptTestFile(t, homeDir, "timer.js", `
+function evaluateLocalScope() {
+  const localOnly = "local";
+  return eval("typeof localOnly");
+}
+
+let canceledTimerRan = false;
+const canceledTimer = setTimeout(function () {
+  canceledTimerRan = true;
+}, 0);
+clearTimeout(canceledTimer);
+
+const evalResult = evaluateLocalScope();
+setTimeout(function (prefix, suffix) {
+  if (canceledTimerRan) {
+    throw new Error("clearTimeout did not cancel the callback");
+  }
+  $done({
+    response: {
+      status: 200,
+      headers: {"Content-Type": "text/plain"},
+      body: evalResult + "|" + prefix + suffix,
+    },
+  });
+}, 10, "timer-", "ok");
+`)
+	parsedConfig := parseScriptTestConfig(t, hostname, `
+scripts:
+  timer:
+    enable: true
+    type: http-request
+    match: '^http://script-timer\.example\.com/'
+    path: ./scripts/timer.js
+    options:
+      indirect-eval: true
+`)
+	t.Cleanup(func() { require.NoError(t, parsedConfig.Scripts.Close()) })
+
+	upstreamRequests := make(chan struct{}, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		upstreamRequests <- struct{}{}
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	client := newScriptTestClient(t, parsedConfig, hostname, upstream.Listener.Addr().String())
+
+	response, body := client.do(t, http.MethodGet, "/run", nil, nil)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, "text/plain", response.Header.Get("Content-Type"))
+	require.Equal(t, "undefined|timer-ok", string(body))
+	select {
+	case <-upstreamRequests:
+		t.Fatal("timer-generated response unexpectedly reached upstream")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestScriptUserRemoteUpdateAndCronAPI(t *testing.T) {
 	homeDir := useScriptTestHome(t)
 	ticks := make(chan string, 16)

@@ -44,6 +44,7 @@ type EntryOption struct {
 	BinaryBodyMode bool
 	RequiresBody   bool
 	MaxBodySize    int64
+	IndirectEval   bool
 	Argument       string
 }
 
@@ -61,6 +62,7 @@ type entry struct {
 	binaryBodyMode bool
 	requiresBody   bool
 	maxBodySize    int64
+	indirectEval   bool
 	argument       string
 	vehicle        *resource.HTTPVehicle
 
@@ -170,6 +172,7 @@ func newEntry(option EntryOption) (*entry, error) {
 		binaryBodyMode: option.BinaryBodyMode,
 		requiresBody:   option.RequiresBody,
 		maxBodySize:    option.MaxBodySize,
+		indirectEval:   option.IndirectEval,
 		argument:       option.Argument,
 	}
 
@@ -268,17 +271,14 @@ func (e *entry) loadInitial(ctx context.Context) error {
 }
 
 func (e *entry) compile(content []byte) error {
-	_, err := sobek.Compile(e.path, string(content), false)
-	if err != nil {
-		return fmt.Errorf("compile JavaScript: %w", err)
-	}
-	return nil
+	_, err := e.compileProgram(content)
+	return err
 }
 
 func (e *entry) install(content []byte, hash utils.HashType) error {
-	program, err := sobek.Compile(e.path, string(content), false)
+	program, err := e.compileProgram(content)
 	if err != nil {
-		return fmt.Errorf("compile JavaScript: %w", err)
+		return err
 	}
 	e.mutex.Lock()
 	e.program = program
@@ -357,9 +357,9 @@ func (e *entry) refresh(ctx context.Context) error {
 		_ = os.Chtimes(e.path, now, now)
 		return nil
 	}
-	program, err := sobek.Compile(e.path, string(content), false)
+	program, err := e.compileProgram(content)
 	if err != nil {
-		return fmt.Errorf("compile JavaScript: %w", err)
+		return err
 	}
 	if err = e.vehicle.Write(content); err != nil {
 		return fmt.Errorf("write script cache: %w", err)

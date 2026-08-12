@@ -158,6 +158,7 @@ tls:
 #       binary-body-mode: false # true 时 body 使用 Uint8Array，否则使用 UTF-8 字符串
 #       requires-body: false # 是否缓冲并向脚本提供 body
 #       max-body-size: 1024 # KiB；-1 表示无限制，超过时跳过当前脚本
+#       indirect-eval: false # 将直接 eval(...) 改为间接全局 eval，兼容部分 Sobek 无法执行的打包脚本
 #     argument: '{"region":"sg"}' # 通过 $argument 获取
 #   response-script:
 #     enable: true
@@ -169,7 +170,8 @@ tls:
 #     type: cron
 #     cron: '0 2 * * *' # 支持 5 栏或带秒的 6 栏表达式，使用系统时区
 #     path: ./scripts/cron.js
-# 脚本提供 Surge 兼容的 $request、$response、$argument、$done()、$httpClient 与 $persistentStore；
+# 脚本提供 Surge 兼容的 $request、$response、$argument、$done()、$httpClient、$persistentStore、
+# setTimeout 与 clearTimeout；
 # 不提供 $notification。多个脚本匹配时共享前一个脚本修改后的请求/响应，并按本节从上到下执行。
 # 脚本超时或执行失败时记录错误，保留当前请求/响应，并继续执行后续匹配脚本。
 

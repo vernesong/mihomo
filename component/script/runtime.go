@@ -38,6 +38,8 @@ type runtimeHost struct {
 	jobs      chan runtimeJob
 	jar       http.CookieJar
 	startedAt time.Time
+	timers    map[int64]*time.Timer
+	nextTimer int64
 
 	doneCalled   bool
 	doneProvided bool
@@ -77,7 +79,9 @@ func (m *Manager) evaluate(scriptEntry *entry, input evaluationInput) (patch map
 		jobs:      make(chan runtimeJob, 64),
 		jar:       jar,
 		startedAt: startedAt,
+		timers:    make(map[int64]*time.Timer),
 	}
+	defer host.stopTimers()
 	if err := host.installGlobals(input); err != nil {
 		return nil, err
 	}
@@ -189,6 +193,9 @@ func (h *runtimeHost) installGlobals(input evaluationInput) error {
 		return err
 	}
 	if err := h.vm.Set("$httpClient", h.httpClientObject()); err != nil {
+		return err
+	}
+	if err := h.installTimerGlobals(); err != nil {
 		return err
 	}
 	return h.vm.Set("console", h.consoleObject())

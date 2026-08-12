@@ -33,6 +33,7 @@ type RawScriptOptions struct {
 	BinaryBodyMode bool   `yaml:"binary-body-mode" json:"binary-body-mode"`
 	RequiresBody   bool   `yaml:"requires-body" json:"requires-body"`
 	MaxBodySize    *int64 `yaml:"max-body-size" json:"max-body-size"`
+	IndirectEval   bool   `yaml:"indirect-eval" json:"indirect-eval"`
 }
 
 func parseScripts(raw *orderedmap.OrderedMap[string, RawScript]) (*Scripts, error) {
@@ -96,6 +97,7 @@ func parseScripts(raw *orderedmap.OrderedMap[string, RawScript]) (*Scripts, erro
 			BinaryBodyMode: rawScript.Options.BinaryBodyMode,
 			RequiresBody:   rawScript.Options.RequiresBody,
 			MaxBodySize:    maxBodyBytes,
+			IndirectEval:   rawScript.Options.IndirectEval,
 			Argument:       rawScript.Argument,
 		})
 	}
