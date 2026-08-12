@@ -3,6 +3,7 @@ package route
 import (
 	"errors"
 
+	"github.com/metacubex/mihomo/common/orderedmap"
 	"github.com/metacubex/mihomo/component/modules"
 	"github.com/metacubex/mihomo/hub/executor"
 
@@ -14,6 +15,9 @@ import (
 func moduleRouter() http.Handler {
 	router := chi.NewRouter()
 	router.Get("/", getModules)
+	if !embedMode {
+		router.Patch("/", patchModules)
+	}
 	router.Route("/{name}", func(router chi.Router) {
 		router.Get("/", getModule)
 		if !embedMode {
@@ -23,10 +27,35 @@ func moduleRouter() http.Handler {
 	return router
 }
 
+type modulesResponse struct {
+	Order   []string                                     `json:"order"`
+	Modules *orderedmap.OrderedMap[string, modules.Info] `json:"modules"`
+}
+
 func getModules(w http.ResponseWriter, r *http.Request) {
-	render.JSON(w, r, render.M{
-		"modules": executor.GetModules(),
+	moduleInfos, order := executor.GetModulesWithOrder()
+	render.JSON(w, r, modulesResponse{
+		Order:   order,
+		Modules: moduleInfos,
 	})
+}
+
+func patchModules(w http.ResponseWriter, r *http.Request) {
+	request := struct {
+		Order *[]string `json:"order"`
+	}{}
+	if err := render.DecodeJSON(r.Body, &request); err != nil || request.Order == nil {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrBadRequest)
+		return
+	}
+
+	if err := executor.SetModuleOrder(*request.Order); err != nil {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, newError(err.Error()))
+		return
+	}
+	render.NoContent(w, r)
 }
 
 func getModuleConfig(w http.ResponseWriter, r *http.Request) {

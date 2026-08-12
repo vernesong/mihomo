@@ -45,8 +45,9 @@ log-level: debug # 日志等级 silent/error/warning/info/debug
 
 # 配置覆写模块，按 YAML 中的声明顺序依次应用；后面的模块拥有更高优先级。
 # 普通对象会深度合并；key! 强制替换对象；+key 前置数组；key+ 追加数组。
-# 可通过 GET /modules 查询，通过 GET /configs/modules 只读查看覆写后的 YAML 配置，
-# 并通过 PATCH /modules/{name} {"enable":true/false} 持久化开关并立即重载。
+# 可通过 GET /modules 查询模块及显式顺序，通过 GET /configs/modules 只读查看覆写后的 YAML 配置。
+# PATCH /modules {"order":["module-a","module-b"]} 会持久化完整顺序并立即重载；数组必须包含所有模块且不可重复。
+# PATCH /modules/{name} {"enable":true/false} 会持久化开关并立即重载。
 # modules:
 #   local-module:
 #     enable: true # 必填

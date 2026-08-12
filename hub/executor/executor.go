@@ -225,13 +225,18 @@ func isActiveModuleManager(manager *modules.Manager) bool {
 }
 
 func GetModules() *orderedmap.OrderedMap[string, modules.Info] {
+	snapshot, _ := GetModulesWithOrder()
+	return snapshot
+}
+
+func GetModulesWithOrder() (*orderedmap.OrderedMap[string, modules.Info], []string) {
 	moduleAccessMux.RLock()
 	manager := activeModules
 	moduleAccessMux.RUnlock()
 	if manager == nil {
-		return orderedmap.New[string, modules.Info]()
+		return orderedmap.New[string, modules.Info](), []string{}
 	}
-	return manager.Snapshot()
+	return manager.SnapshotWithOrder()
 }
 
 func GetModule(name string) (modules.Info, bool) {
@@ -272,6 +277,50 @@ func SetModuleEnabled(name string, enabled bool) error {
 		return err
 	}
 	updated, changed, err := modules.SetEnabled(source, name, enabled)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return nil
+	}
+
+	cfg, err := ParseWithBytes(updated)
+	if err != nil {
+		return err
+	}
+	if cfg.Modules != nil {
+		cfg.Modules.SetSourcePath(path)
+	}
+	if cfg.Scripts != nil {
+		cfg.Scripts.SetSourcePath(path)
+	}
+
+	if err := writeConfigAtomic(path, updated); err != nil {
+		return err
+	}
+
+	applyConfigWithLock(cfg, true)
+	return nil
+}
+
+func SetModuleOrder(order []string) error {
+	configApplyMux.Lock()
+	defer configApplyMux.Unlock()
+
+	path := C.Path.Config()
+	moduleAccessMux.RLock()
+	manager := activeModules
+	moduleAccessMux.RUnlock()
+	if manager != nil {
+		if sourcePath := manager.SourcePath(); sourcePath != "" {
+			path = sourcePath
+		}
+	}
+	source, err := readConfig(path)
+	if err != nil {
+		return err
+	}
+	updated, changed, err := modules.SetOrder(source, order)
 	if err != nil {
 		return err
 	}

@@ -523,11 +523,18 @@ func (m *Manager) Close() error {
 }
 
 func (m *Manager) Snapshot() *orderedmap.OrderedMap[string, Info] {
+	snapshot, _ := m.SnapshotWithOrder()
+	return snapshot
+}
+
+func (m *Manager) SnapshotWithOrder() (*orderedmap.OrderedMap[string, Info], []string) {
 	snapshot := orderedmap.New[string, Info](len(m.entries))
+	order := make([]string, 0, len(m.entries))
 	for _, moduleEntry := range m.entries {
 		snapshot.Set(moduleEntry.name, moduleEntry.info())
+		order = append(order, moduleEntry.name)
 	}
-	return snapshot
+	return snapshot, order
 }
 
 func (m *Manager) Get(name string) (Info, bool) {

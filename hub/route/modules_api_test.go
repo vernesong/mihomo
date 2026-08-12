@@ -176,6 +176,135 @@ log-level: error
 	require.Equal(t, "debug", modulesAPILogLevel(t, server))
 }
 
+func TestModulesOrderAPI(t *testing.T) {
+	homeDir, configPath, server := newModulesAPITestServer(t)
+	modulesDir := filepath.Join(homeDir, "modules")
+	require.NoError(t, os.MkdirAll(modulesDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(modulesDir, "first.yaml"), []byte("log-level: warning\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(modulesDir, "second.yaml"), []byte("log-level: error\n"), 0o644))
+	require.NoError(t, os.WriteFile(configPath, []byte(`
+mixed-port: 0
+log-level: info
+modules:
+  first-module:
+    enable: true
+    type: file
+    path: ./modules/first.yaml
+  second-module:
+    enable: true
+    type: file
+    path: ./modules/second.yaml
+  disabled-module:
+    enable: false
+    type: file
+    path: ./modules/missing.yaml
+`), 0o644))
+
+	response := modulesAPIRequest(t, server.Client(), http.MethodPut, server.URL+"/configs?force=true", map[string]any{
+		"path": configPath,
+	})
+	require.Equal(t, http.StatusNoContent, response.StatusCode)
+	require.NoError(t, response.Body.Close())
+	require.Equal(t, "error", modulesAPILogLevel(t, server))
+	require.Equal(t, []string{"first-module", "second-module", "disabled-module"}, modulesAPIOrder(t, server))
+
+	order := []string{"second-module", "disabled-module", "first-module"}
+	response = modulesAPIRequest(t, server.Client(), http.MethodPatch, server.URL+"/modules", map[string]any{
+		"order": order,
+	})
+	require.Equal(t, http.StatusNoContent, response.StatusCode)
+	require.NoError(t, response.Body.Close())
+	require.Equal(t, "warning", modulesAPILogLevel(t, server))
+	require.Equal(t, order, modulesAPIOrder(t, server))
+
+	persisted, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	secondIndex := bytes.Index(persisted, []byte("second-module:"))
+	disabledIndex := bytes.Index(persisted, []byte("disabled-module:"))
+	firstIndex := bytes.Index(persisted, []byte("first-module:"))
+	require.NotEqual(t, -1, secondIndex)
+	require.Less(t, secondIndex, disabledIndex)
+	require.Less(t, disabledIndex, firstIndex)
+
+	unchanged := append([]byte(nil), persisted...)
+	response = modulesAPIRequest(t, server.Client(), http.MethodPatch, server.URL+"/modules", map[string]any{
+		"order": order,
+	})
+	require.Equal(t, http.StatusNoContent, response.StatusCode)
+	require.NoError(t, response.Body.Close())
+	persisted, err = os.ReadFile(configPath)
+	require.NoError(t, err)
+	require.Equal(t, unchanged, persisted)
+
+	invalidOrders := []struct {
+		name    string
+		body    map[string]any
+		message string
+	}{
+		{name: "missing module", body: map[string]any{"order": []string{"second-module", "first-module"}}, message: "missing modules"},
+		{name: "duplicate module", body: map[string]any{"order": []string{"second-module", "second-module", "first-module"}}, message: "duplicate module"},
+		{name: "unknown module", body: map[string]any{"order": []string{"second-module", "unknown-module", "first-module"}}, message: "unknown module"},
+		{name: "missing order field", body: map[string]any{}, message: "Body invalid"},
+	}
+	for _, testCase := range invalidOrders {
+		t.Run(testCase.name, func(t *testing.T) {
+			response := modulesAPIRequest(t, server.Client(), http.MethodPatch, server.URL+"/modules", testCase.body)
+			require.Equal(t, http.StatusBadRequest, response.StatusCode)
+			body, err := io.ReadAll(response.Body)
+			require.NoError(t, err)
+			require.NoError(t, response.Body.Close())
+			require.Contains(t, string(body), testCase.message)
+
+			current, err := os.ReadFile(configPath)
+			require.NoError(t, err)
+			require.Equal(t, unchanged, current)
+			require.Equal(t, order, modulesAPIOrder(t, server))
+			require.Equal(t, "warning", modulesAPILogLevel(t, server))
+		})
+	}
+}
+
+func TestModulesOrderRejectsInvalidEffectiveConfigAPI(t *testing.T) {
+	homeDir, configPath, server := newModulesAPITestServer(t)
+	modulesDir := filepath.Join(homeDir, "modules")
+	require.NoError(t, os.MkdirAll(modulesDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(modulesDir, "invalid.yaml"), []byte("log-level: invalid\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(modulesDir, "valid.yaml"), []byte("log-level: warning\n"), 0o644))
+	require.NoError(t, os.WriteFile(configPath, []byte(`
+mixed-port: 0
+modules:
+  invalid-first:
+    enable: true
+    type: file
+    path: ./modules/invalid.yaml
+  valid-last:
+    enable: true
+    type: file
+    path: ./modules/valid.yaml
+`), 0o644))
+
+	response := modulesAPIRequest(t, server.Client(), http.MethodPut, server.URL+"/configs?force=true", map[string]any{
+		"path": configPath,
+	})
+	require.Equal(t, http.StatusNoContent, response.StatusCode)
+	require.NoError(t, response.Body.Close())
+	require.Equal(t, "warning", modulesAPILogLevel(t, server))
+
+	before, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	response = modulesAPIRequest(t, server.Client(), http.MethodPatch, server.URL+"/modules", map[string]any{
+		"order": []string{"valid-last", "invalid-first"},
+	})
+	require.Equal(t, http.StatusBadRequest, response.StatusCode)
+	require.NoError(t, response.Body.Close())
+
+	after, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+	require.Equal(t, []string{"invalid-first", "valid-last"}, modulesAPIOrder(t, server))
+	require.Equal(t, "warning", modulesAPILogLevel(t, server))
+}
+
 func TestModulesHTTPUpdateAndValidationAPI(t *testing.T) {
 	var remoteContent atomic.Value
 	remoteContent.Store("log-level: warning\n")
@@ -305,6 +434,18 @@ func modulesAPIRules(t *testing.T, server *httptest.Server) []Rule {
 	}
 	require.NoError(t, json.NewDecoder(response.Body).Decode(&result))
 	return result.Rules
+}
+
+func modulesAPIOrder(t *testing.T, server *httptest.Server) []string {
+	t.Helper()
+	response := modulesAPIRequest(t, server.Client(), http.MethodGet, server.URL+"/modules", nil)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	defer response.Body.Close()
+	var result struct {
+		Order []string `json:"order"`
+	}
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&result))
+	return result.Order
 }
 
 type modulesAPIEffective struct {
