@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/notification"
 	"github.com/metacubex/mihomo/component/profile/cachefile"
+	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 
 	"github.com/grafana/sobek"
@@ -173,6 +177,9 @@ func (h *runtimeHost) installGlobals(input evaluationInput) error {
 	if err := h.vm.Set("$script", scriptObject); err != nil {
 		return err
 	}
+	if err := h.vm.Set("$environment", h.environmentObject()); err != nil {
+		return err
+	}
 	if h.entry.scriptType == TypeCron {
 		if err := h.vm.Set("$cronexp", h.entry.cronExpression); err != nil {
 			return err
@@ -192,6 +199,9 @@ func (h *runtimeHost) installGlobals(input evaluationInput) error {
 	if err := h.vm.Set("$persistentStore", h.persistentStoreObject()); err != nil {
 		return err
 	}
+	if err := h.vm.Set("$notification", h.notificationObject()); err != nil {
+		return err
+	}
 	if err := h.vm.Set("$httpClient", h.httpClientObject()); err != nil {
 		return err
 	}
@@ -199,6 +209,45 @@ func (h *runtimeHost) installGlobals(input evaluationInput) error {
 		return err
 	}
 	return h.vm.Set("console", h.consoleObject())
+}
+
+func (h *runtimeHost) environmentObject() *sobek.Object {
+	object := h.vm.NewObject()
+	_ = object.Set("system", scriptSystemName())
+	_ = object.Set("surge-build", C.Version)
+	_ = object.Set("surge-version", C.Version)
+	_ = object.Set("language", scriptLanguage())
+	_ = object.Set("device-model", runtime.GOARCH)
+	_ = object.Set("mihomo-version", C.Version)
+	return object
+}
+
+func scriptSystemName() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "macOS"
+	case "ios":
+		return "iOS"
+	default:
+		return runtime.GOOS
+	}
+}
+
+func scriptLanguage() string {
+	for _, name := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+		locale := strings.TrimSpace(os.Getenv(name))
+		if locale == "" {
+			continue
+		}
+		if index := strings.IndexByte(locale, '.'); index >= 0 {
+			locale = locale[:index]
+		}
+		if index := strings.IndexByte(locale, '@'); index >= 0 {
+			locale = locale[:index]
+		}
+		return strings.ReplaceAll(locale, "_", "-")
+	}
+	return "en"
 }
 
 func (h *runtimeHost) requestObject(input evaluationInput) *sobek.Object {
@@ -266,10 +315,6 @@ func (h *runtimeHost) persistentStoreObject() *sobek.Object {
 		return h.vm.ToValue(string(data))
 	})
 	_ = object.Set("write", func(call sobek.FunctionCall) sobek.Value {
-		data, ok := call.Argument(0).Export().(string)
-		if !ok || len(data) > persistentStoreDataLimit {
-			return h.vm.ToValue(false)
-		}
 		key, ok := h.persistentKey(call, 1)
 		if !ok || key == "" || len(key) > persistentStoreKeyLimit {
 			return h.vm.ToValue(false)
@@ -278,10 +323,89 @@ func (h *runtimeHost) persistentStoreObject() *sobek.Object {
 		if cache.DB == nil {
 			return h.vm.ToValue(false)
 		}
+		dataValue := call.Argument(0)
+		if sobek.IsNull(dataValue) {
+			cache.DeleteStorage(key)
+			return h.vm.ToValue(true)
+		}
+		data, ok := dataValue.Export().(string)
+		if !ok || len(data) > persistentStoreDataLimit {
+			return h.vm.ToValue(false)
+		}
 		cache.SetStorage(key, []byte(data))
 		return h.vm.ToValue(true)
 	})
 	return object
+}
+
+func (h *runtimeHost) notificationObject() *sobek.Object {
+	object := h.vm.NewObject()
+	_ = object.Set("post", func(call sobek.FunctionCall) sobek.Value {
+		notification.Post(
+			notificationText(call, 0),
+			notificationText(call, 1),
+			notificationText(call, 2),
+			h.entry.name,
+			notificationOptions(call),
+		)
+		return sobek.Undefined()
+	})
+	return object
+}
+
+func notificationText(call sobek.FunctionCall, index int) string {
+	if len(call.Arguments) <= index {
+		return ""
+	}
+	value := call.Argument(index)
+	if sobek.IsUndefined(value) || sobek.IsNull(value) {
+		return ""
+	}
+	return value.String()
+}
+
+func notificationOptions(call sobek.FunctionCall) map[string]any {
+	if len(call.Arguments) <= 3 {
+		return nil
+	}
+	value := call.Argument(3)
+	if sobek.IsUndefined(value) || sobek.IsNull(value) {
+		return nil
+	}
+	exported := value.Export()
+	if url, ok := exported.(string); ok {
+		return map[string]any{"action": "open-url", "url": url}
+	}
+	raw, ok := exported.(map[string]any)
+	if !ok {
+		return nil
+	}
+	options := make(map[string]any)
+	for _, name := range []string{
+		"action",
+		"url",
+		"text",
+		"media-url",
+		"media-base64",
+		"media-base64-mime",
+	} {
+		if option, found := raw[name].(string); found && option != "" {
+			options[name] = option
+		}
+	}
+	if autoDismiss, found := raw["auto-dismiss"].(bool); found {
+		options["auto-dismiss"] = autoDismiss
+	}
+	if sound, found := raw["sound"]; found {
+		switch sound.(type) {
+		case bool, string:
+			options["sound"] = sound
+		}
+	}
+	if len(options) == 0 {
+		return nil
+	}
+	return options
 }
 
 func (h *runtimeHost) persistentKey(call sobek.FunctionCall, index int) (string, bool) {

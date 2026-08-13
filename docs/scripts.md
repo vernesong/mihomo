@@ -101,7 +101,9 @@ $done();   // 不修改
 - `$argument`：配置中的 argument 字符串。
 - `$cronexp`：当前 Cron 表达式，仅 Cron 脚本存在。
 - `$script`：包含 `name`、`type`、`startTime` 与 `binaryBodyMode`。
-- `$persistentStore.read([key])` 与 `$persistentStore.write(data[, key])`：持久化字符串。省略 key 时，同一路径的脚本共享默认存储区；显式 key 可跨脚本共享。
+- `$environment`：提供 Surge 兼容的 `system`、`surge-build`、`surge-version`、`language` 与 `device-model`，并额外提供 `mihomo-version`。`system` 与 `device-model` 反映 mihomo 实际运行平台，而不是伪装成 iOS 或 macOS。
+- `$persistentStore.read([key])` 与 `$persistentStore.write(data[, key])`：持久化字符串。`$persistentStore.write(null, key)` 删除指定值。省略 key 时，同一路径的脚本共享默认存储区；显式 key 可跨脚本共享。
+- `$notification.post(title, subtitle, body[, options])`：将 Surge 格式通知转发到控制器。支持 `action`、`url`、`text`、`media-url`、`media-base64`、`media-base64-mime`、`auto-dismiss` 与 `sound` 选项。
 - `setTimeout(callback, delay[, ...args])` 与 `clearTimeout(id)`：延迟单位为毫秒，计时器受脚本总 `timeout` 限制，脚本结束时自动取消。
 - `console.log/info/warn/error`：写入 mihomo 日志。
 
@@ -125,7 +127,12 @@ $httpClient.get({
 
 请求参数也可直接使用 URL 字符串。Object body 会编码为 JSON，并在缺失时补充 `Content-Type: application/json`；TypedArray body 按二进制发送。回调签名为 `callback(error, response, data)`。
 
-不提供 `$notification`。
+## 通知转发 API
+
+- `GET /notification`：返回内存中最近 64 条脚本通知，格式为 `{"limit":64,"notifications":[...]}`。
+- `GET /notification` WebSocket：连接后先发送 `type=snapshot`，之后逐条发送 `type=notification`，并每 30 秒发送 `type=heartbeat`。和其他控制器 WebSocket 一样，可使用 `?token=<secret>` 鉴权。
+
+通知只保存在内存中，重启后清空。mihomo core 不负责调用系统通知服务；Dashboard 等控制器客户端决定如何展示或处理 `action`。
 
 ## 错误处理
 

@@ -71,14 +71,23 @@ func TestScriptUserRequestResponsePipelineAPI(t *testing.T) {
 
 	writeScriptTestFile(t, homeDir, "request-first.js", `
 const headers = $request.headers;
-if (typeof $notification !== "undefined" || typeof $response !== "undefined") {
+if (typeof $response !== "undefined") {
   throw new Error("unexpected request globals");
+}
+if (typeof $environment !== "object" || !$environment["surge-version"] ||
+    !$environment["surge-build"] || !$environment.system || !$environment.language ||
+    !$environment["device-model"] || !$environment["mihomo-version"]) {
+  throw new Error("incomplete Surge environment");
+}
+if (typeof $notification !== "object" || typeof $notification.post !== "function") {
+  throw new Error("notification API is unavailable");
 }
 if ($script.name !== "request-first" || !$script.binaryBodyMode || !($script.startTime instanceof Date)) {
   throw new Error("unexpected script metadata");
 }
 headers["X-Order"] = "first";
 headers["X-Script-Id"] = $request.id;
+headers["X-Script-Environment"] = JSON.stringify($environment);
 headers.Host = "script-updated.example.com";
 if (!$persistentStore.write($argument, "script-shared-key")) {
   throw new Error("persistent write failed");
@@ -120,6 +129,16 @@ throw new Error("the final response script must still run");
 	writeScriptTestFile(t, homeDir, "response-second.js", `
 const headers = $response.headers;
 headers["X-Response-Order"] += ",second";
+if (!$persistentStore.write(null, "script-shared-key") || $persistentStore.read("script-shared-key") !== null) {
+  throw new Error("persistent delete failed");
+}
+$notification.post("Pipeline complete", "Surge compatibility", "The request finished", {
+  action: "open-url",
+  url: "https://example.com/result",
+  "auto-dismiss": false,
+  sound: true,
+});
+headers["X-Persisted-Deleted"] = "true";
 $done({headers, body: $response.body + "-complete"});
 `)
 
@@ -220,8 +239,11 @@ scripts:
 	require.Equal(t, "persisted-value", seen.headers.Get("X-Persisted"))
 	require.Equal(t, "auxiliary", seen.headers.Get("X-Auxiliary"))
 	require.NotEmpty(t, seen.headers.Get("X-Script-Id"))
+	require.Contains(t, seen.headers.Get("X-Script-Environment"), `"surge-version":"`)
+	require.Contains(t, seen.headers.Get("X-Script-Environment"), `"mihomo-version":"`)
 	require.Equal(t, http.StatusCreated, response.StatusCode)
 	require.Equal(t, "first,second", response.Header.Get("X-Response-Order"))
+	require.Equal(t, "true", response.Header.Get("X-Persisted-Deleted"))
 	require.Equal(t, "rewritten-complete", string(responseBody))
 
 	snapshot := mitm.CapturedSessionsSnapshot()
