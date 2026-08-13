@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -159,7 +160,13 @@ func applyConfig(cfg *config.Config, force bool) {
 	updateProfile(cfg)
 	loadProvider(cfg.RuleProviders)
 	tunnel.RefreshProtocolDetection()
-	runtime.GC()
+	if cfg.Scripts != nil {
+		// Script compilation leaves large, short-lived parser and compiler arenas
+		// behind. Return those pages immediately instead of retaining the peak.
+		debug.FreeOSMemory()
+	} else {
+		runtime.GC()
+	}
 	tunnel.OnRunning()
 	updateUpdater(cfg)
 

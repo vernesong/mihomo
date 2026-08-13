@@ -99,6 +99,38 @@ type preparedEntry struct {
 	updatedAt time.Time
 }
 
+type programCacheKey struct {
+	hash         utils.HashType
+	indirectEval bool
+}
+
+type loadedScript struct {
+	content []byte
+	hash    utils.HashType
+}
+
+// initialLoadCache exists only while a configuration is being resolved. A
+// single JavaScript bundle is commonly referenced by many HTTP match rules;
+// keeping the source and compiled program here prevents every rule from
+// downloading and compiling its own copy.
+type initialLoadCache struct {
+	programs map[programCacheKey]*sobek.Program
+	remote   map[string]loadedScript
+}
+
+type cachedProgram struct {
+	program    *sobek.Program
+	references int
+}
+
+// programStore owns the programs currently used by one Manager. It allows
+// independently refreshed entries to converge on one compiled program while
+// dropping obsolete versions as soon as the final entry moves away from them.
+type programStore struct {
+	mutex    sync.Mutex
+	programs map[programCacheKey]*cachedProgram
+}
+
 // Config is a resolved script configuration without scheduler, goroutine, or
 // cancellation lifecycle. Enabled sources are loaded and compiled before the
 // configuration is returned.
@@ -132,6 +164,7 @@ type Manager struct {
 	scheduler      *cron.Cron
 	pullWaitGroup  sync.WaitGroup
 	closeOnce      sync.Once
+	programs       *programStore
 
 	sourcePath string
 }
@@ -149,6 +182,10 @@ func NewConfig(options []EntryOption) (*Config, error) {
 	config := &Config{
 		entries: make([]preparedEntry, 0, len(options)),
 	}
+	loadCache := &initialLoadCache{
+		programs: make(map[programCacheKey]*sobek.Program),
+		remote:   make(map[string]loadedScript),
+	}
 	usedPaths := make(map[string]string, len(options))
 	for index, option := range options {
 		scriptEntry, err := newPreparedEntry(option)
@@ -162,7 +199,7 @@ func NewConfig(options []EntryOption) (*Config, error) {
 		usedPaths[pathKey] = scriptEntry.name
 
 		if scriptEntry.enable {
-			if err = scriptEntry.loadInitial(context.Background()); err != nil {
+			if err = scriptEntry.loadInitial(context.Background(), loadCache); err != nil {
 				return nil, fmt.Errorf("scripts.%s: %w", scriptEntry.name, err)
 			}
 		}
@@ -215,6 +252,7 @@ func (c *Config) NewManager() *Manager {
 			manager.cronEntries = append(manager.cronEntries, scriptEntry)
 		}
 	}
+	manager.programs = newProgramStore(manager.entries)
 	return manager
 }
 
@@ -323,23 +361,31 @@ func (s entrySpec) newHTTPVehicle() *resource.HTTPVehicle {
 	return resource.NewHTTPVehicle(s.url, s.path, "", nil, resource.DefaultHttpTimeout, 0)
 }
 
-func (e *preparedEntry) loadInitial(ctx context.Context) error {
+func (e *preparedEntry) loadInitial(ctx context.Context, cache *initialLoadCache) error {
 	vehicle := e.newHTTPVehicle()
 	if vehicle == nil {
 		content, err := os.ReadFile(e.path)
 		if err != nil {
 			return fmt.Errorf("read local script: %w", err)
 		}
-		return e.install(content, utils.MakeHash(content), fileUpdatedAt(e.path))
+		return e.install(content, utils.MakeHash(content), fileUpdatedAt(e.path), cache.programs)
 	}
 
-	content, hash, downloadErr := vehicle.Read(ctx, utils.HashType{})
+	loaded, found := cache.remote[e.url]
+	var downloadErr error
+	if !found {
+		loaded.content, loaded.hash, downloadErr = vehicle.Read(ctx, utils.HashType{})
+		if downloadErr == nil {
+			cache.remote[e.url] = loaded
+		}
+	}
 	if downloadErr == nil {
-		if err := e.compile(content); err == nil {
-			if err = vehicle.Write(content); err != nil {
+		if program, err := e.programFor(loaded.content, loaded.hash, cache.programs); err == nil {
+			if err = vehicle.Write(loaded.content); err != nil {
 				return fmt.Errorf("write script cache: %w", err)
 			}
-			return e.install(content, hash, fileUpdatedAt(e.path))
+			e.setProgram(program, loaded.hash, fileUpdatedAt(e.path))
+			return nil
 		} else {
 			downloadErr = err
 		}
@@ -347,7 +393,7 @@ func (e *preparedEntry) loadInitial(ctx context.Context) error {
 
 	cached, cacheErr := os.ReadFile(e.path)
 	if cacheErr == nil {
-		if err := e.install(cached, utils.MakeHash(cached), fileUpdatedAt(e.path)); err == nil {
+		if err := e.install(cached, utils.MakeHash(cached), fileUpdatedAt(e.path), cache.programs); err == nil {
 			log.Warnln("[Script] %s update failed, using cached script: %s", e.name, downloadErr)
 			return nil
 		} else {
@@ -357,9 +403,8 @@ func (e *preparedEntry) loadInitial(ctx context.Context) error {
 	return fmt.Errorf("download script: %w; cached script unavailable: %v", downloadErr, cacheErr)
 }
 
-func (e *entrySpec) compile(content []byte) error {
-	_, err := e.compileProgram(content)
-	return err
+func (e *entrySpec) cacheKey(hash utils.HashType) programCacheKey {
+	return programCacheKey{hash: hash, indirectEval: e.indirectEval}
 }
 
 func fileUpdatedAt(path string) time.Time {
@@ -369,15 +414,49 @@ func fileUpdatedAt(path string) time.Time {
 	return time.Now()
 }
 
-func (e *preparedEntry) install(content []byte, hash utils.HashType, updatedAt time.Time) error {
+func (e *preparedEntry) programFor(content []byte, hash utils.HashType, programs map[programCacheKey]*sobek.Program) (*sobek.Program, error) {
+	key := e.cacheKey(hash)
+	if program := programs[key]; program != nil {
+		return program, nil
+	}
 	program, err := e.compileProgram(content)
+	if err != nil {
+		return nil, err
+	}
+	programs[key] = program
+	return program, nil
+}
+
+func (e *preparedEntry) install(content []byte, hash utils.HashType, updatedAt time.Time, programs map[programCacheKey]*sobek.Program) error {
+	program, err := e.programFor(content, hash, programs)
 	if err != nil {
 		return err
 	}
+	e.setProgram(program, hash, updatedAt)
+	return nil
+}
+
+func (e *preparedEntry) setProgram(program *sobek.Program, hash utils.HashType, updatedAt time.Time) {
 	e.program = program
 	e.hash = hash
 	e.updatedAt = updatedAt
-	return nil
+}
+
+func newProgramStore(entries []*entry) *programStore {
+	store := &programStore{programs: make(map[programCacheKey]*cachedProgram)}
+	for _, scriptEntry := range entries {
+		if scriptEntry.program == nil {
+			continue
+		}
+		key := scriptEntry.cacheKey(scriptEntry.hash)
+		cached := store.programs[key]
+		if cached == nil {
+			cached = &cachedProgram{program: scriptEntry.program}
+			store.programs[key] = cached
+		}
+		cached.references++
+	}
+	return store
 }
 
 func (e *entry) currentProgram() *sobek.Program {
@@ -424,7 +503,7 @@ func (m *Manager) pullLoop(scriptEntry *entry) {
 	for {
 		select {
 		case <-timer.C:
-			if err := scriptEntry.refresh(m.ctx); err != nil {
+			if err := m.refresh(scriptEntry); err != nil {
 				if m.ctx.Err() != nil {
 					return
 				}
@@ -437,11 +516,11 @@ func (m *Manager) pullLoop(scriptEntry *entry) {
 	}
 }
 
-func (e *entry) refresh(ctx context.Context) error {
+func (m *Manager) refresh(e *entry) error {
 	e.mutex.RLock()
 	oldHash := e.hash
 	e.mutex.RUnlock()
-	content, hash, err := e.vehicle.Read(ctx, oldHash)
+	content, hash, err := e.vehicle.Read(m.ctx, oldHash)
 	if err != nil {
 		return err
 	}
@@ -453,19 +532,54 @@ func (e *entry) refresh(ctx context.Context) error {
 		e.mutex.Unlock()
 		return nil
 	}
-	program, err := e.compileProgram(content)
-	if err != nil {
+	if err = m.programs.replace(e, content, hash); err != nil {
 		return err
 	}
-	if err = e.vehicle.Write(content); err != nil {
+	log.Infoln("[Script] %s's content update", e.name)
+	return nil
+}
+
+func (s *programStore) replace(e *entry, content []byte, hash utils.HashType) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	key := e.cacheKey(hash)
+	cached := s.programs[key]
+	program := (*sobek.Program)(nil)
+	if cached != nil {
+		program = cached.program
+	} else {
+		var err error
+		program, err = e.compileProgram(content)
+		if err != nil {
+			return err
+		}
+	}
+	if err := e.vehicle.Write(content); err != nil {
 		return fmt.Errorf("write script cache: %w", err)
 	}
+
 	e.mutex.Lock()
+	oldKey := e.cacheKey(e.hash)
 	e.program = program
 	e.hash = hash
 	e.updatedAt = fileUpdatedAt(e.path)
 	e.mutex.Unlock()
-	log.Infoln("[Script] %s's content update", e.name)
+
+	if oldKey == key {
+		return nil
+	}
+	if cached == nil {
+		cached = &cachedProgram{program: program}
+		s.programs[key] = cached
+	}
+	cached.references++
+	if previous := s.programs[oldKey]; previous != nil {
+		previous.references--
+		if previous.references == 0 {
+			delete(s.programs, oldKey)
+		}
+	}
 	return nil
 }
 

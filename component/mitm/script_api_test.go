@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -271,6 +272,47 @@ scripts:
 	require.Equal(t, "applied", string(transaction.Actions[5].Outcome))
 }
 
+func TestScriptUserSharedBundleAPI(t *testing.T) {
+	const hostname = "script-shared.example.com"
+	homeDir := useScriptTestHome(t)
+	const sharedBundle = `
+const headers = $request.headers;
+headers["X-Shared-Bundle"] = (headers["X-Shared-Bundle"] || "") + $script.name + "=" + $argument + ";";
+$done({headers});
+`
+	writeScriptTestFile(t, homeDir, "shared-first.js", sharedBundle)
+	writeScriptTestFile(t, homeDir, "shared-second.js", sharedBundle)
+	parsedConfig := parseScriptTestConfig(t, hostname, `
+scripts:
+  shared-first:
+    enable: true
+    type: http-request
+    match: '^http://script-shared\.example\.com/'
+    path: ./scripts/shared-first.js
+    argument: first
+  shared-second:
+    enable: true
+    type: http-request
+    match: '^http://script-shared\.example\.com/'
+    path: ./scripts/shared-second.js
+    argument: second
+`)
+	t.Cleanup(func() { require.NoError(t, parsedConfig.Scripts.Close()) })
+
+	seenHeaders := make(chan http.Header, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		seenHeaders <- request.Header.Clone()
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	client := newScriptTestClient(t, parsedConfig, hostname, upstream.Listener.Addr().String())
+
+	response, body := client.do(t, http.MethodGet, "/run", nil, nil)
+	require.Equal(t, http.StatusNoContent, response.StatusCode)
+	require.Empty(t, body)
+	require.Equal(t, "shared-first=first;shared-second=second;", receiveRewriteTestValue(t, seenHeaders).Get("X-Shared-Bundle"))
+}
+
 func TestScriptUserMockAndBodyLimitAPI(t *testing.T) {
 	const hostname = "script-limit.example.com"
 	mitm.ClearCapturedSessions()
@@ -439,6 +481,7 @@ scripts:
 func TestScriptUserRemoteUpdateAndCronAPI(t *testing.T) {
 	homeDir := useScriptTestHome(t)
 	ticks := make(chan string, 16)
+	var scriptRequests atomic.Int32
 	var sourceMutex sync.RWMutex
 	var scriptSource string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -447,6 +490,7 @@ func TestScriptUserRemoteUpdateAndCronAPI(t *testing.T) {
 			writer.WriteHeader(http.StatusNoContent)
 			return
 		}
+		scriptRequests.Add(1)
 		sourceMutex.RLock()
 		defer sourceMutex.RUnlock()
 		_, _ = writer.Write([]byte(scriptSource))
@@ -483,6 +527,7 @@ scripts:
 `, scriptURL, scriptURL)))
 	require.NoError(t, err)
 	require.NotNil(t, parsedConfig.Scripts)
+	require.EqualValues(t, 1, scriptRequests.Load(), "entries sharing one URL should fetch it once while loading")
 	scriptManager := parsedConfig.Scripts.NewManager()
 	scriptManager.Start()
 	t.Cleanup(func() { require.NoError(t, scriptManager.Close()) })
