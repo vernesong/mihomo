@@ -351,7 +351,7 @@ func (i *Interceptor) runRequestPipeline(session *Session, request *http.Request
 	if i.rewrite != nil {
 		result := i.rewrite.ProcessRequest(request)
 		session.SetRequest(request)
-		session.recordResult(result)
+		recordPipelineResult(session, result)
 		response = result.Response
 		if result.Decision == F.DecisionAbort {
 			return request, response, true
@@ -360,7 +360,7 @@ func (i *Interceptor) runRequestPipeline(session *Session, request *http.Request
 	if response == nil && i.scripts != nil {
 		result := i.scripts.ProcessRequestFlow(request, session.ID())
 		session.SetRequest(request)
-		session.recordResult(result)
+		recordPipelineResult(session, result)
 		response = result.Response
 		if result.Decision == F.DecisionAbort {
 			return request, response, true
@@ -446,17 +446,38 @@ func (i *Interceptor) runResponsePipeline(session *Session, response *http.Respo
 	}
 	if i.rewrite != nil {
 		result := i.rewrite.ProcessResponse(session.Request(), response)
-		session.recordResult(result)
+		recordPipelineResult(session, result)
+		if result.Decision == F.DecisionAbort {
+			return true
+		}
 	}
 	if i.scripts != nil {
 		result := i.scripts.ProcessResponseFlow(session.Request(), response, session.ID())
-		session.recordResult(result)
+		recordPipelineResult(session, result)
 		if result.Decision == F.DecisionAbort {
 			return true
 		}
 	}
 	session.SetResponse(response)
 	return false
+}
+
+func recordPipelineResult(session *Session, result F.Result) {
+	session.recordResult(result)
+	if result.Decision != F.DecisionAbort {
+		return
+	}
+	for _, action := range result.Actions {
+		if action.Outcome != F.OutcomeFailed {
+			continue
+		}
+		message := action.Message
+		if message == "" {
+			message = "HTTP transformation failed"
+		}
+		session.fail(string(action.Phase), action.Source, errors.New(message))
+		return
+	}
 }
 
 type requestMutationSnapshot struct {

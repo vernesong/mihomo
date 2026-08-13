@@ -107,7 +107,7 @@ rewrite:
 
 每条 body 规则必须在 `actions` 与 `jq-expression` 中二选一。JQ 使用标准 jq filter 语义。JSON 解析失败或 filter 运行失败时保留原 body。
 
-Body rewrite 会按 `Content-Encoding` 自动解压和重新压缩 `gzip`、`deflate`、`br`，也支持多个编码叠加；修改后会重新计算 `Content-Length`。遇到不支持或损坏的编码时保留原 body，并在 HTTP 交易中记录 `outcome=failed` 的 rewrite action；交易本身继续执行。
+Body rewrite 会按 `Content-Encoding` 自动解压和重新压缩 `gzip`、`deflate`、`br`，也支持多个编码叠加；修改后会重新计算 `Content-Length`。遇到无效透明改写目标、不支持或损坏的编码、无效 JSON 或 jq 运行错误时，会在 HTTP 交易中记录 `outcome=failed`、将交易状态设为 `failed` 并立即中断连接；不会回退到原始 URL 或原始 body。
 
 ## Mock
 

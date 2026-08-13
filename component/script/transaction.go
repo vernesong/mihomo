@@ -29,8 +29,10 @@ func (m *Manager) ProcessRequestFlow(request *http.Request, requestID string) F.
 		return result
 	}
 	requestURL := absoluteRequestURL(request)
-	matched := matchingEntries(m.requestEntries, requestURL)
-	for _, scriptEntry := range matched {
+	for _, scriptEntry := range m.requestEntries {
+		if !scriptEntry.enable || !scriptEntry.match.MatchString(requestURL) {
+			continue
+		}
 		execution, err := m.processRequest(scriptEntry, request, requestID)
 		action := scriptAction(F.PhaseRequest, scriptEntry)
 		action.Fields = execution.fields
@@ -40,6 +42,7 @@ func (m *Manager) ProcessRequestFlow(request *http.Request, requestID string) F.
 		case err != nil:
 			action.Outcome = F.OutcomeFailed
 			action.Message = err.Error()
+			result.Decision = F.DecisionAbort
 		case execution.skipped != "":
 			action.Outcome = F.OutcomeSkipped
 			action.Message = execution.skipped
@@ -82,8 +85,10 @@ func (m *Manager) ProcessResponseFlow(request *http.Request, response *http.Resp
 		return result
 	}
 	requestURL := absoluteRequestURL(request)
-	matched := matchingEntries(m.responseEntries, requestURL)
-	for _, scriptEntry := range matched {
+	for _, scriptEntry := range m.responseEntries {
+		if !scriptEntry.enable || !scriptEntry.match.MatchString(requestURL) {
+			continue
+		}
 		execution, err := m.processResponse(scriptEntry, request, response, requestID)
 		action := scriptAction(F.PhaseResponse, scriptEntry)
 		action.Fields = execution.fields
@@ -92,6 +97,7 @@ func (m *Manager) ProcessResponseFlow(request *http.Request, response *http.Resp
 		case err != nil:
 			action.Outcome = F.OutcomeFailed
 			action.Message = err.Error()
+			result.Decision = F.DecisionAbort
 		case execution.skipped != "":
 			action.Outcome = F.OutcomeSkipped
 			action.Message = execution.skipped
@@ -108,7 +114,7 @@ func (m *Manager) ProcessResponseFlow(request *http.Request, response *http.Resp
 			action.Outcome = F.OutcomeUnchanged
 		}
 		result.Add(action)
-		if result.Decision == F.DecisionAbort {
+		if result.Decision != F.DecisionContinue {
 			return result
 		}
 	}
@@ -122,16 +128,6 @@ type scriptExecution struct {
 	fields     []string
 	target     string
 	statusCode int
-}
-
-func matchingEntries(entries []*entry, requestURL string) []*entry {
-	matched := make([]*entry, 0, len(entries))
-	for _, scriptEntry := range entries {
-		if scriptEntry.enable && scriptEntry.match.MatchString(requestURL) {
-			matched = append(matched, scriptEntry)
-		}
-	}
-	return matched
 }
 
 func (m *Manager) processRequest(scriptEntry *entry, request *http.Request, requestID string) (scriptExecution, error) {
@@ -683,7 +679,6 @@ func prepareBody(body *io.ReadCloser, contentLength int64, required bool, limit 
 		return nil, false, true, nil
 	}
 	_ = original.Close()
-	content = append([]byte(nil), content...)
 	*body = io.NopCloser(bytes.NewReader(content))
 	return content, len(content) != 0, false, nil
 }

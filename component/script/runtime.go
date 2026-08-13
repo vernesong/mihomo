@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/common/utils"
@@ -23,6 +24,8 @@ import (
 const (
 	persistentStoreKeyLimit  = 64
 	persistentStoreDataLimit = 1024 * 1024
+	maxJSCallStackDepth      = 1024
+	runtimeJobQueueSize      = 64
 )
 
 type evaluationInput struct {
@@ -41,6 +44,7 @@ type runtimeHost struct {
 	entry     *entry
 	jobs      chan runtimeJob
 	jar       http.CookieJar
+	jarOnce   sync.Once
 	startedAt time.Time
 	timers    map[int64]*time.Timer
 	nextTimer int64
@@ -72,18 +76,18 @@ func (m *Manager) evaluate(scriptEntry *entry, input evaluationInput) (patch map
 		defer stopRequestCancel()
 	}
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, evaluationError(ctx, scriptEntry.timeout, err)
+	}
 
 	vm := sobek.New()
-	jar, _ := cookiejar.New(nil)
+	vm.SetMaxCallStackSize(maxJSCallStackDepth)
 	startedAt := time.Now()
 	host := &runtimeHost{
 		ctx:       ctx,
 		vm:        vm,
 		entry:     scriptEntry,
-		jobs:      make(chan runtimeJob, 64),
-		jar:       jar,
 		startedAt: startedAt,
-		timers:    make(map[int64]*time.Timer),
 	}
 	defer host.stopTimers()
 	if err := host.installGlobals(input); err != nil {
@@ -99,15 +103,10 @@ func (m *Manager) evaluate(scriptEntry *entry, input evaluationInput) (patch map
 		}()
 	}
 
-	interruptDone := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			vm.Interrupt(ctx.Err())
-		case <-interruptDone:
-		}
-	}()
-	defer close(interruptDone)
+	stopInterrupt := context.AfterFunc(ctx, func() {
+		vm.Interrupt(ctx.Err())
+	})
+	defer stopInterrupt()
 
 	if _, err := vm.RunProgram(program); err != nil {
 		return nil, evaluationError(ctx, scriptEntry.timeout, err)
@@ -135,6 +134,20 @@ func (m *Manager) evaluate(scriptEntry *entry, input evaluationInput) (patch map
 		return nil, errors.New("$done result must be an object")
 	}
 	return patch, nil
+}
+
+func (h *runtimeHost) ensureJobQueue() chan runtimeJob {
+	if h.jobs == nil {
+		h.jobs = make(chan runtimeJob, runtimeJobQueueSize)
+	}
+	return h.jobs
+}
+
+func (h *runtimeHost) cookieJar() http.CookieJar {
+	h.jarOnce.Do(func() {
+		h.jar, _ = cookiejar.New(nil)
+	})
+	return h.jar
 }
 
 func evaluationError(ctx context.Context, timeout time.Duration, err error) error {
@@ -195,6 +208,9 @@ func (h *runtimeHost) installGlobals(input evaluationInput) error {
 		if err := h.vm.Set("$response", h.responseObject(input)); err != nil {
 			return err
 		}
+	}
+	if err := h.installURLGlobal(); err != nil {
+		return err
 	}
 	if err := h.vm.Set("$persistentStore", h.persistentStoreObject()); err != nil {
 		return err
@@ -277,7 +293,11 @@ func (h *runtimeHost) responseObject(input evaluationInput) *sobek.Object {
 func (h *runtimeHost) headersObject(headers http.Header, host string) *sobek.Object {
 	object := h.vm.NewObject()
 	for field, values := range headers {
-		_ = object.Set(field, strings.Join(values, ", "))
+		if len(values) == 1 {
+			_ = object.Set(field, values[0])
+		} else {
+			_ = object.Set(field, strings.Join(values, ", "))
+		}
 	}
 	if host != "" {
 		hostValue := object.Get("Host")

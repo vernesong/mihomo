@@ -114,12 +114,6 @@ rewrite:
     - match: '^http://upstream\.example\.com/transform'
       direction: response
       jq-expression: '.source = "mihomo" | .rewritten = true'
-    - match: '^http://upstream\.example\.com/invalid-json'
-      direction: response
-      jq-expression: '.rewritten = true'
-    - match: '^http://upstream\.example\.com/jq-error'
-      direction: response
-      jq-expression: 'error("keep original")'
 `)
 
 	type upstreamRequest struct {
@@ -128,9 +122,8 @@ rewrite:
 		Headers http.Header
 		Err     error
 	}
-	upstreamRequests := make(chan upstreamRequest, 3)
+	upstreamRequests := make(chan upstreamRequest, 1)
 	responseCodings := []string{"br", "gzip", "deflate"}
-	invalidUpstreamBody := encodeRewriteTestBody(t, []byte("not-json"), responseCodings)
 	jsonUpstreamBody := encodeRewriteTestBody(t, []byte(`{"source":"upstream"}`), responseCodings)
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		body, err := io.ReadAll(request.Body)
@@ -147,11 +140,6 @@ rewrite:
 		}
 
 		writer.Header().Set("Content-Encoding", strings.Join(responseCodings, ", "))
-		if request.URL.Path == "/invalid-json" {
-			writer.Header().Set("Content-Length", strconv.Itoa(len(invalidUpstreamBody)))
-			_, _ = writer.Write(invalidUpstreamBody)
-			return
-		}
 		writer.Header().Set("X-Delete", "remove-me")
 		writer.Header().Set("X-Replace", "upstream")
 		writer.Header().Set("X-Regex", "server-value")
@@ -194,19 +182,8 @@ rewrite:
 	require.Equal(t, "mihomo", responseJSON["source"])
 	require.Equal(t, true, responseJSON["rewritten"])
 
-	invalidResponse, invalidRawBody := client.do(t, http.MethodGet, "/invalid-json", nil, nil)
-	require.Equal(t, http.StatusOK, invalidResponse.StatusCode)
-	require.Equal(t, "not-json", string(decodeRewriteTestBody(t, invalidRawBody, responseCodings)))
-	require.NoError(t, receiveRewriteTestValue(t, upstreamRequests).Err)
-	receiveRewriteTestValue(t, client.dialed)
-	runtimeErrorResponse, runtimeErrorRawBody := client.do(t, http.MethodGet, "/jq-error", nil, nil)
-	require.Equal(t, http.StatusOK, runtimeErrorResponse.StatusCode)
-	require.JSONEq(t, `{"source":"upstream"}`, string(decodeRewriteTestBody(t, runtimeErrorRawBody, responseCodings)))
-	require.NoError(t, receiveRewriteTestValue(t, upstreamRequests).Err)
-	receiveRewriteTestValue(t, client.dialed)
-
 	snapshot := mitm.CapturedSessionsSnapshot()
-	require.Len(t, snapshot.Sessions, 3)
+	require.Len(t, snapshot.Sessions, 1)
 	transformed := snapshot.Sessions[0]
 	require.NotEmpty(t, transformed.TransactionID)
 	require.Equal(t, "completed", string(transformed.State))
@@ -226,18 +203,6 @@ rewrite:
 	require.Equal(t, "response", string(transformed.Actions[len(transformed.Actions)-1].Phase))
 	require.Equal(t, "applied", string(transformed.Actions[len(transformed.Actions)-1].Outcome))
 
-	invalidJSON := snapshot.Sessions[1]
-	require.Equal(t, "completed", string(invalidJSON.State))
-	require.True(t, invalidJSON.Modified)
-	require.Equal(t, "failed", string(invalidJSON.Actions[len(invalidJSON.Actions)-1].Outcome))
-	require.Contains(t, invalidJSON.Actions[len(invalidJSON.Actions)-1].Message, "invalid character")
-	require.Nil(t, invalidJSON.Failure)
-
-	runtimeFailure := snapshot.Sessions[2]
-	require.Equal(t, "completed", string(runtimeFailure.State))
-	require.Equal(t, "failed", string(runtimeFailure.Actions[len(runtimeFailure.Actions)-1].Outcome))
-	require.Contains(t, runtimeFailure.Actions[len(runtimeFailure.Actions)-1].Message, "keep original")
-	require.Nil(t, runtimeFailure.Failure)
 	encodedSnapshot, err := json.Marshal(snapshot)
 	require.NoError(t, err)
 	var snapshotJSON map[string]any
@@ -251,6 +216,116 @@ rewrite:
 	requestJSON := transactionJSON["request"].(map[string]any)
 	require.Equal(t, transformed.Request.RawURL, requestJSON["raw_url"])
 	require.Equal(t, transformed.Request.URL, requestJSON["url"])
+}
+
+func TestRewriteUserFailureInterruptsConnectionAPI(t *testing.T) {
+	const hostname = "rewrite-failure.example.com"
+	for _, testCase := range []struct {
+		name            string
+		rewrite         string
+		method          string
+		path            string
+		requestBody     []byte
+		upstreamBody    []byte
+		upstreamReached bool
+		phase           string
+		messageContains string
+		actionName      string
+	}{
+		{
+			name: "invalid transparent target",
+			rewrite: `
+rewrite:
+  url:
+    - match: '^http://rewrite-failure\.example\.com/invalid-url$'
+      type: transparent
+      value: 'not-an-absolute-url'
+  mock:
+    - match: '^http://rewrite-failure\.example\.com/invalid-url$'
+      text: 'must not fall back'
+`,
+			method:          http.MethodGet,
+			path:            "/invalid-url",
+			upstreamBody:    []byte("must not be returned"),
+			phase:           "request",
+			messageContains: "valid absolute HTTP URL",
+			actionName:      "transparent",
+		},
+		{
+			name: "request body rewrite error",
+			rewrite: `
+rewrite:
+  body:
+    - match: '^http://rewrite-failure\.example\.com/request-body$'
+      direction: request
+      jq-expression: '.rewritten = true'
+`,
+			method:          http.MethodPost,
+			path:            "/request-body",
+			requestBody:     []byte("not-json"),
+			upstreamBody:    []byte("must not be returned"),
+			phase:           "request",
+			messageContains: "invalid character",
+			actionName:      "jq",
+		},
+		{
+			name: "response body rewrite error",
+			rewrite: `
+rewrite:
+  body:
+    - match: '^http://rewrite-failure\.example\.com/response-body$'
+      direction: response
+      jq-expression: '.rewritten = true'
+`,
+			method:          http.MethodGet,
+			path:            "/response-body",
+			upstreamBody:    []byte("not-json"),
+			upstreamReached: true,
+			phase:           "response",
+			messageContains: "invalid character",
+			actionName:      "jq",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			parsedConfig := parseRewriteTestConfig(t, hostname, testCase.rewrite)
+			upstreamRequests := make(chan struct{}, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				upstreamRequests <- struct{}{}
+				_, _ = writer.Write(testCase.upstreamBody)
+			}))
+			defer upstream.Close()
+
+			client := newRewriteTestClient(t, parsedConfig, hostname, upstream.Listener.Addr().String())
+			expectMITMConnectionAbort(t, client, testCase.method, testCase.path, testCase.requestBody)
+
+			if testCase.upstreamReached {
+				receiveRewriteTestValue(t, upstreamRequests)
+				receiveRewriteTestValue(t, client.dialed)
+			} else {
+				select {
+				case <-upstreamRequests:
+					t.Fatal("failed request rewrite unexpectedly reached the original upstream")
+				case <-time.After(100 * time.Millisecond):
+				}
+				require.Empty(t, client.dialed)
+			}
+
+			snapshot := mitm.CapturedSessionsSnapshot()
+			require.Len(t, snapshot.Sessions, 1)
+			transaction := snapshot.Sessions[0]
+			require.Equal(t, "failed", string(transaction.State))
+			require.NotNil(t, transaction.CompletedAt)
+			require.NotNil(t, transaction.Failure)
+			require.Equal(t, testCase.phase, transaction.Failure.Stage)
+			require.Equal(t, "rewrite", string(transaction.Failure.Source))
+			require.Contains(t, transaction.Failure.Message, testCase.messageContains)
+			require.Len(t, transaction.Actions, 1)
+			require.Equal(t, testCase.phase, string(transaction.Actions[0].Phase))
+			require.Equal(t, testCase.actionName, transaction.Actions[0].Name)
+			require.Equal(t, "failed", string(transaction.Actions[0].Outcome))
+			require.Contains(t, transaction.Actions[0].Message, testCase.messageContains)
+		})
+	}
 }
 
 func TestRewriteUserRedirectRejectAndMockAPI(t *testing.T) {

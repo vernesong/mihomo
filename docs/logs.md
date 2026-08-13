@@ -75,7 +75,7 @@ HTTP 交易动作可能包含以下字段：
 | `target` | 透明 URL 修改或重定向的目标 URL |
 | `fields` | 逗号分隔的处理范围，不包含 Header 或 body 内容 |
 
-`applied`、`responded` 和 `aborted` 动作通常使用 `info`；未产生变化的 `unchanged` 和因 body 限制跳过的 `skipped` 使用 `debug`；rewrite 或脚本执行错误使用 `error`。上游请求失败会另外产生带有 `state=failed`、`stage` 和 `source` 的 `warning` 日志。
+`applied`、`responded` 和 `aborted` 动作通常使用 `info`；未产生变化的 `unchanged` 和因 body 限制跳过的 `skipped` 使用 `debug`；rewrite 或脚本执行错误使用 `error`。rewrite、脚本或上游失败还会产生带有 `state=failed`、`stage` 和 `source` 的 `warning` 日志。
 
 ## HTTP 交易管线
 
@@ -135,13 +135,13 @@ HTTP 交易动作可能包含以下字段：
 
 - `active`：请求或响应 body 仍在处理，包括长连接和流式响应。
 - `completed`：响应已正常消费完毕；HTTP 4xx/5xx 本身不会自动视为代理失败。
-- `failed`：上游拨号、TLS 或 HTTP round trip 失败。此时同时提供结构化 `failure`，旧版 `error` 字段继续保留。
+- `failed`：rewrite、JavaScript、上游拨号、TLS 或 HTTP round trip 失败。此时同时提供结构化 `failure`，旧版 `error` 字段继续保留。
 - `aborted`：JavaScript 明确返回 `{abort: true}`。
 - `cancelled`：响应尚未完整消费便被关闭。
 
 `modified` 与 `state` 相互独立。一笔交易可以“活跃且已修改”，也可以“已修改后中止”。只要至少一个 action 的 `modified` 为 `true`，交易的 `modified` 就为 `true`。
 
-rewrite 或 JavaScript 的单个动作失败通常采用 fail-open：保留该阶段执行前的内容并继续后续处理。因此可能出现 `state=completed`，同时某个 action 为 `outcome=failed`。只有交易本身无法继续时才使用 `state=failed`。
+rewrite 或 JavaScript 动作失败采用与 Surge 一致的 fail-closed 行为：对应 action 为 `outcome=failed`，交易为 `state=failed`，后续处理停止并中断连接。请求阶段失败不会拨号原始上游；响应阶段失败不会向客户端发送原始响应。
 
 ## 标识符与前端更新
 

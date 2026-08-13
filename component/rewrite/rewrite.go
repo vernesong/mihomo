@@ -67,6 +67,7 @@ func (c *Config) ProcessRequest(request *http.Request) F.Result {
 					Fields:   fields,
 				})
 			} else {
+				result.Decision = F.DecisionAbort
 				result.Add(F.Action{
 					Phase:   F.PhaseRequest,
 					Source:  F.SourceRewrite,
@@ -77,6 +78,7 @@ func (c *Config) ProcessRequest(request *http.Request) F.Result {
 					Target:  replacement,
 					Message: "replacement is not a valid absolute HTTP URL",
 				})
+				return result
 			}
 		case urlRuleRedirect302:
 			result.Decision = F.DecisionRespond
@@ -110,6 +112,9 @@ func (c *Config) ProcessRequest(request *http.Request) F.Result {
 	result.Actions = append(result.Actions, c.rewriteHeaders(F.PhaseRequest, requestURL, c.requestHeaderRules, request.Header)...)
 	if action := c.rewriteRequestBody(requestURL, request); action != nil {
 		result.Add(*action)
+		if action.Outcome == F.OutcomeFailed {
+			result.Decision = F.DecisionAbort
+		}
 	}
 	return result
 }
@@ -127,6 +132,9 @@ func (c *Config) ProcessResponse(request *http.Request, response *http.Response)
 	result.Actions = append(result.Actions, c.rewriteHeaders(F.PhaseResponse, requestURL, c.responseHeaderRules, response.Header)...)
 	if action := c.rewriteResponseBody(requestURL, request, response); action != nil {
 		result.Add(*action)
+		if action.Outcome == F.OutcomeFailed {
+			result.Decision = F.DecisionAbort
+		}
 	}
 	return result
 }

@@ -70,13 +70,14 @@ func (h *runtimeHost) scheduleHTTPRequest(method string, call sobek.FunctionCall
 	if err != nil {
 		panic(h.vm.NewTypeError("$httpClient.%s: %s", strings.ToLower(method), err.Error()))
 	}
+	jobs := h.ensureJobQueue()
 	go func() {
 		result := h.performHTTPRequestSafely(method, request)
 		job := func(host *runtimeHost) error {
 			return host.invokeHTTPCallback(callback, request.binaryMode, result)
 		}
 		select {
-		case h.jobs <- job:
+		case jobs <- job:
 		case <-h.ctx.Done():
 		}
 	}()
@@ -223,7 +224,7 @@ func (h *runtimeHost) performHTTPRequest(method string, request httpClientReques
 		options = append(options, mihomoHTTP.WithHost(*request.host))
 	}
 	if request.autoCookie {
-		options = append(options, mihomoHTTP.WithCookieJar(h.jar))
+		options = append(options, mihomoHTTP.WithCookieJar(h.cookieJar()))
 	}
 	if request.insecure {
 		options = append(options, mihomoHTTP.WithCAOption(ca.Option{

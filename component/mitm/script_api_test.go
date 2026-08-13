@@ -2,6 +2,7 @@ package mitm_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -101,9 +102,6 @@ $done({
   body,
 });
 `)
-	writeScriptTestFile(t, homeDir, "request-error.js", `
-while (true) {}
-`)
 	writeScriptTestFile(t, homeDir, "request-second.js", fmt.Sprintf(`
 $httpClient.get({url: %q, headers: {Host: "http-client.example"}}, function(error, response, data) {
   if (error || response.status !== 200) {
@@ -123,9 +121,6 @@ if ($request.id !== $response.headers["X-Script-Id"]) {
 const headers = $response.headers;
 headers["X-Response-Order"] = "first";
 $done({status: 201, headers, body: $response.body.replace("upstream", "rewritten")});
-`)
-	writeScriptTestFile(t, homeDir, "response-error.js", `
-throw new Error("the final response script must still run");
 `)
 	writeScriptTestFile(t, homeDir, "response-second.js", `
 const headers = $response.headers;
@@ -155,13 +150,6 @@ scripts:
       requires-body: true
       binary-body-mode: true
     argument: persisted-value
-  request-error:
-    enable: true
-    type: http-request
-    match: '^http://script\.example\.com/'
-    path: ./scripts/request-error.js
-    options:
-      timeout: 1
   request-second:
     enable: true
     type: http-request
@@ -174,11 +162,6 @@ scripts:
     path: ./scripts/response-first.js
     options:
       requires-body: true
-  response-error:
-    enable: true
-    type: http-response
-    match: '^http://script(?:-updated)?\.example\.com/'
-    path: ./scripts/response-error.js
   response-second:
     enable: true
     type: http-response
@@ -254,22 +237,112 @@ scripts:
 	require.Equal(t, "completed", string(transaction.State))
 	require.True(t, transaction.Modified)
 	require.Nil(t, transaction.Failure)
-	require.Len(t, transaction.Actions, 6)
+	require.Len(t, transaction.Actions, 4)
 	require.Equal(t, "request-first", transaction.Actions[0].Name)
 	require.Equal(t, "applied", string(transaction.Actions[0].Outcome))
 	require.ElementsMatch(t, []string{"url", "headers", "host", "body"}, transaction.Actions[0].Fields)
-	require.Equal(t, "request-error", transaction.Actions[1].Name)
-	require.Equal(t, "failed", string(transaction.Actions[1].Outcome))
-	require.Contains(t, transaction.Actions[1].Message, "timed out")
-	require.Equal(t, "request-second", transaction.Actions[2].Name)
+	require.Equal(t, "request-second", transaction.Actions[1].Name)
+	require.Equal(t, "applied", string(transaction.Actions[1].Outcome))
+	require.Equal(t, "response-first", transaction.Actions[2].Name)
 	require.Equal(t, "applied", string(transaction.Actions[2].Outcome))
-	require.Equal(t, "response-first", transaction.Actions[3].Name)
+	require.Equal(t, http.StatusCreated, transaction.Actions[2].StatusCode)
+	require.Equal(t, "response-second", transaction.Actions[3].Name)
 	require.Equal(t, "applied", string(transaction.Actions[3].Outcome))
-	require.Equal(t, http.StatusCreated, transaction.Actions[3].StatusCode)
-	require.Equal(t, "response-error", transaction.Actions[4].Name)
-	require.Equal(t, "failed", string(transaction.Actions[4].Outcome))
-	require.Equal(t, "response-second", transaction.Actions[5].Name)
-	require.Equal(t, "applied", string(transaction.Actions[5].Outcome))
+}
+
+func TestScriptUserFailureInterruptsConnectionAPI(t *testing.T) {
+	const hostname = "script-failure.example.com"
+	for _, testCase := range []struct {
+		name            string
+		scriptType      string
+		source          string
+		upstreamReached bool
+		phase           string
+		messageContains string
+	}{
+		{
+			name:            "request exception",
+			scriptType:      "http-request",
+			source:          `throw new Error("request script failed");`,
+			phase:           "request",
+			messageContains: "request script failed",
+		},
+		{
+			name:            "response exception",
+			scriptType:      "http-response",
+			source:          `throw new Error("response script failed");`,
+			upstreamReached: true,
+			phase:           "response",
+			messageContains: "response script failed",
+		},
+		{
+			name:       "recursive stack exhaustion",
+			scriptType: "http-request",
+			source: `
+function recurse() { recurse(); }
+recurse();
+`,
+			phase: "request",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			mitm.ClearCapturedSessions()
+			t.Cleanup(mitm.ClearCapturedSessions)
+			homeDir := useScriptTestHome(t)
+			writeScriptTestFile(t, homeDir, "failure.js", testCase.source)
+			writeScriptTestFile(t, homeDir, "must-not-run.js", `$done({response: {status: 200, body: "fallback"}});`)
+			parsedConfig := parseScriptTestConfig(t, hostname, fmt.Sprintf(`
+scripts:
+  failure:
+    enable: true
+    type: %s
+    match: '^http://script-failure\.example\.com/'
+    path: ./scripts/failure.js
+  must-not-run:
+    enable: true
+    type: %s
+    match: '^http://script-failure\.example\.com/'
+    path: ./scripts/must-not-run.js
+`, testCase.scriptType, testCase.scriptType))
+			t.Cleanup(func() { require.NoError(t, parsedConfig.Scripts.Close()) })
+
+			upstreamRequests := make(chan struct{}, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				upstreamRequests <- struct{}{}
+				_, _ = writer.Write([]byte("original upstream"))
+			}))
+			defer upstream.Close()
+			client := newScriptTestClient(t, parsedConfig, hostname, upstream.Listener.Addr().String())
+
+			expectMITMConnectionAbort(t, client, http.MethodGet, "/failure", nil)
+			if testCase.upstreamReached {
+				receiveScriptTestValue(t, upstreamRequests, 3*time.Second)
+				receiveScriptTestValue(t, client.dialed, 3*time.Second)
+			} else {
+				select {
+				case <-upstreamRequests:
+					t.Fatal("failed request script unexpectedly reached the original upstream")
+				case <-time.After(100 * time.Millisecond):
+				}
+				require.Empty(t, client.dialed)
+			}
+
+			snapshot := mitm.CapturedSessionsSnapshot()
+			require.Len(t, snapshot.Sessions, 1)
+			transaction := snapshot.Sessions[0]
+			require.Equal(t, "failed", string(transaction.State))
+			require.NotNil(t, transaction.CompletedAt)
+			require.NotNil(t, transaction.Failure)
+			require.Equal(t, testCase.phase, transaction.Failure.Stage)
+			require.Equal(t, "script", string(transaction.Failure.Source))
+			require.Contains(t, transaction.Failure.Message, testCase.messageContains)
+			require.Len(t, transaction.Actions, 1, "scripts after a failure must not execute")
+			require.Equal(t, "failure", transaction.Actions[0].Name)
+			require.Equal(t, testCase.phase, string(transaction.Actions[0].Phase))
+			require.Equal(t, "failed", string(transaction.Actions[0].Outcome))
+			require.Contains(t, transaction.Actions[0].Message, testCase.messageContains)
+		})
+	}
 }
 
 func TestScriptUserSharedBundleAPI(t *testing.T) {
@@ -385,9 +458,9 @@ scripts:
 	}
 
 	requestAbortClient := newScriptTestClient(t, parsedConfig, hostname, upstream.Listener.Addr().String())
-	expectScriptTestConnectionAbort(t, requestAbortClient, "/abort-request")
+	expectMITMConnectionAbort(t, requestAbortClient, http.MethodGet, "/abort-request", nil)
 	responseAbortClient := newScriptTestClient(t, parsedConfig, hostname, upstream.Listener.Addr().String())
-	expectScriptTestConnectionAbort(t, responseAbortClient, "/abort-response")
+	expectMITMConnectionAbort(t, responseAbortClient, http.MethodGet, "/abort-response", nil)
 
 	snapshot := mitm.CapturedSessionsSnapshot()
 	require.Len(t, snapshot.Sessions, 4)
@@ -433,6 +506,31 @@ const canceledTimer = setTimeout(function () {
 }, 0);
 clearTimeout(canceledTimer);
 
+const parsedURL = new URL("../result?keep=1&remove=2", "https://url.example/base/path");
+if (!URL.canParse(parsedURL.href) || parsedURL.hostname !== "url.example" ||
+    parsedURL.pathname !== "/result" || parsedURL.searchParams.get("keep") !== "1") {
+  throw new Error("URL compatibility is unavailable");
+}
+parsedURL.hostname = "changed.example";
+parsedURL.pathname = "/done";
+parsedURL.searchParams.delete("remove");
+parsedURL.searchParams.set("added", "3");
+if (parsedURL.searchParams.has("remove")) {
+  throw new Error("URLSearchParams mutation failed");
+}
+
+class ArrowValue {
+  #value;
+  constructor(value) { this.#value = value; }
+  read = () => this.#value;
+}
+class NestedArrowValue {
+  #value = new ArrowValue("initial");
+  constructor(value) { this.#value = new ArrowValue(value); }
+  read = () => this.#value.read();
+}
+const nestedArrowValue = new NestedArrowValue("nested").read();
+
 const evalResult = evaluateLocalScope();
 setTimeout(function (prefix, suffix) {
   if (canceledTimerRan) {
@@ -442,7 +540,7 @@ setTimeout(function (prefix, suffix) {
     response: {
       status: 200,
       headers: {"Content-Type": "text/plain"},
-      body: evalResult + "|" + prefix + suffix,
+      body: evalResult + "|" + prefix + suffix + "|" + parsedURL.toJSON() + "|" + nestedArrowValue,
     },
   });
 }, 10, "timer-", "ok");
@@ -470,7 +568,7 @@ scripts:
 	response, body := client.do(t, http.MethodGet, "/run", nil, nil)
 	require.Equal(t, http.StatusOK, response.StatusCode)
 	require.Equal(t, "text/plain", response.Header.Get("Content-Type"))
-	require.Equal(t, "undefined|timer-ok", string(body))
+	require.Equal(t, "undefined|timer-ok|https://changed.example/done?added=3&keep=1|nested", string(body))
 	select {
 	case <-upstreamRequests:
 		t.Fatal("timer-generated response unexpectedly reached upstream")
@@ -646,14 +744,20 @@ func receiveScriptTestValue[T any](t *testing.T, values <-chan T, timeout time.D
 	}
 }
 
-func expectScriptTestConnectionAbort(t *testing.T, client *rewriteTestClient, path string) {
+func expectMITMConnectionAbort(t *testing.T, client *rewriteTestClient, method, path string, body []byte) {
 	t.Helper()
 	request := &http.Request{
-		Method: http.MethodGet,
+		Method: method,
 		URL:    mustParseURL(t, "http://"+client.host+path),
 		Host:   client.host,
 		Header: make(http.Header),
 	}
+	if body != nil {
+		request.Body = io.NopCloser(bytes.NewReader(body))
+		request.ContentLength = int64(len(body))
+	}
+	require.NoError(t, client.connection.SetDeadline(time.Now().Add(3*time.Second)))
+	defer func() { _ = client.connection.SetDeadline(time.Time{}) }()
 	require.NoError(t, request.Write(client.connection))
 	_, err := http.ReadResponse(client.reader, request)
 	require.Error(t, err)

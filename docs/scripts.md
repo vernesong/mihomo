@@ -104,6 +104,8 @@ $done();   // 不修改
 - `$environment`：提供 Surge 兼容的 `system`、`surge-build`、`surge-version`、`language` 与 `device-model`，并额外提供 `mihomo-version`。`system` 与 `device-model` 反映 mihomo 实际运行平台，而不是伪装成 iOS 或 macOS。
 - `$persistentStore.read([key])` 与 `$persistentStore.write(data[, key])`：持久化字符串。`$persistentStore.write(null, key)` 删除指定值。省略 key 时，同一路径的脚本共享默认存储区；显式 key 可跨脚本共享。
 - `$notification.post(title, subtitle, body[, options])`：将 Surge 格式通知转发到控制器。支持 `action`、`url`、`text`、`media-url`、`media-base64`、`media-base64-mime`、`auto-dismiss` 与 `sound` 选项。
+- `URL`：提供 Surge 脚本常用的 WHATWG URL 属性、`toString()`、`toJSON()`、`URL.canParse()`，以及 `searchParams` 的 `get/getAll/has/set/append/delete/sort`。
+- 类字段中的箭头函数会在编译时规避 Sobek 的嵌套构造参数栈问题，兼容包含私有字段和箭头成员的 Surge 打包脚本；引用 `super`、`arguments` 或 `new.target` 的字段保持原样。
 - `setTimeout(callback, delay[, ...args])` 与 `clearTimeout(id)`：延迟单位为毫秒，计时器受脚本总 `timeout` 限制，脚本结束时自动取消。
 - `console.log/info/warn/error`：写入 mihomo 日志。
 
@@ -136,6 +138,6 @@ $httpClient.get({
 
 ## 错误处理
 
-脚本编译错误会使配置加载或远端更新失败。单次执行超时、JavaScript 异常、无效 `$done()` 结果或异步回调异常会写入日志，并在 `/mitm` 交易中记录 `outcome=failed` 的 script action；当前请求或响应保持执行该脚本前的状态，并继续运行后续匹配脚本。显式 `{abort: true}` 会记录 `outcome=aborted` 并将交易状态设为 `aborted`；本地 `response` 会记录 `outcome=responded`。两者都属于成功的脚本返回，并停止当前方向的后续处理。
+脚本编译错误会使配置加载或远端更新失败。单次执行超时、JavaScript 异常、无效 `$done()` 结果或异步回调异常会写入日志，在 `/mitm` 交易中记录 `outcome=failed`，将交易状态设为 `failed`，并立即中断连接；不会继续运行后续匹配脚本。请求阶段失败时不会连接原始上游，响应阶段失败时不会把原始上游响应回退给客户端。显式 `{abort: true}` 会记录 `outcome=aborted` 并将交易状态设为 `aborted`；本地 `response` 会记录 `outcome=responded`。两者都属于成功的脚本返回，并停止当前方向的后续处理。
 
 URL、Header、body 和 status 修改也会记录在同一个 action 的 `fields` 中。`transactionId` 与 `$request.id` 相同，可用于关联 `/mitm` 和结构化 `/logs`；完整字段说明见 [logs.md](./logs.md)。

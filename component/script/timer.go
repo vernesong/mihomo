@@ -36,6 +36,10 @@ func (h *runtimeHost) setTimeout(call sobek.FunctionCall) sobek.Value {
 	arguments := append([]sobek.Value(nil), call.Arguments[2:]...)
 	h.nextTimer++
 	timerID := h.nextTimer
+	if h.timers == nil {
+		h.timers = make(map[int64]*time.Timer)
+	}
+	jobs := h.ensureJobQueue()
 	h.timers[timerID] = time.AfterFunc(time.Duration(delayMilliseconds)*time.Millisecond, func() {
 		job := func(host *runtimeHost) error {
 			if _, found := host.timers[timerID]; !found {
@@ -46,7 +50,7 @@ func (h *runtimeHost) setTimeout(call sobek.FunctionCall) sobek.Value {
 			return err
 		}
 		select {
-		case h.jobs <- job:
+		case jobs <- job:
 		case <-h.ctx.Done():
 		}
 	})
