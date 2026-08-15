@@ -1708,13 +1708,11 @@ func (s *Smart) checkNodeQuality(
 		var checked bool
 		if now - wtLastCheck > 300 || now - wtLastFailure < 300 {
 			checked = true
-			status, ok, err := s.StatusTest(proxy, metadata.Host)
-			if err == nil {
-				failure = !ok
-				if failure {
-					log.Debugln("[Smart] Connection Group: [%s] - Node: [%s] - Network: [%s] - Address: [%s] detected abnormal response [%d]...",
-						s.Name(), proxyName, networkType, addressDisplay, status)
-				}
+			status, ok, testErr := s.StatusTest(proxy, metadata.Host)
+			failure = isStatusTestFailure(ok, testErr)
+			if failure {
+				log.Debugln("[Smart] Connection Group: [%s] - Node: [%s] - Network: [%s] - Address: [%s] detected abnormal response [%d], error: [%v]...",
+					s.Name(), proxyName, networkType, addressDisplay, status, testErr)
 			}
 		}
 		if failure {
@@ -1731,6 +1729,10 @@ func (s *Smart) checkNodeQuality(
 	}
 
 	return newWeight, false, false, 0
+}
+
+func isStatusTestFailure(ok bool, err error) bool {
+	return err != nil || !ok
 }
 
 func (s *Smart) markNodeFailure(metadata *C.Metadata, proxyName string, isDegraded bool, checked bool, blockCode int64) bool {
