@@ -68,6 +68,7 @@ var (
 
 type SmartOption struct {
 	PolicyPriority string  `group:"policy-priority,omitempty"`
+	TypePriority   string  `group:"type-priority,omitempty"`
 	UseLightGBM    bool    `group:"uselightgbm,omitempty"`
 	CollectData    bool    `group:"collectdata,omitempty"`
 	SampleRate     float64 `group:"sample-rate,omitempty"`
@@ -92,6 +93,7 @@ type Smart struct {
 	dataCollector          *lightgbm.DataCollector
 	weightModel            *lightgbm.WeightModel
 	policyPriority         []priorityRule
+	typePriority           map[string]float64
 	priorityCache          xsync.Map[string, float64]
 	sampleRate             float64
 	useLightGBM            bool
@@ -164,6 +166,7 @@ func NewSmart(option GroupCommonOption, smartOption SmartOption, emptyFallback C
 		configName:           configName,
 		disableUDP:           option.DisableUDP,
 		policyPriority:       make([]priorityRule, 0),
+		typePriority:         make(map[string]float64),
 		sampleRate:           1,
 		useLightGBM:          smartOption.UseLightGBM,
 		collectData:          smartOption.CollectData,
@@ -179,6 +182,10 @@ func NewSmart(option GroupCommonOption, smartOption SmartOption, emptyFallback C
 
 	if smartOption.PolicyPriority != "" {
 		applyPolicyPriority(s, smartOption.PolicyPriority)
+	}
+	
+	if smartOption.TypePriority != "" {
+		applyTypePriority(s, smartOption.TypePriority)
 	}
 
 	s.InitSmart()
@@ -566,6 +573,16 @@ func (s *Smart) MarshalJSON() ([]byte, error) {
 		}
 		fmt.Fprintf(&policyPriorityBuf, "%s:%.2f", rule.pattern, rule.factor)
 	}
+	
+	var typePriorityBuf strings.Builder
+	typeCount := 0
+	for t, f := range s.typePriority {
+		if typeCount > 0 {
+			typePriorityBuf.WriteByte(';')
+		}
+		fmt.Fprintf(&typePriorityBuf, "%s:%.2f", t, f)
+		typeCount++
+	}
 
 	return json.Marshal(map[string]any{
 		"type":            s.Type().String(),
@@ -578,6 +595,7 @@ func (s *Smart) MarshalJSON() ([]byte, error) {
 		"icon":            s.Icon(),
 		"emptyFallback":   s.EmptyFallback().Name(),
 		"policy-priority": policyPriorityBuf.String(),
+		"type-priority":   typePriorityBuf.String(),
 		"useLightGBM":     s.useLightGBM,
 		"collectData":     s.collectData,
 		"sampleRate":      s.sampleRate,
@@ -644,7 +662,7 @@ func (s *Smart) filterProxies(metadata *C.Metadata, wildcardTarget string, names
 		return selected[:minCount]
 	}
 
-	hasPriority := len(s.policyPriority) > 0
+	hasPriority := len(s.policyPriority) > 0 || len(s.typePriority) > 0
 
 	type sortKey struct {
 		delay  uint16
@@ -1945,22 +1963,27 @@ func (s *Smart) StatusTest(proxy C.Proxy, host string) (uint16, bool, error) {
 }
 
 func (s *Smart) getPriorityFactor(proxyName string) float64 {
-	if len(s.policyPriority) == 0 {
+	if len(s.policyPriority) == 0 && len(s.typePriority) == 0 {
 		return 1.0
 	}
 	if v, ok := s.priorityCache.Load(proxyName); ok {
 		return v
 	}
 	factor := 1.0
-	for _, rule := range s.policyPriority {
-		if rule.isRegex && rule.regex != nil {
-			if matched, _ := rule.regex.MatchString(proxyName); matched {
-				factor = rule.factor
+	
+	if len(s.typePriority) > 0 {
+		var targetProxy C.Proxy
+		for _, p := range s.GetProxies(false) {
+			if p.Name() == proxyName {
+				targetProxy = p
 				break
 			}
-		} else if strings.Contains(proxyName, rule.pattern) {
-			factor = rule.factor
-			break
+		}
+		if targetProxy != nil {
+			proxyType := strings.ToLower(targetProxy.Type().String())
+			if typeFactor, ok := s.typePriority[proxyType]; ok {
+				factor *= typeFactor
+			}
 		}
 	}
 	s.priorityCache.Store(proxyName, factor)
@@ -2045,6 +2068,42 @@ func applyPolicyPriority(s *Smart, policyPriority string) {
 		}
 
 		s.policyPriority = append(s.policyPriority, rule)
+	}
+}
+
+func applyTypePriority(s *Smart, typePriority string) {
+	if s.typePriority == nil {
+		s.typePriority = make(map[string]float64)
+	}
+	pairs := strings.Split(typePriority, ";")
+	for _, pair := range pairs {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		parts := strings.Split(pair, ":")
+		if len(parts) != 2 {
+			log.Warnln("[Smart] Invalid type-priority rule: [%s], must be in 'type:factor' format", pair)
+			continue
+		}
+		rawType := strings.ToLower(strings.TrimSpace(parts[0]))
+		
+		switch rawType {
+		case "ss":
+			rawType = "shadowsocks"
+		case "ssr":
+			rawType = "shadowsocksr"
+		case "gost-relay":
+			rawType = "gostrelay"
+		}
+		
+		factorStr := strings.TrimSpace(parts[1])
+		factor, err := strconv.ParseFloat(factorStr, 64)
+		if err != nil || factor <= 0 {
+			log.Warnln("[Smart] Invalid priority factor for type [%s]: %v", rawType, err)
+			continue
+		}
+		s.typePriority[rawType] = factor
 	}
 }
 
