@@ -59,6 +59,10 @@ const (
 
 	floodWindow              = 2 * time.Second
 	floodThreshold           = 50
+
+	// minimum lifetime (ms) of an upload-only TCP connection before it is treated as blackholed;
+	// long enough to skip requests cancelled by the client right after sending, short enough to catch client read timeouts
+	blackholeMinDuration     = 3000
 )
 
 var (
@@ -1784,6 +1788,9 @@ func (s *Smart) checkNodeQuality(
 		return newWeight, true, true, 4
 	}
 
+	// blackhole connection: data was sent but not a single byte came back before the connection ended
+	blackhole := isBlackholeConnection(isUDP, metadata.Type, connectionDuration, uploadTotal, downloadTotal)
+
 	// abnormal status code detection
 	if downloadTotal < 0.03 && metadata.Host != "" && metadata.DstPort == 443 && !isUDP && metadata.Type != C.INNER {
 		var failure bool
@@ -1802,7 +1809,10 @@ func (s *Smart) checkNodeQuality(
 		if failure {
 			return newWeight, true, checked, 2
 		}
-		return newWeight, false, checked, 0
+		// the status test cannot see a blackhole (e.g. only non-HTTP payloads are dropped), fall through
+		if !blackhole {
+			return newWeight, false, checked, 0
+		}
 	}
 
 	// high packet loss detection
@@ -1812,7 +1822,24 @@ func (s *Smart) checkNodeQuality(
 		return newWeight, true, true, 6
 	}
 
+	// blackhole connection, no port/Host restriction (the target key falls back to the destination IP)
+	// reuse code 3 (connection failure): the node is only blocked after maxFailedTimes hits on the same target,
+	// which filters out occasional client-cancelled requests and upload-only streams
+	if blackhole {
+		log.Debugln("[Smart] Connection Group: [%s] - Node: [%s] - Network: [%s] - Address: [%s] detected blackhole [upload: %s, download: 0, duration: %s]...",
+			s.Name(), proxyName, networkType, addressDisplay, formatTrafficUnit(uploadTotal*1024*1024, false), formatTimeUnit(float64(connectionDuration)))
+		return newWeight, false, true, 3
+	}
+
 	return newWeight, false, false, 0
+}
+
+// isBlackholeConnection reports whether a TCP connection sent data but no bytes were received from the remote
+// by the time the connection was closed/half-closed by the client (uploadTotal/downloadTotal are sampled at that
+// moment, not at final teardown - see the close-callback note in the PR description)
+// uploadTotal/downloadTotal are in MB, connectionDuration is in ms
+func isBlackholeConnection(isUDP bool, connType C.Type, connectionDuration int64, uploadTotal, downloadTotal float64) bool {
+	return !isUDP && connType != C.INNER && uploadTotal > 0 && downloadTotal == 0 && connectionDuration >= blackholeMinDuration
 }
 
 func (s *Smart) markNodeFailure(metadata *C.Metadata, proxyName string, isDegraded bool, checked bool, blockCode int64) bool {
