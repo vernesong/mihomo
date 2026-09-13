@@ -608,9 +608,6 @@ func (s *Smart) Proxies() []C.Proxy {
 func (s *Smart) filterProxies(metadata *C.Metadata, wildcardTarget string, names []string, weights []float64, all []C.Proxy, minCount int, isUDP bool) []C.Proxy {
 	blockedNodes := s.store.GetBlockedNodes(s.Name(), s.configName)
 	wtFailNodes, _, _, wtBlocked := s.store.GetHostStatus(s.Name(), s.configName, wildcardTarget, int(s.hostFailLimit.Load()), metadata.SmartTarget)
-	if !wtBlocked {
-		s.releaseRateLimitedNode(metadata, wildcardTarget, wtFailNodes, blockedNodes, all, isUDP)
-	}
 
 	var proxyByName map[string]C.Proxy
 	if len(names) > 0 {
@@ -756,6 +753,10 @@ func (s *Smart) filterProxies(metadata *C.Metadata, wildcardTarget string, names
 
 	if len(selected) == 0 {
 		fallbackAll := defaultSort(slices.Clone(all))
+		if !wtBlocked {
+			// code 7 does not trigger the stop-loss: prefer the rate limited node expiring first
+			fallbackAll = s.promoteRateLimitedNode(metadata, wildcardTarget, wtFailNodes, blockedNodes, fallbackAll, isUDP)
+		}
 		for _, p := range fallbackAll {
 			if (wtFailNodes[p.Name()] == 0 || (wtBlocked && wtFailNodes[p.Name()] != 1)) && p.AliveForTestUrl(s.testUrl) && (!isUDP || p.SupportUDP()) {
 				selected = append(selected, p)

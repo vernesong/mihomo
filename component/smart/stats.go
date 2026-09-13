@@ -1275,9 +1275,9 @@ func (s *Store) GetHostStatus(group, config, wildcardTarget string, hostFailLimi
 	return
 }
 
-// GetRateLimitedNodes returns the expiry (unix seconds) of active code 7 blocks per node,
-// merged over wildcardTarget and extraTargets (latest expiry wins).
-func (s *Store) GetRateLimitedNodes(group, config, wildcardTarget string, extraTargets ...string) map[string]int64 {
+// GetHostCodeExpiry returns the expiry (unix seconds) of active blocks with the given code per
+// node, merged over wildcardTarget and extraTargets (latest expiry wins).
+func (s *Store) GetHostCodeExpiry(group, config string, code int, wildcardTarget string, extraTargets ...string) map[string]int64 {
 	now := time.Now().Unix()
 	var result map[string]int64
 	for i, target := range append([]string{wildcardTarget}, extraTargets...) {
@@ -1296,7 +1296,7 @@ func (s *Store) GetRateLimitedNodes(group, config, wildcardTarget string, extraT
 			}
 		})
 		hs.mu.RLock()
-		if codeSet := hs.Codes[HostCodeRateLimited]; codeSet != nil {
+		if codeSet := hs.Codes[code]; codeSet != nil {
 			for nodeName, expire := range codeSet.Nodes {
 				if expire > now {
 					if result == nil {

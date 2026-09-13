@@ -253,9 +253,9 @@ func TestUpdateHostStatusRateLimited(t *testing.T) {
 	if hs.Blocked {
 		t.Fatalf("UpdateHostStatus marked the host blocked because of code 7")
 	}
-	expiry := store.GetRateLimitedNodes(group, config, target)
+	expiry := store.GetHostCodeExpiry(group, config, HostCodeRateLimited, target)
 	if len(expiry) != 3 || expiry["m0"] <= time.Now().Unix() {
-		t.Fatalf("GetRateLimitedNodes = %v", expiry)
+		t.Fatalf("GetHostCodeExpiry = %v", expiry)
 	}
 	for i := 0; i < 3; i++ {
 		store.UpdateHostStatus(group, config, target, md, fmt.Sprintf("k%d", i), 5, 2, true, true, 5)
@@ -286,5 +286,49 @@ func TestRateLimitDoesNotReplaceActiveCode3Block(t *testing.T) {
 	hs, _ := hostStatusCache.Get(FormatDBKey(KeyTypeHostFailures, config, group, target))
 	if exp := hs.Codes[3].Nodes["n1"] - time.Now().Unix(); exp < int64(HostFailureNodeTTL.Seconds())-5 {
 		t.Fatalf("code 3 block shortened to %ds", exp)
+	}
+}
+
+func TestCheckHostStatusStopLossExcludesRateLimited(t *testing.T) {
+	store := NewStore(nil)
+	group := fmt.Sprintf("rl-check-group-%d", time.Now().UnixNano())
+	const config, target = "rl-check-config", "api.themoviedb.org"
+	md := &C.Metadata{Host: target}
+	for i := 0; i < 3; i++ {
+		store.UpdateHostStatusTTL(group, config, target, md, fmt.Sprintf("n%d", i), 5, 2, true, true, HostCodeRateLimited, time.Minute)
+	}
+	hs, ok := hostStatusCache.Get(FormatDBKey(KeyTypeHostFailures, config, group, target))
+	if !ok {
+		t.Fatal("host status not cached")
+	}
+	// pretend an older version marked the host blocked; CheckHostStatus must recompute it without code 7
+	hs.mu.Lock()
+	hs.Blocked = true
+	hs.mu.Unlock()
+	if _, err := store.CheckHostStatus(group, config, 2); err != nil {
+		t.Fatal(err)
+	}
+	hs.mu.RLock()
+	blocked := hs.Blocked
+	hs.mu.RUnlock()
+	if blocked {
+		t.Fatal("CheckHostStatus counted code 7 nodes toward the stop-loss")
+	}
+
+	// control: three code 5 blocks over the limit are still counted
+	for i := 0; i < 3; i++ {
+		store.UpdateHostStatus(group, config, target, md, fmt.Sprintf("k%d", i), 5, 100, true, true, 5)
+	}
+	hs.mu.Lock()
+	hs.Blocked = false
+	hs.mu.Unlock()
+	if _, err := store.CheckHostStatus(group, config, 2); err != nil {
+		t.Fatal(err)
+	}
+	hs.mu.RLock()
+	blocked = hs.Blocked
+	hs.mu.RUnlock()
+	if !blocked {
+		t.Fatal("CheckHostStatus did not count code 5 nodes")
 	}
 }

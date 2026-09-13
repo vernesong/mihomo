@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net"
 	stdhttp "net/http"
 	"net/http/httptest"
@@ -422,6 +423,78 @@ func TestSmartResponseProbeIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("refused next to OK is mixed and records nothing", func(t *testing.T) {
+		// own group: four control probes would eat into the shared per-group burst
+		s := newProbeTestSmart(t, "probe-mixed", bad, c1, c2)
+		for i, modes := range [][2]string{{"challenge", "ok"}, {"ok", "challenge"}} {
+			md := probeMetadata(fmt.Sprintf("mixed%d.probe.test", i))
+			setModes("challenge", modes[0], modes[1])
+			before1, before2 := control1.hits.Load(), control2.hits.Load()
+			v := s.runResponseProbe(md, bad, probeTestURL, "")
+			if v.Kind != smart.VerdictIgnore || !strings.Contains(v.Reason, "unconfirmed") {
+				t.Fatalf("%v: verdict %s %s", modes, v.Kind, v.Reason)
+			}
+			if control1.hits.Load() != before1+1 || control2.hits.Load() != before2+1 {
+				t.Fatalf("%v: both controls must be probed", modes)
+			}
+			if nodes := s.testFailNodes(md); len(nodes) != 0 {
+				t.Fatalf("%v: records %v", modes, nodes)
+			}
+			if s.probeThrottle.suppressed(md.WildcardTarget, "challenge", time.Now()) {
+				t.Fatalf("%v: mixed result suppressed the target", modes)
+			}
+		}
+	})
+
+	t.Run("OK next to a dead control is unconfirmed", func(t *testing.T) {
+		down := adapter.NewProxy(&probeTestNode{Base: outbound.NewBase(outbound.BaseOption{Name: "node-down2", Type: C.Direct, ProviderName: "sub5", Addr: "e.server:443"}), dialErr: true})
+		s2 := newProbeTestSmart(t, "probe-ok-dead", bad, c1, down)
+		md := probeMetadata("okdead.probe.test")
+		setModes("challenge", "ok", "ok")
+		if v := s2.runResponseProbe(md, bad, probeTestURL, ""); v.Kind != smart.VerdictIgnore {
+			t.Fatalf("verdict %s %s", v.Kind, v.Reason)
+		}
+		if nodes := s2.testFailNodes(md); len(nodes) != 0 {
+			t.Fatalf("records %v", nodes)
+		}
+	})
+
+	t.Run("single independent control OK confirms", func(t *testing.T) {
+		s2 := newProbeTestSmart(t, "probe-single-control", bad, c1)
+		md := probeMetadata("single.probe.test")
+		setModes("challenge", "ok", "ok")
+		if v := s2.runResponseProbe(md, bad, probeTestURL, ""); v.Kind != smart.VerdictBlocked {
+			t.Fatalf("verdict %s %s", v.Kind, v.Reason)
+		}
+		if nodes := s2.testFailNodes(md); nodes["node-limited"] != 2 {
+			t.Fatalf("records %v", nodes)
+		}
+	})
+
+	t.Run("control budget exhausted records nothing", func(t *testing.T) {
+		// own group: the throttle is per group and must not starve the other subtests
+		s := newProbeTestSmart(t, "probe-budget", bad, c1, c2)
+		md := probeMetadata("budget.probe.test")
+		setModes("challenge", "ok", "ok")
+		// use up the per-target budget with probes of other nodes
+		for i := 0; i < smart.ProbePerTargetPerMinute; i++ {
+			if !s.probeThrottle.allowNode(md.WildcardTarget, fmt.Sprintf("filler-%d", i), time.Now()) {
+				t.Fatalf("filler %d denied", i)
+			}
+		}
+		before1, before2 := control1.hits.Load(), control2.hits.Load()
+		v := s.runResponseProbe(md, bad, probeTestURL, "")
+		if v.Kind != smart.VerdictIgnore || !strings.Contains(v.Reason, "budget") {
+			t.Fatalf("verdict %s %s", v.Kind, v.Reason)
+		}
+		if control1.hits.Load() != before1 || control2.hits.Load() != before2 {
+			t.Fatal("control probed beyond the budget")
+		}
+		if nodes := s.testFailNodes(md); len(nodes) != 0 {
+			t.Fatalf("records %v", nodes)
+		}
+	})
+
 	t.Run("503 retry-after confirmed becomes code 7", func(t *testing.T) {
 		md := probeMetadata("maint.probe.test")
 		setModes("503", "ok", "ok")
@@ -491,25 +564,34 @@ func TestSmartResponseProbeControlSelection(t *testing.T) {
 		site.node("unknown-provider", "", "c.server:443"),
 		site.node("independent-1", "sub3", "d.server:443"),
 		site.node("independent-dup-addr", "sub4", "d.server:443"),
+		site.node("independent-dup-provider", "sub3", "e.server:443"),
 	)
 	md := probeMetadata("select.probe.test")
-	allowed := map[string]bool{"unknown-provider": true, "independent-1": true, "independent-dup-addr": true}
+	allowed := map[string]bool{"unknown-provider": true, "independent-1": true, "independent-dup-addr": true, "independent-dup-provider": true}
+	sawPair := false
 	for i := 0; i < 50; i++ {
 		controls := s.pickControlNodes(md, judged)
 		if len(controls) == 0 || len(controls) > smart.ProbeMaxControls {
 			t.Fatalf("got %d controls", len(controls))
 		}
-		addrs := map[string]bool{}
+		addrs, providers := map[string]bool{}, map[string]bool{}
 		for _, c := range controls {
 			if !allowed[c.Name()] {
 				t.Fatalf("control %s is not independent", c.Name())
 			}
-			_, addr := proxyServerIdentity(c)
+			provider, addr := proxyServerIdentity(c)
 			if addrs[addr] {
 				t.Fatalf("two controls share address %s", addr)
 			}
-			addrs[addr] = true
+			if provider != "" && providers[provider] {
+				t.Fatalf("two controls share provider %s", provider)
+			}
+			addrs[addr], providers[provider] = true, true
 		}
+		sawPair = sawPair || len(controls) == smart.ProbeMaxControls
+	}
+	if !sawPair {
+		t.Fatal("never picked two controls")
 	}
 
 	// a group whose other nodes all share the provider has no control: nothing is recorded
@@ -557,50 +639,86 @@ func TestSmartResponseProbeLongPollingNotMisjudged(t *testing.T) {
 	}
 }
 
-func TestFilterProxiesReleasesEarliestRateLimitedNode(t *testing.T) {
+func TestFilterProxiesPromotesEarliestRateLimitedNode(t *testing.T) {
 	site := newProbeSite(t)
 	late := site.node("late", "sub1", "a.server:443")
-	early := site.node("early", "sub2", "b.server:443")
-	s := newProbeTestSmart(t, "probe-release", late, early)
+	mid := site.node("mid", "sub2", "b.server:443")
+	early := site.node("early", "sub3", "c.server:443")
 	md := probeMetadata("release.probe.test")
-	limit := int(s.hostFailLimit.Load())
-	mark := func(name string, ttl time.Duration) {
-		s.store.UpdateHostStatusTTL(s.Name(), s.configName, md.WildcardTarget, md, name, s.maxFailedTimes, limit, true, true, smart.HostCodeRateLimited, ttl)
+	mark := func(s *Smart, name string, code int64, ttl time.Duration) {
+		s.store.UpdateHostStatusTTL(s.Name(), s.configName, md.WildcardTarget, md, name, s.maxFailedTimes, int(s.hostFailLimit.Load()), true, true, code, ttl)
 	}
-	all := s.GetProxies(false)
 
-	mark("late", 20*time.Minute)
-	// one node still clean: nothing released
-	if got := s.filterProxies(md, md.WildcardTarget, nil, nil, all, 1, false); len(got) != 1 || got[0].Name() != "early" {
+	s := newProbeTestSmart(t, "probe-release", late, mid, early)
+	all := s.GetProxies(false)
+	mark(s, "late", smart.HostCodeRateLimited, 20*time.Minute)
+	mark(s, "mid", smart.HostCodeRateLimited, 10*time.Minute)
+	// one node still clean: normal selection, no promotion
+	if got := s.filterProxies(md, md.WildcardTarget, nil, nil, all, 2, false); len(got) != 1 || got[0].Name() != "early" {
 		t.Fatalf("got %v", proxyNames(got))
 	}
 
-	mark("early", 2*time.Minute)
-	nodes := s.testFailNodes(md)
-	if nodes["late"] != smart.HostCodeRateLimited || nodes["early"] != smart.HostCodeRateLimited {
-		t.Fatalf("records %v", nodes)
-	}
+	mark(s, "early", smart.HostCodeRateLimited, 2*time.Minute)
 	if _, _, _, blocked := s.store.GetHostStatus(s.Name(), s.configName, md.WildcardTarget, 1, md.SmartTarget); blocked {
 		t.Fatal("code 7 triggered the stop-loss")
 	}
-	// every candidate excluded by code 7: the earliest expiring one ("early", listed last) is used
-	for _, weights := range [][]float64{nil, {1, 1}} {
-		var names []string
-		if weights != nil {
-			names = []string{"late", "early"}
+	// every candidate excluded by code 7: upstream fallback size (alive nodes up to minCount) is kept,
+	// the earliest expiring node ("early", listed last) comes first
+	for _, minCount := range []int{1, 2, 3, 5} {
+		want := minCount
+		if want > len(all) {
+			want = len(all)
 		}
-		got := s.filterProxies(md, md.WildcardTarget, names, weights, all, 1, false)
-		if len(got) != 1 || got[0].Name() != "early" {
-			t.Fatalf("weights=%v got %v", weights, proxyNames(got))
+		for _, weights := range [][]float64{nil, {1, 1, 1}} {
+			var names []string
+			if weights != nil {
+				names = []string{"late", "mid", "early"}
+			}
+			got := s.filterProxies(md, md.WildcardTarget, names, weights, all, minCount, false)
+			if len(got) != want || got[0].Name() != "early" {
+				t.Fatalf("minCount=%d weights=%v got %v", minCount, weights, proxyNames(got))
+			}
 		}
 	}
 
-	// a code 2 node is never released, the code 7 one is
-	s3 := newProbeTestSmart(t, "probe-release-mixed", late, early)
-	s3.store.UpdateHostStatus(s3.Name(), s3.configName, md.WildcardTarget, md, "late", s3.maxFailedTimes, limit, true, true, 2)
-	s3.store.UpdateHostStatusTTL(s3.Name(), s3.configName, md.WildcardTarget, md, "early", s3.maxFailedTimes, limit, true, true, smart.HostCodeRateLimited, 25*time.Minute)
-	if got := s3.filterProxies(md, md.WildcardTarget, nil, nil, all, 1, false); len(got) != 1 || got[0].Name() != "early" {
+	// code 2 nodes are never promoted, the code 7 one is; fallback size unchanged
+	s3 := newProbeTestSmart(t, "probe-release-mixed", late, mid, early)
+	mark(s3, "late", 2, 0)
+	mark(s3, "mid", 2, 0)
+	mark(s3, "early", smart.HostCodeRateLimited, 25*time.Minute)
+	if got := s3.filterProxies(md, md.WildcardTarget, nil, nil, all, 2, false); len(got) != 2 || got[0].Name() != "early" {
 		t.Fatalf("mixed got %v", proxyNames(got))
+	}
+}
+
+func TestPromoteRateLimitedNodeSkipsBlockedAndDead(t *testing.T) {
+	site := newProbeSite(t)
+	late := site.node("late", "sub1", "a.server:443")
+	early := site.node("early", "sub2", "b.server:443")
+	earliestDead := adapter.NewProxy(&probeTestNode{Base: outbound.NewBase(outbound.BaseOption{Name: "earliest-dead", Type: C.Direct, ProviderName: "sub3", Addr: "c.server:443"}), dialErr: true})
+	earliestBlocked := site.node("earliest-blocked", "sub4", "d.server:443")
+	s := newProbeTestSmart(t, "probe-promote-skip", earliestDead, earliestBlocked, late, early)
+	md := probeMetadata("skip.probe.test")
+	for name, ttl := range map[string]time.Duration{"earliest-dead": time.Minute, "earliest-blocked": time.Minute, "early": 5 * time.Minute, "late": 20 * time.Minute} {
+		s.store.UpdateHostStatusTTL(s.Name(), s.configName, md.WildcardTarget, md, name, s.maxFailedTimes, int(s.hostFailLimit.Load()), true, true, smart.HostCodeRateLimited, ttl)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, _ = earliestDead.URLTest(ctx, s.testUrl, nil)
+	if earliestDead.AliveForTestUrl(s.testUrl) {
+		t.Fatal("setup: node still alive")
+	}
+	s.store.UpdateBlockedNodesCache(s.Name(), s.configName, map[string]*smart.NodeState{"earliest-blocked": {BlockedUntil: time.Now().Add(time.Hour).Unix()}})
+	if !s.store.GetBlockedNodes(s.Name(), s.configName)["earliest-blocked"] {
+		t.Fatal("setup: node not globally blocked")
+	}
+
+	wtFailNodes, _, _, _ := s.store.GetHostStatus(s.Name(), s.configName, md.WildcardTarget, int(s.hostFailLimit.Load()), md.SmartTarget)
+	blockedNodes := s.store.GetBlockedNodes(s.Name(), s.configName)
+	fallback := s.GetProxies(false)
+	got := s.promoteRateLimitedNode(md, md.WildcardTarget, wtFailNodes, blockedNodes, fallback, false)
+	if len(got) != len(fallback) || got[0].Name() != "early" {
+		t.Fatalf("got %v", proxyNames(got))
 	}
 }
 
@@ -617,16 +735,7 @@ func TestRecheckBlockedHost(t *testing.T) {
 	node := site.node("node-recheck", "sub1", "a.server:443")
 	s := newProbeTestSmart(t, "probe-recheck", node)
 	limit := int(s.hostFailLimit.Load())
-	block := func(host string) *C.Metadata {
-		md := probeMetadata(host)
-		s.store.UpdateHostStatus(s.Name(), s.configName, md.WildcardTarget, md, "node-recheck", s.maxFailedTimes, limit, true, true, 2)
-		if nodes := s.testFailNodes(md); nodes["node-recheck"] != 2 {
-			t.Fatalf("setup %v", nodes)
-		}
-		return md
-	}
-
-	for _, tt := range []struct {
+	tests := []struct {
 		mode string
 		want int
 	}{
@@ -635,15 +744,31 @@ func TestRecheckBlockedHost(t *testing.T) {
 		{"challenge", 2},
 		{"longpoll", 2},
 		{"502", 2},
-	} {
-		if tt.mode == "longpoll" && testing.Short() {
-			continue
+	}
+	expiry := map[string]int64{}
+	for _, tt := range tests {
+		md := probeMetadata("recheck-" + tt.mode + ".probe.test")
+		s.store.UpdateHostStatus(s.Name(), s.configName, md.WildcardTarget, md, "node-recheck", s.maxFailedTimes, limit, true, true, 2)
+		exp := s.store.GetHostCodeExpiry(s.Name(), s.configName, 2, md.WildcardTarget)["node-recheck"]
+		if exp == 0 {
+			t.Fatalf("setup %s: no code 2 block", tt.mode)
 		}
-		md := block("recheck-" + tt.mode + ".probe.test")
+		expiry[tt.mode] = exp
+	}
+	// a renewed 24h block would move the expiry by at least one second
+	time.Sleep(1100 * time.Millisecond)
+
+	for _, tt := range tests {
+		md := probeMetadata("recheck-" + tt.mode + ".probe.test")
 		site.mode.Store(tt.mode)
 		s.recheckBlockedHost(node, md.WildcardTarget, "node-recheck", md.Host)
 		if got := s.testFailNodes(md)["node-recheck"]; got != tt.want {
 			t.Fatalf("%s: code %d want %d", tt.mode, got, tt.want)
+		}
+		if tt.want == 2 {
+			if exp := s.store.GetHostCodeExpiry(s.Name(), s.configName, 2, md.WildcardTarget)["node-recheck"]; exp != expiry[tt.mode] {
+				t.Fatalf("%s: code 2 expiry changed %d -> %d", tt.mode, expiry[tt.mode], exp)
+			}
 		}
 	}
 }
