@@ -40,8 +40,11 @@ func TestClassifyResponse(t *testing.T) {
 		{"429 retry-after seconds", 429, hdr("Retry-After", "120"), "", VerdictRateLimited, 120 * time.Second},
 		{"429 retry-after http-date", 429, hdr("Retry-After", now.Add(5*time.Minute).Format(http.TimeFormat)), "", VerdictRateLimited, 5 * time.Minute},
 		{"429 no headers", 429, nil, "", VerdictRateLimited, RateLimitDefaultCooldown},
-		{"429 retry-after 0 is no signal", 429, hdr("Retry-After", "0"), "", VerdictRateLimited, RateLimitDefaultCooldown},
-		{"429 retry-after past date is no signal", 429, hdr("Retry-After", now.Add(-time.Minute).Format(http.TimeFormat)), "", VerdictRateLimited, RateLimitDefaultCooldown},
+		{"429 retry-after 0 takes the lower bound", 429, hdr("Retry-After", "0"), "", VerdictRateLimited, RateLimitMinCooldown},
+		{"429 retry-after negative takes the lower bound", 429, hdr("Retry-After", "-3"), "", VerdictRateLimited, RateLimitMinCooldown},
+		{"429 retry-after past date takes the lower bound", 429, hdr("Retry-After", now.Add(-time.Minute).Format(http.TimeFormat)), "", VerdictRateLimited, RateLimitMinCooldown},
+		{"429 retry-after garbage is no signal", 429, hdr("Retry-After", "soon"), "", VerdictRateLimited, RateLimitDefaultCooldown},
+		{"429 retry-after 0 with reset uses reset", 429, hdr("Retry-After", "0", "X-RateLimit-Reset", epoch(300*time.Second)), "", VerdictRateLimited, 300 * time.Second},
 		{"429 x-ratelimit-reset", 429, hdr("X-RateLimit-Reset", epoch(900*time.Second)), "", VerdictRateLimited, 900 * time.Second},
 		{"429 retry-after wins over reset", 429, hdr("Retry-After", "90", "X-RateLimit-Reset", epoch(900*time.Second)), "", VerdictRateLimited, 90 * time.Second},
 		{"429 cooldown clamped low", 429, hdr("Retry-After", "5"), "", VerdictRateLimited, RateLimitMinCooldown},
@@ -53,7 +56,9 @@ func TestClassifyResponse(t *testing.T) {
 		{"403 remaining 12 is featureless", 403, hdr("X-RateLimit-Remaining", "12"), "", VerdictSuspect, 0},
 		{"github secondary 403 retry-after", 403, hdr("Retry-After", "60", "Server", "github.com"), "", VerdictRateLimited, 60 * time.Second},
 		{"403 retry-after 0 is featureless", 403, hdr("Retry-After", "0"), "", VerdictSuspect, 0},
-		{"503 retry-after", 503, hdr("Retry-After", "300"), "", VerdictRateLimited, 300 * time.Second},
+		{"503 retry-after needs confirmation", 503, hdr("Retry-After", "300"), "", VerdictSuspect, 300 * time.Second},
+		{"github rate_limit endpoint exhausted", 200, hdr("X-RateLimit-Remaining", "0", "X-RateLimit-Reset", epoch(20*time.Minute)), `{"resources":{}}`, VerdictRateLimited, 20 * time.Minute},
+		{"github rate_limit endpoint with quota", 200, hdr("X-RateLimit-Remaining", "57", "X-RateLimit-Reset", epoch(20*time.Minute)), `{"resources":{}}`, VerdictOK, 0},
 		{"json 403 rate limit", 403, hdr("Content-Type", "application/json; charset=utf-8"),
 			`{"message":"API rate limit exceeded for 1.2.3.4.","documentation_url":"https://docs.github.com"}`, VerdictRateLimited, RateLimitDefaultCooldown},
 		{"html 403 mentioning rate limit is not json", 403, hdr("Content-Type", "text/html"), "rate limit", VerdictSuspect, 0},
@@ -96,8 +101,17 @@ func TestClassifyResponse(t *testing.T) {
 			if v.Kind != tt.kind {
 				t.Fatalf("kind = %s (%s), want %s", v.Kind, v.Reason, tt.kind)
 			}
-			if tt.kind == VerdictRateLimited && v.Cooldown != tt.cooldown {
+			if (tt.kind == VerdictRateLimited || tt.cooldown > 0) && v.Cooldown != tt.cooldown {
 				t.Fatalf("cooldown = %s, want %s", v.Cooldown, tt.cooldown)
+			}
+			if tt.kind == VerdictSuspect {
+				want := VerdictBlocked
+				if tt.status == 503 && tt.cooldown > 0 {
+					want = VerdictRateLimited
+				}
+				if v.ConfirmedKind != want {
+					t.Fatalf("confirmed kind = %s, want %s", v.ConfirmedKind, want)
+				}
 			}
 			if v.Class == "" {
 				t.Fatalf("empty class")
@@ -126,8 +140,9 @@ func TestClassifyProbeError(t *testing.T) {
 		{"unknown authority", fmt.Errorf("tls: %w", x509.UnknownAuthorityError{Cert: cert}), VerdictSuspect},
 		{"deadline", &url.Error{Op: "Get", URL: "https://a", Err: context.DeadlineExceeded}, VerdictCount},
 		{"net timeout", timeoutErr{}, VerdictCount},
-		{"reset", &net.OpError{Op: "read", Err: syscall.ECONNRESET}, VerdictCount},
-		{"eof", &url.Error{Op: "Get", URL: "https://a", Err: io.EOF}, VerdictCount},
+		{"reset ignored", &net.OpError{Op: "read", Err: syscall.ECONNRESET}, VerdictIgnore},
+		{"eof ignored", &url.Error{Op: "Get", URL: "https://a", Err: io.EOF}, VerdictIgnore},
+		{"unexpected eof ignored", io.ErrUnexpectedEOF, VerdictIgnore},
 		{"canceled", context.Canceled, VerdictIgnore},
 		{"dial refused", &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}, VerdictIgnore},
 	}
@@ -182,7 +197,8 @@ func TestClampCooldown(t *testing.T) {
 
 func TestUpdateHostStatusRateLimited(t *testing.T) {
 	store := NewStore(nil)
-	const group, config, target = "rl-test-group", "rl-test-config", "raw.githubusercontent.com"
+	group := fmt.Sprintf("rl-test-group-%d", time.Now().UnixNano())
+	const config, target = "rl-test-config", "raw.githubusercontent.com"
 	md := &C.Metadata{Host: target}
 	limit := 10
 
@@ -227,11 +243,48 @@ func TestUpdateHostStatusRateLimited(t *testing.T) {
 		t.Fatalf("expired code 7 still active: %v", nodes)
 	}
 
-	// code 7 counts toward the stop-loss limit
+	// code 7 does not count toward the stop-loss limit, other immediate blocks do
 	for i := 0; i < 3; i++ {
 		store.UpdateHostStatusTTL(group, config, target, md, fmt.Sprintf("m%d", i), 5, 2, true, true, HostCodeRateLimited, time.Minute)
 	}
+	if _, _, _, blocked = store.GetHostStatus(group, config, target, 2); blocked {
+		t.Fatalf("code 7 nodes triggered stop-loss")
+	}
+	if hs.Blocked {
+		t.Fatalf("UpdateHostStatus marked the host blocked because of code 7")
+	}
+	expiry := store.GetRateLimitedNodes(group, config, target)
+	if len(expiry) != 3 || expiry["m0"] <= time.Now().Unix() {
+		t.Fatalf("GetRateLimitedNodes = %v", expiry)
+	}
+	for i := 0; i < 3; i++ {
+		store.UpdateHostStatus(group, config, target, md, fmt.Sprintf("k%d", i), 5, 2, true, true, 5)
+	}
 	if _, _, _, blocked = store.GetHostStatus(group, config, target, 2); !blocked {
-		t.Fatalf("code 7 nodes did not trigger stop-loss")
+		t.Fatalf("code 5 nodes did not trigger stop-loss")
+	}
+}
+
+func TestRateLimitDoesNotReplaceActiveCode3Block(t *testing.T) {
+	store := NewStore(nil)
+	group := fmt.Sprintf("rl-code3-group-%d", time.Now().UnixNano())
+	const config, target = "rl-test-config", "api.github.com"
+	md := &C.Metadata{Host: target}
+	limit := 10
+
+	// maxFailedTimes=2: two counts turn into an active 24h code 3 block
+	store.UpdateHostStatus(group, config, target, md, "n1", 2, limit, false, true, 3)
+	store.UpdateHostStatus(group, config, target, md, "n1", 2, limit, false, true, 3)
+	if nodes, _, _, _ := store.GetHostStatus(group, config, target, limit); nodes["n1"] != 3 {
+		t.Fatalf("expected active code 3 block, got %v", nodes)
+	}
+	store.UpdateHostStatusTTL(group, config, target, md, "n1", 2, limit, true, true, HostCodeRateLimited, time.Minute)
+	nodes, _, _, _ := store.GetHostStatus(group, config, target, limit)
+	if nodes["n1"] != 3 {
+		t.Fatalf("code 7 replaced an active code 3 block: %v", nodes)
+	}
+	hs, _ := hostStatusCache.Get(FormatDBKey(KeyTypeHostFailures, config, group, target))
+	if exp := hs.Codes[3].Nodes["n1"] - time.Now().Unix(); exp < int64(HostFailureNodeTTL.Seconds())-5 {
+		t.Fatalf("code 3 block shortened to %ds", exp)
 	}
 }

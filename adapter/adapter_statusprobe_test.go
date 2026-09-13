@@ -74,25 +74,27 @@ func guardDefaultResolver(t *testing.T) *atomic.Int32 {
 }
 
 func TestStatusRequestTransportDialHooks(t *testing.T) {
-	var checked atomic.Bool
-	statusTestTransport = func(transport *http.Transport) {
-		if transport.DialContext == nil {
-			t.Errorf("Transport.DialContext is nil")
-		}
-		if transport.DialTLSContext == nil {
-			t.Errorf("Transport.DialTLSContext is nil")
-		}
-		checked.Store(true)
-	}
-	t.Cleanup(func() { statusTestTransport = nil })
-
 	node := NewProxy(newFakeNode("hooks", map[string]string{}))
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	_, _, _ = node.StatusTest(ctx, "https://example.com/")
-	_, _ = node.StatusProbe(ctx, "https://example.com/", smart.ProbeOptions{})
-	if !checked.Load() {
-		t.Fatal("transport hook not reached")
+	for name, header := range map[string]http.Header{"StatusTest": nil, "StatusProbe": {"Accept-Encoding": {"identity"}}} {
+		resp, transport, err := node.statusRequest(ctx, "https://example.com/", header, nil)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		if err == nil {
+			t.Fatalf("%s: expected the fake node to refuse the dial", name)
+		}
+		if transport == nil {
+			t.Fatalf("%s: transport not returned", name)
+		}
+		if transport.DialContext == nil {
+			t.Errorf("%s: Transport.DialContext is nil", name)
+		}
+		if transport.DialTLSContext == nil {
+			t.Errorf("%s: Transport.DialTLSContext is nil", name)
+		}
+		transport.CloseIdleConnections()
 	}
 }
 

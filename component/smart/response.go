@@ -5,11 +5,9 @@ import (
 	"context"
 	"crypto/x509"
 	"errors"
-	"io"
 	"net"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/metacubex/http"
@@ -34,7 +32,9 @@ const (
 	ProbePerTargetPerMinute      = 6
 	ProbeGroupPerMinute          = 30
 	ProbeGroupBurst              = 10
-	ProbeSiteLevelSuppress       = 30 * time.Minute
+	ProbeSiteLevelSuppress       = 10 * time.Minute
+	// ProbeMaxControls is how many control nodes a suspect answer is compared against
+	ProbeMaxControls = 2
 
 	// ProbeMaxBodyBytes is how much of the probe body is kept for block page matching.
 	ProbeMaxBodyBytes = 4096
@@ -53,10 +53,11 @@ const (
 	VerdictRateLimited
 	// VerdictBlocked is an explicit block that needs no confirmation (451): code 2.
 	VerdictBlocked
-	// VerdictSuspect is a challenge / WAF block page / featureless 403 / TLS hijack.
-	// It only becomes a code 2 block after another node fetched the same URL fine.
+	// VerdictSuspect is a challenge / WAF block page / featureless 403 / TLS hijack /
+	// 503 with retry-after. It only becomes ConfirmedKind after a control node on another
+	// provider and server fetched the same URL fine.
 	VerdictSuspect
-	// VerdictCount is transport-level trouble (timeout, reset, 421): code 3 counting.
+	// VerdictCount is a probe timeout or 421: code 3 counting.
 	VerdictCount
 )
 
@@ -78,10 +79,12 @@ func (k VerdictKind) String() string {
 }
 
 type ResponseVerdict struct {
-	Kind     VerdictKind
-	Cooldown time.Duration // only for VerdictRateLimited
-	Class    string        // stable short class, e.g. "challenge", used for site-level suppression
-	Reason   string        // human readable detail for debug logs
+	Kind VerdictKind
+	// ConfirmedKind is what a VerdictSuspect becomes once confirmed (VerdictBlocked or VerdictRateLimited)
+	ConfirmedKind VerdictKind
+	Cooldown      time.Duration // for VerdictRateLimited, or a Suspect confirmed as rate limited
+	Class         string        // stable short class, e.g. "challenge", used for site-level suppression
+	Reason        string        // human readable detail for debug logs
 }
 
 type ProbeOptions struct {
@@ -98,7 +101,11 @@ type ProbeResult struct {
 }
 
 func verdict(kind VerdictKind, class, reason string) ResponseVerdict {
-	return ResponseVerdict{Kind: kind, Class: class, Reason: reason}
+	v := ResponseVerdict{Kind: kind, Class: class, Reason: reason}
+	if kind == VerdictSuspect {
+		v.ConfirmedKind = VerdictBlocked
+	}
+	return v
 }
 
 // ClassifyResponse is the pure decision table for an active probe response.
@@ -123,8 +130,8 @@ func ClassifyResponse(status int, header http.Header, body []byte, now time.Time
 	if status == http.StatusForbidden && strings.TrimSpace(header.Get("X-Ratelimit-Remaining")) == "0" {
 		return rateLimited(statusText + " x-ratelimit-remaining=0")
 	}
-	// R6: secondary rate limit / overload with an explicit positive retry-after
-	if (status == http.StatusForbidden || status == http.StatusServiceUnavailable) && hasRetryAfter {
+	// R6: secondary rate limit with an explicit positive retry-after
+	if status == http.StatusForbidden && hasRetryAfter {
 		return rateLimited(statusText + " retry-after=" + retryAfter.String())
 	}
 	// R7: JSON 403 whose message talks about rate limiting
@@ -132,6 +139,10 @@ func ClassifyResponse(status int, header http.Header, body []byte, now time.Time
 		strings.Contains(strings.ToLower(header.Get("Content-Type")), "json") &&
 		bytes.Contains(lowerBody, []byte("rate limit")) {
 		return rateLimited(statusText + " json rate limit")
+	}
+	// R7b: active probe of a quota endpoint (e.g. api.github.com/rate_limit) reporting an exhausted quota
+	if status == http.StatusOK && strings.TrimSpace(header.Get("X-Ratelimit-Remaining")) == "0" {
+		return rateLimited(statusText + " x-ratelimit-remaining=0")
 	}
 
 	// R8: challenges, checked before success so a 200 challenge page is not "reachable"
@@ -168,6 +179,14 @@ func ClassifyResponse(status int, header http.Header, body []byte, now time.Time
 			bytes.Contains(lowerBody, []byte("reference #")) {
 			return verdict(VerdictSuspect, "waf-block", statusText+" akamai block page")
 		}
+	}
+
+	// R6b: 503 + retry-after may be site-wide maintenance: rate limit only if another node is served
+	if status == http.StatusServiceUnavailable && hasRetryAfter {
+		v := verdict(VerdictSuspect, "overloaded", statusText+" retry-after="+retryAfter.String())
+		v.ConfirmedKind = VerdictRateLimited
+		v.Cooldown = RateLimitCooldown(header, now)
+		return v
 	}
 
 	// R11: legal / regional block
@@ -224,7 +243,7 @@ func ClassifyProbeError(err error) ResponseVerdict {
 	if errors.As(err, &authorityErr) {
 		return verdict(VerdictSuspect, "tls-hijack", "x509 unknown authority")
 	}
-	// R14: timeout / reset are transport problems: counted, never blocked at once
+	// R14: a timeout is counted, never blocked at once
 	if errors.Is(err, context.DeadlineExceeded) {
 		return verdict(VerdictCount, "timeout", err.Error())
 	}
@@ -232,10 +251,9 @@ func ClassifyProbeError(err error) ResponseVerdict {
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return verdict(VerdictCount, "timeout", err.Error())
 	}
-	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return verdict(VerdictCount, "reset", err.Error())
-	}
-	return verdict(VerdictIgnore, "unknown", err.Error())
+	// other network errors (EOF, reset, dial failure) are ignored as before: the
+	// connection's own error path already counts real transport failures
+	return verdict(VerdictIgnore, "network-error", err.Error())
 }
 
 // ParseRetryAfter parses a Retry-After value (delay-seconds or HTTP-date).
@@ -278,16 +296,36 @@ func parseRateLimitReset(value string, now time.Time) (time.Duration, bool) {
 	return time.Unix(epoch, 0).Sub(now), true
 }
 
-// RateLimitCooldown derives the code 7 TTL from retry-after or x-ratelimit-reset,
-// clamped to [RateLimitMinCooldown, RateLimitMaxCooldown]; RateLimitDefaultCooldown without either.
+// RateLimitCooldown derives the code 7 TTL, clamped to [RateLimitMinCooldown, RateLimitMaxCooldown]:
+// a positive retry-after, else x-ratelimit-reset, else RateLimitMinCooldown when retry-after is
+// present but zero / negative / already past (retry soon), else RateLimitDefaultCooldown.
 func RateLimitCooldown(header http.Header, now time.Time) time.Duration {
-	if d, ok := ParseRetryAfter(header.Get("Retry-After"), now); ok {
+	retryAfter := header.Get("Retry-After")
+	if d, ok := ParseRetryAfter(retryAfter, now); ok {
 		return ClampCooldown(d)
 	}
 	if d, ok := parseRateLimitReset(header.Get("X-Ratelimit-Reset"), now); ok {
 		return ClampCooldown(d)
 	}
+	if retryAfterNotPositive(retryAfter, now) {
+		return RateLimitMinCooldown
+	}
 	return RateLimitDefaultCooldown
+}
+
+// retryAfterNotPositive reports a well-formed retry-after asking to retry now or in the past.
+func retryAfterNotPositive(value string, now time.Time) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return seconds <= 0
+	}
+	if t, err := http.ParseTime(value); err == nil {
+		return !t.After(now)
+	}
+	return false
 }
 
 func ClampCooldown(d time.Duration) time.Duration {

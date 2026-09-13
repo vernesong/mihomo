@@ -608,6 +608,9 @@ func (s *Smart) Proxies() []C.Proxy {
 func (s *Smart) filterProxies(metadata *C.Metadata, wildcardTarget string, names []string, weights []float64, all []C.Proxy, minCount int, isUDP bool) []C.Proxy {
 	blockedNodes := s.store.GetBlockedNodes(s.Name(), s.configName)
 	wtFailNodes, _, _, wtBlocked := s.store.GetHostStatus(s.Name(), s.configName, wildcardTarget, int(s.hostFailLimit.Load()), metadata.SmartTarget)
+	if !wtBlocked {
+		s.releaseRateLimitedNode(metadata, wildcardTarget, wtFailNodes, blockedNodes, all, isUDP)
+	}
 
 	var proxyByName map[string]C.Proxy
 	if len(names) > 0 {
@@ -1913,17 +1916,7 @@ func (s *Smart) checkHostStatus() {
 				if !ok {
 					continue
 				}
-				// same decision table as detection; timeouts and origin errors leave the block as is
-				v := s.probeVerdict(p, s.responseProbeURL(it.host, 443))
-				metadata := &C.Metadata{Host: it.host}
-				switch v.Kind {
-				case smart.VerdictOK:
-					s.store.UpdateHostStatus(s.Name(), s.configName, it.wildcardTarget, metadata, it.nodeName, s.maxFailedTimes, int(s.hostFailLimit.Load()), false, true, 0)
-					log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] with HTTP Status: [%s]", s.Name(), it.nodeName, it.host, v.Reason)
-				case smart.VerdictRateLimited, smart.VerdictBlocked, smart.VerdictSuspect:
-					s.store.UpdateHostStatus(s.Name(), s.configName, it.wildcardTarget, metadata, it.nodeName, s.maxFailedTimes, int(s.hostFailLimit.Load()), true, true, 2)
-					log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] still abnormal with HTTP Status: [%s]", s.Name(), it.nodeName, it.host, v.Reason)
-				}
+				s.recheckBlockedHost(p, it.wildcardTarget, it.nodeName, it.host)
 			}
 		}()
 	}
@@ -1938,13 +1931,6 @@ sendLoop:
 	}
 	close(jobs)
 	wg.Wait()
-}
-
-func (s *Smart) StatusTest(proxy C.Proxy, host string) (uint16, bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), C.DefaultTCPTimeout)
-	defer cancel()
-	url := "https://" + host + "/?z=" + strconv.FormatInt(rand.Int63(), 10)
-	return proxy.StatusTest(ctx, url)
 }
 
 func (s *Smart) getPriorityFactor(proxyName string) float64 {

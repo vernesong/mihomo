@@ -44,7 +44,8 @@ type responseProbeURLs struct {
 func parseResponseProbeURLs(raw map[string]string) (*responseProbeURLs, error) {
 	r := &responseProbeURLs{exact: make(map[string]string)}
 	for host, rawURL := range raw {
-		key := strings.ToLower(strings.TrimSpace(host))
+		// a trailing dot is ignored, as in match
+		key := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 		wildcard := strings.HasPrefix(key, "*.")
 		name := strings.TrimPrefix(key, "*.")
 		if name == "" || strings.ContainsAny(name, "*/:[] ") {
@@ -289,65 +290,145 @@ func (s *Smart) probeVerdict(proxy C.Proxy, probeURL string) smart.ResponseVerdi
 	return smart.ClassifyResponse(result.StatusCode, result.Header, result.Body, time.Now())
 }
 
-// pickControlNode returns another node without failure records for the target.
-func (s *Smart) pickControlNode(metadata *C.Metadata, proxyName string) C.Proxy {
-	wtFailNodes, _, _, _ := s.store.GetHostStatus(s.Name(), s.configName, metadata.WildcardTarget, int(s.hostFailLimit.Load()), metadata.SmartTarget)
-	blockedNodes := s.store.GetBlockedNodes(s.Name(), s.configName)
-	var candidates []C.Proxy
-	for _, p := range s.GetProxies(false) {
-		name := p.Name()
-		if name == proxyName || wtFailNodes[name] != 0 || blockedNodes[name] || !p.AliveForTestUrl(s.testUrl) {
-			continue
-		}
-		candidates = append(candidates, p)
+// proxyServerIdentity returns the provider name and server address of a node,
+// both possibly empty, used to keep control nodes independent of the judged node.
+func proxyServerIdentity(p C.Proxy) (providerName, addr string) {
+	adapter := p.Adapter()
+	if adapter == nil {
+		return "", ""
 	}
-	if len(candidates) == 0 {
-		return nil
-	}
-	return candidates[rand.Intn(len(candidates))]
+	return adapter.ProxyInfo().ProviderName, adapter.Addr()
 }
 
-// confirmSuspect runs the differential check: a suspect answer only blocks the node when
-// another node gets a normal answer for the same URL. The same answer on the control node
-// means the site treats everyone that way: nothing is recorded and the class is suppressed.
-// Without a usable control result the evidence is only counted.
-func (s *Smart) confirmSuspect(metadata *C.Metadata, proxyName, probeURL string, v smart.ResponseVerdict) smart.ResponseVerdict {
+// independentControl reports whether candidate can vouch for judged: it must use another
+// server address and, when both provider names are known, another provider.
+func independentControl(judgedProvider, judgedAddr, candProvider, candAddr string) bool {
+	if judgedAddr != "" && candAddr != "" && strings.EqualFold(judgedAddr, candAddr) {
+		return false
+	}
+	if judgedAddr == "" || candAddr == "" {
+		// without addresses the only independence evidence left is the provider
+		if judgedProvider == "" || candProvider == "" {
+			return false
+		}
+	}
+	if judgedProvider != "" && candProvider != "" && judgedProvider == candProvider {
+		return false
+	}
+	return true
+}
+
+// pickControlNodes returns up to smart.ProbeMaxControls nodes without failure records for the
+// target, each on another provider and server than the judged node and than each other.
+func (s *Smart) pickControlNodes(metadata *C.Metadata, judged C.Proxy) []C.Proxy {
+	wtFailNodes, _, _, _ := s.store.GetHostStatus(s.Name(), s.configName, metadata.WildcardTarget, int(s.hostFailLimit.Load()), metadata.SmartTarget)
+	blockedNodes := s.store.GetBlockedNodes(s.Name(), s.configName)
+	judgedProvider, judgedAddr := proxyServerIdentity(judged)
+
+	proxies := s.GetProxies(false)
+	order := rand.Perm(len(proxies))
+	var controls []C.Proxy
+	var controlIDs [][2]string
+	for _, i := range order {
+		p := proxies[i]
+		name := p.Name()
+		if name == judged.Name() || wtFailNodes[name] != 0 || blockedNodes[name] || !p.AliveForTestUrl(s.testUrl) {
+			continue
+		}
+		provider, addr := proxyServerIdentity(p)
+		if !independentControl(judgedProvider, judgedAddr, provider, addr) {
+			continue
+		}
+		distinct := true
+		for _, id := range controlIDs {
+			if addr != "" && strings.EqualFold(addr, id[1]) {
+				distinct = false
+				break
+			}
+		}
+		if !distinct {
+			continue
+		}
+		controls = append(controls, p)
+		controlIDs = append(controlIDs, [2]string{provider, addr})
+		if len(controls) >= smart.ProbeMaxControls {
+			break
+		}
+	}
+	return controls
+}
+
+// confirmSuspect runs the differential check against up to two independent control nodes:
+//   - a control node gets a normal answer: the judged node really is treated differently,
+//     the suspect becomes its ConfirmedKind (code 2, or code 7 for 503 + retry-after);
+//   - both control nodes get the same kind of refusal: site-level, nothing is recorded and
+//     the (target, class) pair is suppressed for smart.ProbeSiteLevelSuppress;
+//   - anything else (no control, budget exhausted, dial errors, one refusal only,
+//     inconclusive answers): nothing is recorded.
+func (s *Smart) confirmSuspect(metadata *C.Metadata, judged C.Proxy, probeURL string, v smart.ResponseVerdict) smart.ResponseVerdict {
 	target := metadata.WildcardTarget
-	now := time.Now()
-	if s.probeThrottle.suppressed(target, v.Class, now) {
-		return smart.ResponseVerdict{Kind: smart.VerdictIgnore, Class: v.Class, Reason: v.Reason + " (site-level, suppressed)"}
+	ignore := func(reason string) smart.ResponseVerdict {
+		return smart.ResponseVerdict{Kind: smart.VerdictIgnore, Class: v.Class, Reason: v.Reason + " (" + reason + ")"}
 	}
-	control := s.pickControlNode(metadata, proxyName)
-	if control == nil || !s.probeThrottle.allowControl(target, now) {
-		return smart.ResponseVerdict{Kind: smart.VerdictCount, Class: v.Class, Reason: v.Reason + " (no control node)"}
+	if s.probeThrottle.suppressed(target, v.Class, time.Now()) {
+		return ignore("site-level, suppressed")
 	}
-	cv := s.probeVerdict(control, probeURL)
-	switch cv.Kind {
-	case smart.VerdictOK:
-		return smart.ResponseVerdict{Kind: smart.VerdictBlocked, Class: v.Class,
-			Reason: fmt.Sprintf("%s (confirmed, control node [%s] %s)", v.Reason, control.Name(), cv.Reason)}
-	case smart.VerdictSuspect, smart.VerdictRateLimited, smart.VerdictBlocked:
-		s.probeThrottle.suppressClass(target, v.Class, now)
-		return smart.ResponseVerdict{Kind: smart.VerdictIgnore, Class: v.Class,
-			Reason: fmt.Sprintf("%s (site-level, control node [%s] %s)", v.Reason, control.Name(), cv.Reason)}
-	default:
-		return smart.ResponseVerdict{Kind: smart.VerdictCount, Class: v.Class,
-			Reason: fmt.Sprintf("%s (control node [%s] inconclusive: %s)", v.Reason, control.Name(), cv.Reason)}
+	controls := s.pickControlNodes(metadata, judged)
+	if len(controls) == 0 {
+		return ignore("no independent control node")
 	}
+
+	refused := 0
+	var details []string
+	for _, control := range controls {
+		if !s.probeThrottle.allowControl(target, time.Now()) {
+			details = append(details, "probe budget exhausted")
+			break
+		}
+		cv := s.probeVerdict(control, probeURL)
+		details = append(details, fmt.Sprintf("control [%s] %s %s", control.Name(), cv.Kind, cv.Reason))
+		switch cv.Kind {
+		case smart.VerdictOK:
+			confirmed := v
+			confirmed.Kind = v.ConfirmedKind
+			if confirmed.Kind != smart.VerdictRateLimited {
+				confirmed.Kind = smart.VerdictBlocked
+				confirmed.Cooldown = 0
+			}
+			confirmed.Reason = v.Reason + " (confirmed, " + strings.Join(details, "; ") + ")"
+			return confirmed
+		case smart.VerdictSuspect, smart.VerdictRateLimited, smart.VerdictBlocked:
+			refused++
+		}
+	}
+	if refused >= smart.ProbeMaxControls {
+		s.probeThrottle.suppressClass(target, v.Class, time.Now())
+		return ignore("site-level, " + strings.Join(details, "; "))
+	}
+	return ignore("unconfirmed, " + strings.Join(details, "; "))
 }
 
 func (s *Smart) runResponseProbe(metadata *C.Metadata, proxy C.Proxy, probeURL string, asnNumber string) smart.ResponseVerdict {
 	v := s.probeVerdict(proxy, probeURL)
 	if v.Kind == smart.VerdictSuspect {
-		v = s.confirmSuspect(metadata, proxy.Name(), probeURL, v)
+		v = s.confirmSuspect(metadata, proxy, probeURL, v)
 	}
 	s.applyProbeVerdict(metadata, proxy.Name(), probeURL, asnNumber, v)
 	return v
 }
 
+func (s *Smart) hasProxy(name string) bool {
+	for _, p := range s.GetProxies(false) {
+		if p.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Smart) applyProbeVerdict(metadata *C.Metadata, proxyName, probeURL, asnNumber string, v smart.ResponseVerdict) {
-	// results arrive after the connection closed: re-check pin and stop-loss
-	if s.selected != "" {
+	// results arrive after the connection closed: re-check pin, group membership and stop-loss
+	if s.selected != "" || !s.hasProxy(proxyName) {
 		return
 	}
 	_, _, _, wtBlocked := s.store.GetHostStatus(s.Name(), s.configName, metadata.WildcardTarget, int(s.hostFailLimit.Load()), metadata.SmartTarget)
@@ -385,4 +466,63 @@ func (s *Smart) applyProbeVerdict(metadata *C.Metadata, proxyName, probeURL, asn
 		s.closeSameConnection(metadata, proxyName, metadata.SmartTarget, asnNumber, true)
 		s.store.DeleteUnwrapResult(s.Name(), s.configName, metadata.SmartTarget, asnNumber, metadata.WildcardTarget)
 	}
+}
+
+// recheckBlockedHost re-probes a code 2 blocked (target, node) with the same decision table:
+// OK recovers the node, a rate limit turns the 24h block into a short code 7 block, an explicit
+// block (451) is renewed, and suspect / timeout / ignored answers leave the block untouched:
+// suspect answers need the differential check that only a real connection triggers.
+func (s *Smart) recheckBlockedHost(p C.Proxy, wildcardTarget, nodeName, host string) {
+	v := s.probeVerdict(p, s.responseProbeURL(host, 443))
+	metadata := &C.Metadata{Host: host}
+	limit := int(s.hostFailLimit.Load())
+	switch v.Kind {
+	case smart.VerdictOK:
+		s.store.UpdateHostStatus(s.Name(), s.configName, wildcardTarget, metadata, nodeName, s.maxFailedTimes, limit, false, true, 0)
+		log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] with HTTP Status: [%s]", s.Name(), nodeName, host, v.Reason)
+	case smart.VerdictRateLimited:
+		// clear the code 2 block first: code 7 never outranks it
+		s.store.UpdateHostStatus(s.Name(), s.configName, wildcardTarget, metadata, nodeName, s.maxFailedTimes, limit, false, true, 0)
+		s.store.UpdateHostStatusTTL(s.Name(), s.configName, wildcardTarget, metadata, nodeName, s.maxFailedTimes, limit, true, true, smart.HostCodeRateLimited, v.Cooldown)
+		log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] rate limited [%s] cooldown [%s]", s.Name(), nodeName, host, v.Reason, v.Cooldown)
+	case smart.VerdictBlocked:
+		s.store.UpdateHostStatus(s.Name(), s.configName, wildcardTarget, metadata, nodeName, s.maxFailedTimes, limit, true, true, 2)
+		log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] still abnormal with HTTP Status: [%s]", s.Name(), nodeName, host, v.Reason)
+	default:
+		log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] left unchanged [%s %s]", s.Name(), nodeName, host, v.Kind, v.Reason)
+	}
+}
+
+// releaseRateLimitedNode keeps code 7 from emptying the candidate list, since rate limit blocks
+// do not count toward the stop-loss: when every usable node for the target is excluded and at
+// least one of them only by code 7, the code 7 node expiring first is let through again
+// (removed from the caller's wtFailNodes copy).
+func (s *Smart) releaseRateLimitedNode(metadata *C.Metadata, wildcardTarget string, wtFailNodes map[string]int, blockedNodes map[string]bool, all []C.Proxy, isUDP bool) {
+	if len(wtFailNodes) == 0 {
+		return
+	}
+	var limited []string
+	for _, p := range all {
+		name := p.Name()
+		if blockedNodes[name] || !p.AliveForTestUrl(s.testUrl) || (isUDP && !p.SupportUDP()) {
+			continue
+		}
+		switch wtFailNodes[name] {
+		case 0:
+			return // a usable node without failure records exists
+		case smart.HostCodeRateLimited:
+			limited = append(limited, name)
+		}
+	}
+	if len(limited) == 0 {
+		return
+	}
+	expiry := s.store.GetRateLimitedNodes(s.Name(), s.configName, wildcardTarget, metadata.SmartTarget)
+	release := ""
+	for _, name := range limited {
+		if release == "" || expiry[name] < expiry[release] {
+			release = name
+		}
+	}
+	delete(wtFailNodes, release)
 }

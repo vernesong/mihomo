@@ -1244,7 +1244,7 @@ func (s *Store) GetHostStatus(group, config, wildcardTarget string, hostFailLimi
 						nodes[nodeName] = code
 					}
 				}
-				if code != 1 && nodeEntry > now {
+				if code != 1 && code != HostCodeRateLimited && nodeEntry > now {
 					blockingCount++
 				}
 			}
@@ -1275,16 +1275,55 @@ func (s *Store) GetHostStatus(group, config, wildcardTarget string, hostFailLimi
 	return
 }
 
+// GetRateLimitedNodes returns the expiry (unix seconds) of active code 7 blocks per node,
+// merged over wildcardTarget and extraTargets (latest expiry wins).
+func (s *Store) GetRateLimitedNodes(group, config, wildcardTarget string, extraTargets ...string) map[string]int64 {
+	now := time.Now().Unix()
+	var result map[string]int64
+	for i, target := range append([]string{wildcardTarget}, extraTargets...) {
+		if target == "" || (i > 0 && target == wildcardTarget) {
+			continue
+		}
+		pathPrefix := FormatDBKey(KeyTypeHostFailures, config, group, target)
+		hs, _ := hostStatusCache.GetOrStore(pathPrefix, func() *HostStatus { return &HostStatus{} })
+		hs.initOnce.Do(func() {
+			if rawResult, err := s.GetSubBytesByPath(pathPrefix); err == nil {
+				for _, data := range rawResult {
+					if json.Unmarshal(data, hs) == nil {
+						break
+					}
+				}
+			}
+		})
+		hs.mu.RLock()
+		if codeSet := hs.Codes[HostCodeRateLimited]; codeSet != nil {
+			for nodeName, expire := range codeSet.Nodes {
+				if expire > now {
+					if result == nil {
+						result = make(map[string]int64)
+					}
+					if expire > result[nodeName] {
+						result[nodeName] = expire
+					}
+				}
+			}
+		}
+		hs.mu.RUnlock()
+	}
+	return result
+}
+
 func (s *Store) UpdateHostStatus(group, config, wildcardTarget string, metadata *C.Metadata, name string, maxFailedTimes int, hostFailLimit int, failure, checked bool, statusCode int64) bool {
 	return s.UpdateHostStatusTTL(group, config, wildcardTarget, metadata, name, maxFailedTimes, hostFailLimit, failure, checked, statusCode, 0)
 }
 
 // hostCodeOutranked reports whether newCode is dropped because the node already has currentCode.
-// Smaller codes win, except that a rate limit block (7) takes over a pending timeout count (3)
-// and a later count (3) must not wipe out an active rate limit block.
-func hostCodeOutranked(newCode, currentCode int) bool {
+// Smaller codes win, except that a rate limit block (7) takes over a pending (not yet blocking)
+// code 3 count, and a later count (3) must not wipe out an active rate limit block.
+// currentBlocking tells whether currentCode is an active block (in Nodes) rather than a count.
+func hostCodeOutranked(newCode, currentCode int, currentBlocking bool) bool {
 	if newCode == HostCodeRateLimited && currentCode == 3 {
-		return false
+		return currentBlocking
 	}
 	if newCode == 3 && currentCode == HostCodeRateLimited {
 		return true
@@ -1371,6 +1410,7 @@ func (s *Store) UpdateHostStatusTTL(group, config, wildcardTarget string, metada
 
 	oldLastFailure := hs.LastFailure
 	currentCode := -1
+	currentBlocking := false
 
 	for code, codeSet := range hs.Codes {
 		if codeSet == nil {
@@ -1379,12 +1419,14 @@ func (s *Store) UpdateHostStatusTTL(group, config, wildcardTarget string, metada
 		if _, ok := codeSet.Nodes[name]; ok {
 			if currentCode == -1 || code < currentCode {
 				currentCode = code
+				currentBlocking = true
 			}
 		}
 		if codeSet.FailCounts != nil {
 			if _, ok := codeSet.FailCounts[name]; ok {
 				if currentCode == -1 || code < currentCode {
 					currentCode = code
+					currentBlocking = false
 				}
 			}
 		}
@@ -1407,7 +1449,7 @@ func (s *Store) UpdateHostStatusTTL(group, config, wildcardTarget string, metada
 	}
 
 	if currentCode != -1 && currentCode != newCode {
-		if hostCodeOutranked(newCode, currentCode) {
+		if hostCodeOutranked(newCode, currentCode, currentBlocking) {
 			goto saveAndReturn
 		}
 		for code, codeSet := range hs.Codes {
@@ -1478,7 +1520,8 @@ saveAndReturn:
 	hostBlockingCount := 0
 
 	for code, cs := range hs.Codes {
-		if code != 1 && cs != nil {
+		// short rate limit blocks do not trigger the stop-loss
+		if code != 1 && code != HostCodeRateLimited && cs != nil {
 			hostBlockingCount += len(cs.Nodes)
 		}
 	}
@@ -1559,7 +1602,7 @@ func (s *Store) CheckHostStatus(group, config string, hostFailLimit int) (map[st
 		cacheHS.mu.Lock()
 		hostBlockingCount := 0
 		for code, cs := range cacheHS.Codes {
-			if code != 1 && cs != nil {
+			if code != 1 && code != HostCodeRateLimited && cs != nil {
 				for _, nodeEntry := range cs.Nodes {
 					if nodeEntry == 0 || nodeEntry > now {
 						hostBlockingCount++

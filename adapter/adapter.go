@@ -327,8 +327,10 @@ func urlToMetadata(rawURL string) (addr C.Metadata, err error) {
 }
 
 func (p *Proxy) StatusTest(ctx context.Context, rawURL string) (status uint16, ok bool, err error) {
-	resp, closeIdle, err := p.statusRequest(ctx, rawURL, nil, nil)
-	defer closeIdle()
+	resp, transport, err := p.statusRequest(ctx, rawURL, nil, nil)
+	if transport != nil {
+		defer transport.CloseIdleConnections()
+	}
 
 	var statusCode int
 	if err != nil {
@@ -382,8 +384,10 @@ func (p *Proxy) StatusProbe(ctx context.Context, rawURL string, opt smart.ProbeO
 		}
 	}
 
-	resp, closeIdle, err := p.statusRequest(ctx, rawURL, header, checkRedirect)
-	defer closeIdle()
+	resp, transport, err := p.statusRequest(ctx, rawURL, header, checkRedirect)
+	if transport != nil {
+		defer transport.CloseIdleConnections()
+	}
 	if err != nil {
 		var netErr net.Error
 		if (errors.As(err, &netErr) && netErr.Timeout()) || errors.Is(err, context.DeadlineExceeded) {
@@ -404,24 +408,24 @@ func (p *Proxy) StatusProbe(ctx context.Context, rawURL string, opt smart.ProbeO
 	return result, nil
 }
 
-// statusRequest sends a GET through the proxy with a browser preset and returns the response.
+// statusRequest sends a GET through the proxy with a browser preset and returns the response
+// together with the transport it used (nil if the request could not be built), whose idle
+// connections the caller closes once the response is done.
 // extraHeader overrides preset headers; checkRedirect runs after the 3-redirect limit.
-// The returned closeIdle is never nil and must be called once the response is done.
-func (p *Proxy) statusRequest(ctx context.Context, rawURL string, extraHeader http.Header, checkRedirect func(req *http.Request, via []*http.Request) error) (resp *http.Response, closeIdle func(), err error) {
-	closeIdle = func() {}
-	if _, err = urlToMetadata(rawURL); err != nil {
-		return nil, closeIdle, err
+func (p *Proxy) statusRequest(ctx context.Context, rawURL string, extraHeader http.Header, checkRedirect func(req *http.Request, via []*http.Request) error) (*http.Response, *http.Transport, error) {
+	if _, err := urlToMetadata(rawURL); err != nil {
+		return nil, nil, err
 	}
 
 	tlsConfig, err := ca.GetTLSConfig(ca.Option{})
 	if err != nil {
-		return nil, closeIdle, err
+		return nil, nil, err
 	}
 
 	preset := convert.RandBrowserPreset()
 	fingerprint, ok2 := tls.GetFingerprint(preset.FingerprintName)
 	if !ok2 {
-		return nil, closeIdle, fmt.Errorf("failed to get TLS fingerprint: %s", preset.FingerprintName)
+		return nil, nil, fmt.Errorf("failed to get TLS fingerprint: %s", preset.FingerprintName)
 	}
 
 	// Resolve the target per hop instead of pinning the one from rawURL: redirects
@@ -471,9 +475,6 @@ func (p *Proxy) statusRequest(ctx context.Context, rawURL string, extraHeader ht
 			return uConn, nil
 		},
 	}
-	if statusTestTransport != nil {
-		statusTestTransport(transport)
-	}
 
 	client := http.Client{
 		Timeout:   10 * time.Second,
@@ -488,11 +489,10 @@ func (p *Proxy) statusRequest(ctx context.Context, rawURL string, extraHeader ht
 			return nil
 		},
 	}
-	closeIdle = client.CloseIdleConnections
 
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, closeIdle, err
+		return nil, transport, err
 	}
 	req = req.WithContext(ctx)
 	req.Header = preset.Headers.Clone()
@@ -500,9 +500,6 @@ func (p *Proxy) statusRequest(ctx context.Context, rawURL string, extraHeader ht
 		req.Header[key] = values
 	}
 
-	resp, err = client.Do(req)
-	return resp, closeIdle, err
+	resp, err := client.Do(req)
+	return resp, transport, err
 }
-
-// statusTestTransport is a test hook exposing the transport built by statusRequest.
-var statusTestTransport func(transport *http.Transport)
