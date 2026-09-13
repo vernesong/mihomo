@@ -73,6 +73,8 @@ type SmartOption struct {
 	SampleRate     float64 `group:"sample-rate,omitempty"`
 	PreferASN      bool    `group:"prefer-asn,omitempty"`
 	Tolerance      uint16  `group:"tolerance,omitempty"`
+	// ResponseProbeURLs maps a host ("*." prefix matches subdomains) to the URL probed for it
+	ResponseProbeURLs map[string]string `group:"response-probe-urls,omitempty"`
 }
 
 type Smart struct {
@@ -105,6 +107,9 @@ type Smart struct {
 	suppressStats          atomic.Bool
 	suppressCount          atomic.Int64
 	suppressLast           atomic.Int64
+
+	probeURLs              *responseProbeURLs
+	probeThrottle          probeThrottle
 }
 
 type dialResult struct {
@@ -143,6 +148,11 @@ func NewSmart(option GroupCommonOption, smartOption SmartOption, emptyFallback C
 		option.URL = C.DefaultTestURL
 	}
 
+	probeURLs, err := parseResponseProbeURLs(smartOption.ResponseProbeURLs)
+	if err != nil {
+		return nil, fmt.Errorf("%s: response-probe-urls: %w", option.Name, err)
+	}
+
 	configName := getConfigFilename()
 
 	s := &Smart{
@@ -169,6 +179,7 @@ func NewSmart(option GroupCommonOption, smartOption SmartOption, emptyFallback C
 		collectData:          smartOption.CollectData,
 		preferASN:            smartOption.PreferASN,
 		tolerance:            smartOption.Tolerance,
+		probeURLs:            probeURLs,
 	}
 
 	s.hostFailLimit.Store(int32(s.maxFailedTimes))
@@ -1745,8 +1756,6 @@ func (s *Smart) checkNodeQuality(
 		return newWeight, false, false, 0
 	}
 
-	now := time.Now().Unix()
-
 	// user manual block
 	if metadata.SmartBlock == "blocked" {
 		log.Debugln("[Smart] Connection Group: [%s] - Node: [%s] - Network: [%s] - Address: [%s] detected manual block...",
@@ -1759,7 +1768,7 @@ func (s *Smart) checkNodeQuality(
 		return oldWeight, false, false, 0
 	}
 
-	wtFailNodes, wtLastCheck, wtLastFailure, wtBlocked := s.store.GetHostStatus(s.Name(), s.configName, wildcardTarget, int(s.hostFailLimit.Load()), metadata.SmartTarget)
+	wtFailNodes, _, _, wtBlocked := s.store.GetHostStatus(s.Name(), s.configName, wildcardTarget, int(s.hostFailLimit.Load()), metadata.SmartTarget)
 
 	if wtBlocked {
 		return newWeight, false, false, 0
@@ -1784,25 +1793,12 @@ func (s *Smart) checkNodeQuality(
 		return newWeight, true, true, 4
 	}
 
-	// abnormal status code detection
+	// abnormal response detection: probe asynchronously (outside this lock), throttled per (target, node)
+	if s.responseProbeEligible(metadata, downloadTotal, isUDP) {
+		s.scheduleResponseProbe(metadata, proxy, asnNumber)
+	}
 	if downloadTotal < 0.03 && metadata.Host != "" && metadata.DstPort == 443 && !isUDP && metadata.Type != C.INNER {
-		var failure bool
-		var checked bool
-		if now - wtLastCheck > 300 || now - wtLastFailure < 300 {
-			checked = true
-			status, ok, err := s.StatusTest(proxy, metadata.Host)
-			if err == nil {
-				failure = !ok
-				if failure {
-					log.Debugln("[Smart] Connection Group: [%s] - Node: [%s] - Network: [%s] - Address: [%s] detected abnormal response [%d]...",
-						s.Name(), proxyName, networkType, addressDisplay, status)
-				}
-			}
-		}
-		if failure {
-			return newWeight, true, checked, 2
-		}
-		return newWeight, false, checked, 0
+		return newWeight, false, false, 0
 	}
 
 	// high packet loss detection
@@ -1816,14 +1812,19 @@ func (s *Smart) checkNodeQuality(
 }
 
 func (s *Smart) markNodeFailure(metadata *C.Metadata, proxyName string, isDegraded bool, checked bool, blockCode int64) bool {
+	return s.markNodeFailureTTL(metadata, proxyName, isDegraded, checked, blockCode, 0)
+}
+
+// markNodeFailureTTL is markNodeFailure with the block TTL used by code 7 (rate limited).
+func (s *Smart) markNodeFailureTTL(metadata *C.Metadata, proxyName string, isDegraded bool, checked bool, blockCode int64, ttl time.Duration) bool {
 	wildcardTarget := metadata.WildcardTarget
 	target := metadata.SmartTarget
 
-	failedBlock := s.store.UpdateHostStatus(s.Name(), s.configName, wildcardTarget, metadata, proxyName, s.maxFailedTimes, int(s.hostFailLimit.Load()), isDegraded, checked, blockCode)
+	failedBlock := s.store.UpdateHostStatusTTL(s.Name(), s.configName, wildcardTarget, metadata, proxyName, s.maxFailedTimes, int(s.hostFailLimit.Load()), isDegraded, checked, blockCode, ttl)
 
 	if isDegraded || failedBlock {
 		if target != "" && target != wildcardTarget {
-			s.store.UpdateHostStatus(s.Name(), s.configName, target, metadata, proxyName, s.maxFailedTimes, int(s.hostFailLimit.Load()), isDegraded, checked, blockCode)
+			s.store.UpdateHostStatusTTL(s.Name(), s.configName, target, metadata, proxyName, s.maxFailedTimes, int(s.hostFailLimit.Load()), isDegraded, checked, blockCode, ttl)
 		}
 	}
 
@@ -1912,14 +1913,16 @@ func (s *Smart) checkHostStatus() {
 				if !ok {
 					continue
 				}
-				status, okRes, err := s.StatusTest(p, it.host)
+				// same decision table as detection; timeouts and origin errors leave the block as is
+				v := s.probeVerdict(p, s.responseProbeURL(it.host, 443))
 				metadata := &C.Metadata{Host: it.host}
-				if err == nil && okRes {
+				switch v.Kind {
+				case smart.VerdictOK:
 					s.store.UpdateHostStatus(s.Name(), s.configName, it.wildcardTarget, metadata, it.nodeName, s.maxFailedTimes, int(s.hostFailLimit.Load()), false, true, 0)
-					log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] with HTTP Status: [%d]", s.Name(), it.nodeName, it.host, status)
-				} else if err == nil {
+					log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] with HTTP Status: [%s]", s.Name(), it.nodeName, it.host, v.Reason)
+				case smart.VerdictRateLimited, smart.VerdictBlocked, smart.VerdictSuspect:
 					s.store.UpdateHostStatus(s.Name(), s.configName, it.wildcardTarget, metadata, it.nodeName, s.maxFailedTimes, int(s.hostFailLimit.Load()), true, true, 2)
-					log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] still abnormal with HTTP Status: [%d]", s.Name(), it.nodeName, it.host, status)
+					log.Debugln("[Smart] Recover Group: [%s] - Node: [%s] for Host: [%s] still abnormal with HTTP Status: [%s]", s.Name(), it.nodeName, it.host, v.Reason)
 				}
 			}
 		}()
