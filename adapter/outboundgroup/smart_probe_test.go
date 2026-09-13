@@ -330,9 +330,9 @@ func TestSmartResponseProbeIntegration(t *testing.T) {
 	limited := newProbeSite(t)
 	control1 := newProbeSite(t)
 	control2 := newProbeSite(t)
-	bad := limited.node("node-limited", "sub1", "a.server:443")
-	c1 := control1.node("node-control1", "sub2", "b.server:443")
-	c2 := control2.node("node-control2", "sub3", "c.server:443")
+	bad := limited.node("node-limited", "provider-a", "a.server:443")
+	c1 := control1.node("node-control1", "provider-b", "b.server:443")
+	c2 := control2.node("node-control2", "provider-c", "c.server:443")
 	s := newProbeTestSmart(t, "probe-integration", bad, c1, c2)
 	if u := s.responseProbeURL("raw.probe.test", 443); u != probeTestURL {
 		t.Fatalf("probe url %s", u)
@@ -407,7 +407,7 @@ func TestSmartResponseProbeIntegration(t *testing.T) {
 	})
 
 	t.Run("one control challenged one down is unconfirmed", func(t *testing.T) {
-		down := adapter.NewProxy(&probeTestNode{Base: outbound.NewBase(outbound.BaseOption{Name: "node-down", Type: C.Direct, ProviderName: "sub4", Addr: "d.server:443"}), dialErr: true})
+		down := adapter.NewProxy(&probeTestNode{Base: outbound.NewBase(outbound.BaseOption{Name: "node-down", Type: C.Direct, ProviderName: "provider-d", Addr: "d.server:443"}), dialErr: true})
 		s2 := newProbeTestSmart(t, "probe-one-control", bad, c1, down)
 		md := probeMetadata("half.probe.test")
 		setModes("challenge", "challenge", "ok")
@@ -447,7 +447,7 @@ func TestSmartResponseProbeIntegration(t *testing.T) {
 	})
 
 	t.Run("OK next to a dead control is unconfirmed", func(t *testing.T) {
-		down := adapter.NewProxy(&probeTestNode{Base: outbound.NewBase(outbound.BaseOption{Name: "node-down2", Type: C.Direct, ProviderName: "sub5", Addr: "e.server:443"}), dialErr: true})
+		down := adapter.NewProxy(&probeTestNode{Base: outbound.NewBase(outbound.BaseOption{Name: "node-down2", Type: C.Direct, ProviderName: "provider-e", Addr: "e.server:443"}), dialErr: true})
 		s2 := newProbeTestSmart(t, "probe-ok-dead", bad, c1, down)
 		md := probeMetadata("okdead.probe.test")
 		setModes("challenge", "ok", "ok")
@@ -545,7 +545,7 @@ func TestSmartResponseProbeIntegration(t *testing.T) {
 	t.Run("node no longer in group records nothing", func(t *testing.T) {
 		md := probeMetadata("gone.probe.test")
 		setModes("429", "ok", "ok")
-		outsider := limited.node("node-removed", "sub9", "z.server:443")
+		outsider := limited.node("node-removed", "provider-i", "z.server:443")
 		s.runResponseProbe(md, outsider, probeTestURL, "")
 		if nodes := s.testFailNodes(md); len(nodes) != 0 {
 			t.Fatalf("records %v", nodes)
@@ -555,16 +555,16 @@ func TestSmartResponseProbeIntegration(t *testing.T) {
 
 func TestSmartResponseProbeControlSelection(t *testing.T) {
 	site := newProbeSite(t)
-	judged := site.node("judged", "sub1", "a.server:443")
+	judged := site.node("judged", "provider-a", "a.server:443")
 	s := newProbeTestSmart(t, "probe-control-select",
 		judged,
-		site.node("same-provider", "sub1", "b.server:443"),
-		site.node("same-address", "sub2", "A.SERVER:443"),
+		site.node("same-provider", "provider-a", "b.server:443"),
+		site.node("same-address", "provider-b", "A.SERVER:443"),
 		site.node("no-identity", "", ""),
 		site.node("unknown-provider", "", "c.server:443"),
-		site.node("independent-1", "sub3", "d.server:443"),
-		site.node("independent-dup-addr", "sub4", "d.server:443"),
-		site.node("independent-dup-provider", "sub3", "e.server:443"),
+		site.node("independent-1", "provider-c", "d.server:443"),
+		site.node("independent-dup-addr", "provider-d", "d.server:443"),
+		site.node("independent-dup-provider", "provider-c", "e.server:443"),
 	)
 	md := probeMetadata("select.probe.test")
 	allowed := map[string]bool{"unknown-provider": true, "independent-1": true, "independent-dup-addr": true, "independent-dup-provider": true}
@@ -596,7 +596,7 @@ func TestSmartResponseProbeControlSelection(t *testing.T) {
 
 	// a group whose other nodes all share the provider has no control: nothing is recorded
 	site.mode.Store("challenge")
-	s2 := newProbeTestSmart(t, "probe-no-control", judged, site.node("sibling", "sub1", "b.server:443"))
+	s2 := newProbeTestSmart(t, "probe-no-control", judged, site.node("sibling", "provider-a", "b.server:443"))
 	md2 := probeMetadata("solo.probe.test")
 	for i := 0; i < 3; i++ {
 		if v := s2.runResponseProbe(md2, judged, probeTestURL, ""); v.Kind != smart.VerdictIgnore {
@@ -612,8 +612,8 @@ func TestSmartResponseProbeControlSelection(t *testing.T) {
 // timeout, never produce a rate limit / block verdict, and only count code 3.
 func TestSmartResponseProbeLongPollingNotMisjudged(t *testing.T) {
 	site := newProbeSite(t)
-	node := site.node("node-longpoll", "sub1", "a.server:443")
-	other := newProbeSite(t).node("node-other", "sub2", "b.server:443")
+	node := site.node("node-longpoll", "provider-a", "a.server:443")
+	other := newProbeSite(t).node("node-other", "provider-b", "b.server:443")
 	s := newProbeTestSmart(t, "probe-longpoll", node, other)
 	md := probeMetadata("api.probe.test")
 	site.mode.Store("longpoll")
@@ -641,9 +641,9 @@ func TestSmartResponseProbeLongPollingNotMisjudged(t *testing.T) {
 
 func TestFilterProxiesPromotesEarliestRateLimitedNode(t *testing.T) {
 	site := newProbeSite(t)
-	late := site.node("late", "sub1", "a.server:443")
-	mid := site.node("mid", "sub2", "b.server:443")
-	early := site.node("early", "sub3", "c.server:443")
+	late := site.node("late", "provider-a", "a.server:443")
+	mid := site.node("mid", "provider-b", "b.server:443")
+	early := site.node("early", "provider-c", "c.server:443")
 	md := probeMetadata("release.probe.test")
 	mark := func(s *Smart, name string, code int64, ttl time.Duration) {
 		s.store.UpdateHostStatusTTL(s.Name(), s.configName, md.WildcardTarget, md, name, s.maxFailedTimes, int(s.hostFailLimit.Load()), true, true, code, ttl)
@@ -693,10 +693,10 @@ func TestFilterProxiesPromotesEarliestRateLimitedNode(t *testing.T) {
 
 func TestPromoteRateLimitedNodeSkipsBlockedAndDead(t *testing.T) {
 	site := newProbeSite(t)
-	late := site.node("late", "sub1", "a.server:443")
-	early := site.node("early", "sub2", "b.server:443")
-	earliestDead := adapter.NewProxy(&probeTestNode{Base: outbound.NewBase(outbound.BaseOption{Name: "earliest-dead", Type: C.Direct, ProviderName: "sub3", Addr: "c.server:443"}), dialErr: true})
-	earliestBlocked := site.node("earliest-blocked", "sub4", "d.server:443")
+	late := site.node("late", "provider-a", "a.server:443")
+	early := site.node("early", "provider-b", "b.server:443")
+	earliestDead := adapter.NewProxy(&probeTestNode{Base: outbound.NewBase(outbound.BaseOption{Name: "earliest-dead", Type: C.Direct, ProviderName: "provider-c", Addr: "c.server:443"}), dialErr: true})
+	earliestBlocked := site.node("earliest-blocked", "provider-d", "d.server:443")
 	s := newProbeTestSmart(t, "probe-promote-skip", earliestDead, earliestBlocked, late, early)
 	md := probeMetadata("skip.probe.test")
 	for name, ttl := range map[string]time.Duration{"earliest-dead": time.Minute, "earliest-blocked": time.Minute, "early": 5 * time.Minute, "late": 20 * time.Minute} {
@@ -732,7 +732,7 @@ func proxyNames(ps []C.Proxy) []string {
 
 func TestRecheckBlockedHost(t *testing.T) {
 	site := newProbeSite(t)
-	node := site.node("node-recheck", "sub1", "a.server:443")
+	node := site.node("node-recheck", "provider-a", "a.server:443")
 	s := newProbeTestSmart(t, "probe-recheck", node)
 	limit := int(s.hostFailLimit.Load())
 	tests := []struct {
@@ -812,8 +812,8 @@ func TestResponseProbeEligible(t *testing.T) {
 // close of the same (target, node) inside the interval does not probe again.
 func TestCheckNodeQualitySchedulesProbe(t *testing.T) {
 	site := newProbeSite(t)
-	node := site.node("node-async", "sub1", "a.server:443")
-	other := newProbeSite(t).node("node-async-other", "sub2", "b.server:443")
+	node := site.node("node-async", "provider-a", "a.server:443")
+	other := newProbeSite(t).node("node-async-other", "provider-b", "b.server:443")
 	s := newProbeTestSmart(t, "probe-async", node, other)
 	md := probeMetadata("async.probe.test")
 	site.mode.Store("429")
