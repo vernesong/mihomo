@@ -1276,6 +1276,25 @@ func (s *Store) GetHostStatus(group, config, wildcardTarget string, hostFailLimi
 }
 
 func (s *Store) UpdateHostStatus(group, config, wildcardTarget string, metadata *C.Metadata, name string, maxFailedTimes int, hostFailLimit int, failure, checked bool, statusCode int64) bool {
+	return s.UpdateHostStatusTTL(group, config, wildcardTarget, metadata, name, maxFailedTimes, hostFailLimit, failure, checked, statusCode, 0)
+}
+
+// hostCodeOutranked reports whether newCode is dropped because the node already has currentCode.
+// Smaller codes win, except that a rate limit block (7) takes over a pending timeout count (3)
+// and a later count (3) must not wipe out an active rate limit block.
+func hostCodeOutranked(newCode, currentCode int) bool {
+	if newCode == HostCodeRateLimited && currentCode == 3 {
+		return false
+	}
+	if newCode == 3 && currentCode == HostCodeRateLimited {
+		return true
+	}
+	return newCode > currentCode
+}
+
+// UpdateHostStatusTTL is UpdateHostStatus with a block TTL for code 7 (rate limited);
+// ttl is ignored by the other codes.
+func (s *Store) UpdateHostStatusTTL(group, config, wildcardTarget string, metadata *C.Metadata, name string, maxFailedTimes int, hostFailLimit int, failure, checked bool, statusCode int64, ttl time.Duration) bool {
 	if !checked {
 		return false
 	}
@@ -1388,7 +1407,7 @@ func (s *Store) UpdateHostStatus(group, config, wildcardTarget string, metadata 
 	}
 
 	if currentCode != -1 && currentCode != newCode {
-		if newCode > currentCode {
+		if hostCodeOutranked(newCode, currentCode) {
 			goto saveAndReturn
 		}
 		for code, codeSet := range hs.Codes {
@@ -1444,6 +1463,11 @@ func (s *Store) UpdateHostStatus(group, config, wildcardTarget string, metadata 
 			} else {
 				codeSet.FailCounts[name] = count
 			}
+		case HostCodeRateLimited:
+			if ttl <= 0 {
+				ttl = RateLimitDefaultCooldown
+			}
+			codeSet.Nodes[name] = time.Now().Add(ClampCooldown(ttl)).Unix()
 		default:
 			codeSet.Nodes[name] = time.Now().Add(HostFailureNodeTTL).Unix()
 		}
