@@ -3,7 +3,9 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"strings"
@@ -15,6 +17,7 @@ import (
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/common/xsync"
 	"github.com/metacubex/mihomo/component/ca"
+	"github.com/metacubex/mihomo/component/smart"
 	"github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
@@ -324,19 +327,105 @@ func urlToMetadata(rawURL string) (addr C.Metadata, err error) {
 }
 
 func (p *Proxy) StatusTest(ctx context.Context, rawURL string) (status uint16, ok bool, err error) {
-	if _, err = urlToMetadata(rawURL); err != nil {
-		return 1, false, err
+	resp, transport, err := p.statusRequest(ctx, rawURL, nil, nil)
+	if transport != nil {
+		defer transport.CloseIdleConnections()
+	}
+
+	var statusCode int
+	if err != nil {
+		if netErr, okNet := err.(net.Error); okNet && netErr.Timeout() {
+			statusCode = 599
+		} else if err == context.Canceled || err == context.DeadlineExceeded {
+			statusCode = 599
+		} else {
+			return 1, false, err
+		}
+	} else {
+		statusCode = resp.StatusCode
+		ok = !banStatus[statusCode]
+		if !ok {
+			if statusCode == http.StatusForbidden {
+				if resp.Header.Get("Server") == "cloudflare" {
+					ok = true
+				}
+			}
+			if statusCode == 520 {
+				if resp.Header.Get("Server") != "cloudflare" {
+					ok = true
+				}
+			}
+		}
+		_ = resp.Body.Close()
+	}
+
+	return uint16(statusCode), ok, nil
+}
+
+// StatusProbe fetches rawURL through the proxy for response-aware node checks. Unlike
+// StatusTest it sends no compressed encoding, does not follow cross-host redirects by
+// default and keeps a short body prefix, so the caller can classify the site's answer.
+// A timed out probe is reported as status 599 with a nil error.
+func (p *Proxy) StatusProbe(ctx context.Context, rawURL string, opt smart.ProbeOptions) (*smart.ProbeResult, error) {
+	header := http.Header{}
+	header.Set("Accept-Encoding", "identity")
+	if opt.MaxBodyBytes > 0 {
+		header.Set("Range", fmt.Sprintf("bytes=0-%d", opt.MaxBodyBytes-1))
+	}
+
+	var checkRedirect func(req *http.Request, via []*http.Request) error
+	if !opt.FollowCrossHostRedirect {
+		checkRedirect = func(req *http.Request, via []*http.Request) error {
+			// only an identical host[:port] keeps following; another host would test another site
+			if !strings.EqualFold(req.URL.Host, via[0].URL.Host) {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		}
+	}
+
+	resp, transport, err := p.statusRequest(ctx, rawURL, header, checkRedirect)
+	if transport != nil {
+		defer transport.CloseIdleConnections()
+	}
+	if err != nil {
+		var netErr net.Error
+		if (errors.As(err, &netErr) && netErr.Timeout()) || errors.Is(err, context.DeadlineExceeded) {
+			return &smart.ProbeResult{StatusCode: smart.ProbeTimeoutStatus}, nil
+		}
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	result := &smart.ProbeResult{
+		StatusCode: resp.StatusCode,
+		Header:     resp.Header,
+	}
+	if opt.MaxBodyBytes > 0 {
+		// a partial body is still useful for matching, ignore read errors
+		result.Body, _ = io.ReadAll(io.LimitReader(resp.Body, int64(opt.MaxBodyBytes)))
+	}
+	return result, nil
+}
+
+// statusRequest sends a GET through the proxy with a browser preset and returns the response
+// together with the transport it used (nil if the request could not be built), whose idle
+// connections the caller closes once the response is done.
+// extraHeader overrides preset headers; checkRedirect runs after the 3-redirect limit.
+func (p *Proxy) statusRequest(ctx context.Context, rawURL string, extraHeader http.Header, checkRedirect func(req *http.Request, via []*http.Request) error) (*http.Response, *http.Transport, error) {
+	if _, err := urlToMetadata(rawURL); err != nil {
+		return nil, nil, err
 	}
 
 	tlsConfig, err := ca.GetTLSConfig(ca.Option{})
 	if err != nil {
-		return 1, false, err
+		return nil, nil, err
 	}
 
 	preset := convert.RandBrowserPreset()
 	fingerprint, ok2 := tls.GetFingerprint(preset.FingerprintName)
 	if !ok2 {
-		return 1, false, fmt.Errorf("failed to get TLS fingerprint: %s", preset.FingerprintName)
+		return nil, nil, fmt.Errorf("failed to get TLS fingerprint: %s", preset.FingerprintName)
 	}
 
 	// Resolve the target per hop instead of pinning the one from rawURL: redirects
@@ -394,45 +483,23 @@ func (p *Proxy) StatusTest(ctx context.Context, rawURL string) (status uint16, o
 			if len(via) >= 3 {
 				return http.ErrUseLastResponse
 			}
+			if checkRedirect != nil {
+				return checkRedirect(req, via)
+			}
 			return nil
 		},
 	}
-	defer client.CloseIdleConnections()
 
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
-		return 1, false, err
+		return nil, transport, err
 	}
 	req = req.WithContext(ctx)
 	req.Header = preset.Headers.Clone()
-
-	resp, err := client.Do(req)
-	var statusCode int
-	if err != nil {
-		if netErr, okNet := err.(net.Error); okNet && netErr.Timeout() {
-			statusCode = 599
-		} else if err == context.Canceled || err == context.DeadlineExceeded {
-			statusCode = 599
-		} else {
-			return 1, false, err
-		}
-	} else {
-		statusCode = resp.StatusCode
-		ok = !banStatus[statusCode]
-		if !ok {
-			if statusCode == http.StatusForbidden {
-				if resp.Header.Get("Server") == "cloudflare" {
-					ok = true
-				}
-			}
-			if statusCode == 520 {
-				if resp.Header.Get("Server") != "cloudflare" {
-					ok = true
-				}
-			}
-		}
-		_ = resp.Body.Close()
+	for key, values := range extraHeader {
+		req.Header[key] = values
 	}
 
-	return uint16(statusCode), ok, nil
+	resp, err := client.Do(req)
+	return resp, transport, err
 }
