@@ -1,0 +1,12 @@
+// Copyright 2026 coolsnowwolf <coolsnowwolf@gmail.com>
+// SPDX-License-Identifier: BSD-3-Clause
+//go:build !linux || !arm64 || purego
+
+package gcm
+
+type eip93State struct{}
+
+func newEIP93State(g *GCM) *eip93State { return nil }
+func (*eip93State) crypt(g *GCM, out, nonce, src, aad []byte, decrypt bool) (bool, bool) {
+	return false, false
+}
