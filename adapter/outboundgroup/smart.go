@@ -1711,6 +1711,10 @@ func (s *Smart) registerClosureMetricsCallback(c C.Conn, proxy C.Proxy, metadata
 	})
 }
 
+// errUDPNoReply marks a UDP session that sent data for stalledConnectionGrace or longer and
+// never received a packet.
+var errUDPNoReply = errors.New("udp session got no reply")
+
 func (s *Smart) registerPacketClosureMetricsCallback(pc C.PacketConn, proxy C.Proxy, metadata *C.Metadata, connectTime int64, udpLatency *atomic.Int64, observedReadErr *atomic.TypedValue[error], observedWriteErr *atomic.TypedValue[error]) C.PacketConn {
 	return callback.NewCloseCallbackPacketConn(pc, func() {
 		tracker := statistic.DefaultManager.Get(metadata.UUID)
@@ -1725,6 +1729,13 @@ func (s *Smart) registerPacketClosureMetricsCallback(pc C.PacketConn, proxy C.Pr
 			closeErr := observedReadErr.Load()
 			if closeErr == nil {
 				closeErr = observedWriteErr.Load()
+			}
+			// a session that kept sending but never got a single packet back is a dead UDP
+			// path (blackholed or congested to nothing); without this it closes cleanly with
+			// no latency and is scored as a healthy node
+			if closeErr == nil && udpLatency.Load() == 0 && uploadTotal > 0 && downloadTotal == 0 &&
+				connectionDuration >= stalledConnectionGrace.Milliseconds() {
+				closeErr = errUDPNoReply
 			}
 			// a connection the group closed on purpose is not a transfer failure
 			if metadata.SmartBlock == "degraded" {
