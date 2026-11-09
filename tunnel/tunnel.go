@@ -705,7 +705,7 @@ func match(metadata *C.Metadata, helper C.RuleMatchHelper) (C.Proxy, C.Rule, err
 				if ! smart {
 					metadata.SmartTarget = ""
 				} else {
-					metadata.SmartBlock = "normal"
+					metadata.SetSmartBlock("normal")
 				}
 
 				if metadata.NetWork == C.UDP && !adapter.SupportUDP() {
