@@ -44,13 +44,24 @@ func InitCollector(collectSize float64) {
 		smartCollectorSize = defaultSmartCollectorSize
 	}
 
-	smartCollector = &DataCollector{
+	next := &DataCollector{
 		dataPath:           filepath.Join(C.Path.HomeDir(), "smart_weight_data.csv"),
 		smartCollectorSize: smartCollectorSize,
 	}
+
+	collectMutex.Lock()
+	defer collectMutex.Unlock()
+	// a reload re-initializes the collector while Smart groups stay alive: close the one it
+	// replaces so its file is not leaked, the groups pick up the new one on their next sample
+	if smartCollector != nil {
+		smartCollector.Close()
+	}
+	smartCollector = next
 }
 
 func GetCollector() *DataCollector {
+	collectMutex.Lock()
+	defer collectMutex.Unlock()
 	return smartCollector
 }
 
@@ -313,10 +324,14 @@ func (c *DataCollector) Close() error {
 
 	if c.writer != nil {
 		c.writer.Flush()
+		c.writer = nil
 	}
+	c.configured = false // a later sample re-opens the file instead of writing to a nil writer
 
 	if c.file != nil {
-		return c.file.Close()
+		err := c.file.Close()
+		c.file = nil // idempotent: a collector may be closed by a reload and again at shutdown
+		return err
 	}
 
 	return nil
