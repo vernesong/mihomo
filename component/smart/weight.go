@@ -126,20 +126,24 @@ func CalculateWeight(input *ModelInput, priorityFactor float64) (float64, bool) 
 		}
 	}
 
-	if latency == 0 {
-		if !input.ConnectionFailed {
-			latency = 1
-		} else {
-			latency = 2000
-		}
+	// A first-read latency of 0 means no byte ever came back, i.e. the latency is unknown, not
+	// 1 ms (W1). A failed connection is scored as slow; an unanswered one gets a neutral score
+	// and no low-latency bonus. (A connect time of 0 is different: it is a real sub-ms dial on
+	// multiplexed transports and stays fast.)
+	latencyKnown := latency > 0
+	if !latencyKnown && input.ConnectionFailed {
+		latency, latencyKnown = 2000, true
 	}
 
 	successRate := decayedSuccess / decayedTotal
-	connectScore := math.Exp(-float64(connectTime)/1500.0) * timeFactor
-	latencyScore := math.Exp(-float64(latency)/1500.0) * timeFactor
+	connectScore := scoreDelay(float64(connectTime), connectScoreScale, timeFactor)
+	latencyScore := neutralDelayScore * timeFactor
+	if latencyKnown {
+		latencyScore = scoreDelay(float64(latency), latencyScoreScale, timeFactor)
+	}
 
-	connectScore = math.Min(0.8, math.Max(0.3, connectScore))
-	latencyScore = math.Min(0.8, math.Max(0.3, latencyScore))
+	connectScore = math.Min(maxDelayScore, math.Max(minDelayScore, connectScore))
+	latencyScore = math.Min(maxDelayScore, math.Max(minDelayScore, latencyScore))
 
 	if isUDP {
 		params.latencyWeight = math.Min(0.5, params.latencyWeight*1.2)
@@ -184,7 +188,7 @@ func CalculateWeight(input *ModelInput, priorityFactor float64) (float64, bool) 
 
 	var qualityBonus float64 = 0
 
-	if latency > 0 && latency < 100 {
+	if latencyKnown && latency < 100 {
 		qualityBonus += 0.1
 	}
 	if connectTime > 0 && connectTime < 10 {
@@ -193,7 +197,7 @@ func CalculateWeight(input *ModelInput, priorityFactor float64) (float64, bool) 
 	if (scene == sceneStreaming || scene == sceneTransfer) && downloadMB > 20 {
 		qualityBonus += 0.1
 	}
-	if scene == sceneInteractive && latency > 0 && latency < 100 && successRate > 0.9 {
+	if scene == sceneInteractive && latencyKnown && latency < 100 && successRate > 0.9 {
 		qualityBonus += 0.1
 	}
 
@@ -240,6 +244,23 @@ func CalculateWeight(input *ModelInput, priorityFactor float64) (float64, bool) 
 		durationFactor*params.durationWeight +
 		qualityBonus*params.qualityWeight -
 		lossFactor*params.lossWeight) * priorityFactor, false
+}
+
+const (
+	minDelayScore = 0.3
+	maxDelayScore = 0.8
+	// neutralDelayScore is used when a delay was not measured
+	neutralDelayScore = (minDelayScore + maxDelayScore) / 2
+	// The scales set where a delay loses most of its score. The old curve exp(-ms/1500) was
+	// clamped at 0.8, so every delay below ~335 ms scored the same (W2); these keep the same
+	// [0.3, 0.8] range but resolve the range that matters for interactive traffic.
+	latencyScoreScale = 400.0 // ms: 30 ms -> 0.76, 120 ms -> 0.67, 330 ms -> 0.52, 1 s -> 0.34
+	connectScoreScale = 600.0 // ms: a connect includes the proxy handshake, so it is longer
+)
+
+// scoreDelay maps a delay to [minDelayScore, maxDelayScore], scaled down by the time decay.
+func scoreDelay(ms, scale, timeFactor float64) float64 {
+	return minDelayScore + (maxDelayScore-minDelayScore)*math.Exp(-ms/scale)*timeFactor
 }
 
 func GetTimeDecayWithCache(lastUsedTime int64, now int64, minDecay float64) float64 {
