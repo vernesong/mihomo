@@ -26,3 +26,5 @@ test/config/cache*
 /output
 .vscode/
 .fleet/
+# EIP93 Go overlay build directory
+.eip93-overlay
