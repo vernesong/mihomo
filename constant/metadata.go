@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"sync"
 )
 
 // SOCKS address types as defined in RFC 1928 section 5.
@@ -285,7 +286,9 @@ func (m *Metadata) RuleHost() string {
 // when dialing proxy connection in DNSMapping mode.
 func (m *Metadata) Pure() *Metadata {
 	if (m.DNSMode == DNSMapping || m.DNSMode == DNSHosts) && m.DstIP.IsValid() {
+		smartBlockMu.RLock()
 		copyM := *m
+		smartBlockMu.RUnlock()
 		copyM.Host = ""
 		return &copyM
 	}
@@ -294,8 +297,29 @@ func (m *Metadata) Pure() *Metadata {
 }
 
 func (m *Metadata) Clone() *Metadata {
+	smartBlockMu.RLock()
 	copyM := *m
+	smartBlockMu.RUnlock()
 	return &copyM
+}
+
+// smartBlockMu guards Metadata.SmartBlock. It is the one Metadata field that is written after
+// a connection is tracked, by other goroutines (the Smart group force-closing a connection,
+// the API blocking one) while the connection's own close callback reads it.
+var smartBlockMu sync.RWMutex
+
+// GetSmartBlock reads SmartBlock; use it instead of the field for any tracked connection.
+func (m *Metadata) GetSmartBlock() string {
+	smartBlockMu.RLock()
+	defer smartBlockMu.RUnlock()
+	return m.SmartBlock
+}
+
+// SetSmartBlock writes SmartBlock; use it instead of the field for any tracked connection.
+func (m *Metadata) SetSmartBlock(v string) {
+	smartBlockMu.Lock()
+	m.SmartBlock = v
+	smartBlockMu.Unlock()
 }
 
 func (m *Metadata) AddrPort() netip.AddrPort {

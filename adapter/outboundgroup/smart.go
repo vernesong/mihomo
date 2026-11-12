@@ -1199,7 +1199,7 @@ func (s *Smart) recordSiteKey(metadata *C.Metadata, site string) {
 		if !lo.Contains(tracker.Chains(), s.Name()) {
 			return true
 		}
-		info.Metadata.SmartBlock = "degraded"
+		info.Metadata.SetSmartBlock("degraded")
 		_ = tracker.Close()
 		return true
 	})
@@ -1594,7 +1594,7 @@ func (s *Smart) recordConnectionStats(metadata *C.Metadata, proxy C.Proxy,
 	// a pinned group and a force-closed connection never reach the host checks, so their
 	// snapshot is not read at all
 	var state targetState
-	if s.selected == "" && metadata.SmartBlock != "blocked" && metadata.SmartBlock != "degraded" {
+	if s.selected == "" && metadata.GetSmartBlock() != "blocked" && metadata.GetSmartBlock() != "degraded" {
 		state = s.readTargetState(metadata, proxyName)
 	}
 	adjWeight, isDegraded, checked, blockCode := s.checkNodeQuality(state, metadata, proxy, connQuality{
@@ -1701,7 +1701,7 @@ func (s *Smart) registerClosureMetricsCallback(c C.Conn, proxy C.Proxy, metadata
 			}
 
 			// a connection the group closed on purpose is not a transfer failure
-			if metadata.SmartBlock == "degraded" {
+			if metadata.GetSmartBlock() == "degraded" {
 				closeErr = nil
 			}
 
@@ -1727,7 +1727,7 @@ func (s *Smart) registerPacketClosureMetricsCallback(pc C.PacketConn, proxy C.Pr
 				closeErr = observedWriteErr.Load()
 			}
 			// a connection the group closed on purpose is not a transfer failure
-			if metadata.SmartBlock == "degraded" {
+			if metadata.GetSmartBlock() == "degraded" {
 				closeErr = nil
 			}
 
@@ -1982,14 +1982,14 @@ func (s *Smart) checkNodeQuality(state targetState, metadata *C.Metadata, proxy 
 	proxyName := proxy.Name()
 
 	// user manual block
-	if metadata.SmartBlock == "blocked" {
+	if metadata.GetSmartBlock() == "blocked" {
 		log.Debugln("[Smart] Connection Group: [%s] - Node: [%s] - Network: [%s] - Address: [%s] detected manual block...",
 			s.Name(), proxyName, metadata.NetWork.String(), q.address)
 		return q.weight, true, true, blockCodeManual
 	}
 
 	// force-closed connection, skip quality check to avoid erroneous downgrade
-	if metadata.SmartBlock == "degraded" {
+	if metadata.GetSmartBlock() == "degraded" {
 		return q.oldWeight, false, false, 0
 	}
 
@@ -2082,7 +2082,7 @@ func (s *Smart) closeSameConnection(metadata *C.Metadata, proxyName, target stri
 			return true
 		}
 		if force {
-			tracker.Info().Metadata.SmartBlock = "degraded"
+			tracker.Info().Metadata.SetSmartBlock("degraded")
 			_ = tracker.Close()
 		} else if proxyName != "" && !lo.Contains(tracker.Chains(), proxyName) {
 			_ = tracker.Close()
