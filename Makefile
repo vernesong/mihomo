@@ -107,7 +107,16 @@ linux-amd64-v3:
 	GOARCH=amd64 GOOS=linux GOAMD64=v3 $(GOBUILD) -o $(BINDIR)/$(NAME)-$@
 
 linux-arm64:
-	GOARCH=arm64 GOOS=linux $(GOBUILD) -o $(BINDIR)/$(NAME)-$@
+	@if command -v python3 >/dev/null 2>&1 && [ -f tools/eip93/overlay.py ]; then \
+		echo "Building linux-arm64 with SafeXcel EIP93 overlay..."; \
+		python3 tools/eip93/overlay.py --go go --out .eip93-overlay && \
+		GOARCH=arm64 GOOS=linux $(GOBUILD) -overlay=$$(pwd)/.eip93-overlay/overlay.json -o $(BINDIR)/$(NAME)-$@; \
+	else \
+		echo "Building standard linux-arm64..."; \
+		GOARCH=arm64 GOOS=linux $(GOBUILD) -o $(BINDIR)/$(NAME)-$@; \
+	fi
+
+linux-arm64-eip93: linux-arm64
 
 linux-armv5:
 	GOARCH=arm GOOS=linux GOARM=5 $(GOBUILD) -o $(BINDIR)/$(NAME)-$@
@@ -199,8 +208,7 @@ lint:
 	golangci-lint run ./...
 
 clean:
-	rm $(BINDIR)/*
+	rm -rf $(BINDIR)/* .eip93-overlay
 
 CLANG ?= clang-14
 CFLAGS := -O2 -g -Wall -Werror $(CFLAGS)
-

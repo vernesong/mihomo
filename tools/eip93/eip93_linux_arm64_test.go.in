@@ -1,0 +1,114 @@
+// Copyright 2026 coolsnowwolf <coolsnowwolf@gmail.com>
+// SPDX-License-Identifier: BSD-3-Clause
+//go:build linux && arm64 && !purego
+
+package gcm
+
+import (
+	"bytes"
+	"crypto/internal/fips140/aes"
+	"sync"
+	"syscall"
+	"testing"
+)
+
+func TestEIP93Probe(t *testing.T) {
+	// eip93Probe must execute cleanly without panic or resource leaks
+	_ = eip93Probe()
+}
+
+func TestEIP93Hardware(t *testing.T) {
+	if !eip93Enabled() {
+		t.Skip("requires Linux ARM64 with active EIP93 kernel driver and no CPU AES")
+	}
+	for _, keyLen := range []int{16, 24, 32} {
+		key := make([]byte, keyLen)
+		for i := range key {
+			key[i] = byte(i + 1)
+		}
+		block, err := aes.New(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g, err := New(block, 12, 16)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if g.eip93 == nil {
+			t.Fatal("backend not selected")
+		}
+		for _, n := range []int{0, 1, 15, 16, 17, 4095, 4096, 4097, 16384, 16385, 32768, 32769} {
+			plain := make([]byte, n)
+			for i := range plain {
+				plain[i] = byte(i * 7)
+			}
+			nonce := make([]byte, 12)
+			nonce[0] = byte(n)
+			nonce[1] = byte(n >> 8)
+			aad := []byte("authentication data")
+			want := make([]byte, n+16)
+			sealGeneric(want, g, nonce, plain, aad)
+			got := g.Seal(nil, nonce, plain, aad)
+			if !bytes.Equal(got, want) {
+				t.Fatalf("seal key=%d n=%d", keyLen, n)
+			}
+			buf := append([]byte(nil), got...)
+			out, err := g.Open(buf[:0], nonce, buf, aad)
+			if err != nil || !bytes.Equal(out, plain) {
+				t.Fatalf("inplace open key=%d n=%d err=%v", keyLen, n, err)
+			}
+			buf = make([]byte, n, n+16)
+			copy(buf, plain)
+			got = g.Seal(buf[:0], nonce, buf, aad)
+			if !bytes.Equal(got, want) {
+				t.Fatalf("inplace seal key=%d n=%d", keyLen, n)
+			}
+			got[len(got)-1] ^= 1
+			out, err = g.Open(nil, nonce, got, aad)
+			if err == nil || out != nil {
+				t.Fatal("corrupt tag accepted")
+			}
+		}
+		if g.eip93.fd < 0 || g.eip93.disabled {
+			t.Fatal("hardware failed or fell back")
+		}
+		var wg sync.WaitGroup
+		for worker := 0; worker < 8; worker++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				for i := 0; i < 20; i++ {
+					nonce := make([]byte, 12)
+					nonce[0] = byte(id + 64)
+					nonce[1] = byte(i)
+					plain := bytes.Repeat([]byte{byte(id)}, 8192)
+					got := g.Seal(nil, nonce, plain, nil)
+					out, err := g.Open(nil, nonce, got, nil)
+					if err != nil || !bytes.Equal(out, plain) {
+						t.Error("concurrent roundtrip")
+					}
+				}
+			}(worker)
+		}
+		wg.Wait()
+		// A closed operation fd must cause a safe software fallback, without
+		// returning partial plaintext or leaking the global socket reservation.
+		syscall.Close(g.eip93.fd)
+		plain := make([]byte, 8192)
+		nonce := make([]byte, 12)
+		want := make([]byte, len(plain)+16)
+		sealGeneric(want, g, nonce, plain, nil)
+		if got := g.Seal(nil, nonce, plain, nil); !bytes.Equal(got, want) || !g.eip93.disabled {
+			t.Fatal("closed-fd fallback")
+		}
+		for _, nt := range [][2]int{{8, 16}, {12, 12}} {
+			other, err := New(block, nt[0], nt[1])
+			if err != nil || other.eip93 != nil {
+				t.Fatal("nonstandard GCM must use software")
+			}
+		}
+	}
+	if n := eip93Sockets.Load(); n != 0 {
+		t.Fatalf("socket reservations leaked: %d", n)
+	}
+}

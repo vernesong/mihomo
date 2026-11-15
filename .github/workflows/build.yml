@@ -246,7 +246,13 @@ jobs:
         GOMIPS: ${{matrix.jobs.gomips}}
       run: |
         go env
-        go build -v -tags "with_gvisor" -trimpath -ldflags "${BUILDTAG} -X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' -w -s -buildid="
+        EXTRA_FLAGS=""
+        if [ "${{matrix.jobs.goos}}" = "linux" ] && [ "${{matrix.jobs.goarch}}" = "arm64" ] && [ -f tools/eip93/overlay.py ]; then
+          echo "Applying SafeXcel EIP93 overlay for linux-arm64..."
+          python3 tools/eip93/overlay.py --go go --out .eip93-overlay
+          EXTRA_FLAGS="-overlay=$(pwd)/.eip93-overlay/overlay.json"
+        fi
+        go build ${EXTRA_FLAGS} -v -tags "with_gvisor" -trimpath -ldflags "${BUILDTAG} -X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' -w -s -buildid="
         if [ "${{matrix.jobs.goos}}" = "windows" ]; then
           cp mihomo.exe mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}.exe
           zip -r mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}-${VERSION}.zip mihomo-${{matrix.jobs.goos}}-${{matrix.jobs.output}}.exe
