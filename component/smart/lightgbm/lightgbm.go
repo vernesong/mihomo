@@ -682,7 +682,11 @@ func GetModelDownloadURL() string {
 	return "https://github.com/vernesong/mihomo/releases/download/LightGBM-Model/Model.bin"
 }
 
-func (m *WeightModel) PredictWeight(input *smart.ModelInput, priorityFactor float64) (float64, bool) {
+// PredictWeight scores a connection with the model, falling back to the heuristic whenever
+// the model cannot answer. A panic anywhere in the model path (feature sizing, transforms,
+// prediction) falls back as well: this runs in the stats goroutine, where an escaping panic
+// would end the process (L1).
+func (m *WeightModel) PredictWeight(input *smart.ModelInput, priorityFactor float64) (weight float64, predicted bool) {
 	if m == nil {
 		return smart.CalculateWeight(input, priorityFactor)
 	}
@@ -691,6 +695,13 @@ func (m *WeightModel) PredictWeight(input *smart.ModelInput, priorityFactor floa
 	if total < smart.DefaultMinSampleCount {
 		return 0, false
 	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorln("[Smart] Model prediction panic: %v", r)
+			weight, predicted = smart.CalculateWeight(input, priorityFactor)
+		}
+	}()
 
 	m.mutex.RLock()
 	model := m.model
@@ -719,16 +730,7 @@ func (m *WeightModel) PredictWeight(input *smart.ModelInput, priorityFactor floa
 		features = transforms.ApplyTransforms(features)
 	}
 
-	var prediction float64
-
-	defer func() {
-		if r := recover(); r != nil {
-			log.Errorln("[Smart] Model prediction panic: %v", r)
-			prediction, _ = smart.CalculateWeight(input, priorityFactor)
-		}
-	}()
-
-	prediction = model.PredictSingle(features, 0)
+	prediction := model.PredictSingle(features, 0)
 
 	if math.IsNaN(prediction) || prediction <= 0 {
 		return smart.CalculateWeight(input, priorityFactor)
