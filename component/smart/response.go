@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -327,6 +328,7 @@ func (t *ProbeThrottle) ensureNodeState(target, node string, now time.Time) *pro
 	key := probeNodeKey{target: target, node: node}
 	state := t.nodes[key]
 	if state == nil {
+		t.enforceCap()
 		state = &probeNodeState{lastProbe: now}
 		t.nodes[key] = state
 	}
@@ -343,6 +345,7 @@ func (t *ProbeThrottle) AllowNode(target, node string, now time.Time) bool {
 		t.trim(now)
 		t.lastTrim = now
 	}
+	t.enforceCap()
 
 	key := probeNodeKey{target: target, node: node}
 	state := t.nodes[key]
@@ -541,6 +544,48 @@ func (t *ProbeThrottle) Unproven(target, node string) bool {
 
 	state := t.nodeState(target, node)
 	return state != nil && !state.unprovenSince.IsZero()
+}
+
+// enforceCap is the count bound the age-based trim lacks: past twice probeMaxEntries the
+// oldest half is evicted, so a burst of unique targets (P2P, scanners) cannot grow the maps
+// without limit (M1). Losing a throttle entry only lets that pair be probed a little sooner.
+func (t *ProbeThrottle) enforceCap() {
+	if len(t.nodes) >= 2*probeMaxEntries {
+		keys := make([]probeNodeKey, 0, len(t.nodes))
+		for k := range t.nodes {
+			keys = append(keys, k)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			return probeNodeAge(t.nodes[keys[i]]).Before(probeNodeAge(t.nodes[keys[j]]))
+		})
+		for _, k := range keys[:len(keys)-probeMaxEntries] {
+			delete(t.nodes, k)
+		}
+	}
+	if len(t.targets) >= 2*probeMaxEntries {
+		keys := make([]string, 0, len(t.targets))
+		for k := range t.targets {
+			keys = append(keys, k)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			return t.targets[keys[i]].start.Before(t.targets[keys[j]].start)
+		})
+		for _, k := range keys[:len(keys)-probeMaxEntries] {
+			delete(t.targets, k)
+		}
+	}
+}
+
+// probeNodeAge is the most recent activity of a throttle entry; an in-flight probe or an open
+// suspicion counts as activity, so eviction prefers idle entries.
+func probeNodeAge(st *probeNodeState) time.Time {
+	latest := st.lastProbe
+	for _, t := range []time.Time{st.lastFailure, st.pendingSince, st.unprovenSince} {
+		if t.After(latest) {
+			latest = t
+		}
+	}
+	return latest
 }
 
 func (t *ProbeThrottle) trim(now time.Time) {
