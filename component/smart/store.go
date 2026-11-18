@@ -978,3 +978,9 @@ func (s *Store) DBBatchDeletePrefix(prefixes []string, strict bool) error {
 		return nil
 	})
 }
+
+// QueuedOperations reports how many store writes are waiting in the global queue.
+// Read-only; used by tests and diagnostics to check that queued learning gets flushed.
+func QueuedOperations() int {
+	return opQueue.size()
+}

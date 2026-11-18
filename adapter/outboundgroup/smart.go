@@ -81,10 +81,68 @@ const (
 	blockCodeStalled   = 6
 )
 
-var (
-	flushQueueOnce atomic.Bool
-	smartInitOnce  sync.Once
-)
+// smartGlobals owns the process-wide Smart tasks (queue flush, cache tuning, orphan clean-up).
+// They run while at least one Smart group is alive. A config reload builds the new groups
+// before it closes the old ones, so a reference count (rather than a sync.Once bound to the
+// first group's context) keeps them running across reloads (LC).
+var smartGlobals struct {
+	mu     sync.Mutex
+	refs   int
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+}
+
+func (s *Smart) acquireGlobals() {
+	smartGlobals.mu.Lock()
+	defer smartGlobals.mu.Unlock()
+	smartGlobals.refs++
+	if smartGlobals.refs > 1 {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	smartGlobals.cancel = cancel
+	store := s.store
+	runTimedTask(ctx, &smartGlobals.wg, "global", 5*time.Minute, checkInterval, "Global orphaned groups Clean up",
+		func() { cleanupOrphanedSmartGroups(store, currentConfigName()) }, true)
+	runTimedTask(ctx, &smartGlobals.wg, "global", 5*time.Second, cacheParamAdjustInterval, "Global cache parameters adjustment",
+		store.AdjustCacheParameters, false)
+	runTimedTask(ctx, &smartGlobals.wg, "global", 5*time.Minute, flushQueueInterval, "Global queues flush",
+		func() { store.FlushQueue(true) }, false)
+	// the database belongs to the process, so one load serves every group
+	if s.preferASN {
+		if err := geodata.InitASN(); err != nil {
+			log.Warnln("[Smart] Failed to load ASN database: %v", err)
+		}
+	}
+}
+
+// releaseGlobals stops the process-wide tasks and closes the collectors once the last Smart
+// group is gone.
+func releaseGlobals(store *smart.Store) {
+	smartGlobals.mu.Lock()
+	smartGlobals.refs--
+	last := smartGlobals.refs <= 0
+	var cancel context.CancelFunc
+	if last {
+		smartGlobals.refs = 0
+		cancel, smartGlobals.cancel = smartGlobals.cancel, nil
+	}
+	smartGlobals.mu.Unlock()
+	if !last {
+		return
+	}
+	if cancel != nil {
+		cancel()
+	}
+	smartGlobals.wg.Wait()
+	store.FlushQueue(true)
+	lightgbm.CloseAllCollectors()
+}
+
+func currentConfigName() string {
+	configFile := C.Path.Config()
+	return strings.TrimSuffix(filepath.Base(configFile), filepath.Ext(configFile))
+}
 
 type SmartOption struct {
 	PolicyPriority string  `group:"policy-priority,omitempty"`
@@ -110,7 +168,6 @@ type Smart struct {
 	expectedStatus string
 	disableUDP     bool
 
-	dataCollector  *lightgbm.DataCollector
 	weightModel    *lightgbm.WeightModel
 	policyPriority []priorityRule
 	priorityCache  xsync.Map[string, float64]
@@ -137,6 +194,8 @@ type Smart struct {
 	lossSampler   *tcpstats.LossSampler
 
 	exitWatch *smart.ExitWatcher
+
+	closed atomic.Bool
 }
 
 type dialResult struct {
@@ -1408,7 +1467,8 @@ func (s *Smart) collectConnectionData(input *smart.ModelInput, metadata *C.Metad
 		weightSource = "LightGBM"
 	}
 
-	s.dataCollector.AddSample(input, metadata, baseWeight, weightSource)
+	// fetched per sample: a reload replaces the collector while this group lives on
+	lightgbm.GetCollector().AddSample(input, metadata, baseWeight, weightSource)
 }
 
 func updateEMA[T int64 | float64](oldValue, newValue T) T {
@@ -2319,19 +2379,7 @@ func (s *Smart) InitSmart() {
 		WantASN: func() bool { return s.preferASN },
 	})
 
-	smartInitOnce.Do(func() {
-		s.startTimedTask(5*time.Minute, checkInterval, "Global orphaned groups Clean up", s.cleanupOrphanedGroups, true)
-		s.startTimedTask(5*time.Second, cacheParamAdjustInterval, "Global cache parameters adjustment", s.store.AdjustCacheParameters, false)
-		s.startTimedTask(5*time.Minute, flushQueueInterval, "Global queues flush", func() {
-			s.store.FlushQueue(true)
-		}, false)
-		// the database belongs to the process, so one load serves every group
-		if s.preferASN {
-			if err := geodata.InitASN(); err != nil {
-				log.Warnln("[Smart] Failed to load ASN database: %v", err)
-			}
-		}
-	})
+	s.acquireGlobals()
 
 	s.startTimedTask(10*time.Minute, cleanupInterval, "Group orphaned nodes clean up", s.cleanupOrphanedNodeCache, true)
 	s.startTimedTask(5*time.Minute, prefetchInterval, "Group targets prefetch", s.runPrefetch, false)
@@ -2344,26 +2392,29 @@ func (s *Smart) InitSmart() {
 	s.startTimedTask(10*time.Minute, cleanupInterval, "Group old records clean up", func() {
 		s.store.CleanupOldRecords(s.Name(), s.configName)
 	}, false)
-	if s.collectData {
-		s.dataCollector = lightgbm.GetCollector()
-	}
 
 	if s.useLightGBM {
 		s.weightModel = lightgbm.GetModel()
 	}
 }
 
-// startTimedTask waits for tunnel.Running before the first run, then repeats on its interval.
+// startTimedTask runs a task owned by this group: it stops when the group closes.
 func (s *Smart) startTimedTask(initialDelay, interval time.Duration, taskName string, task func(), runOnce bool) {
-	s.wg.Add(1)
+	runTimedTask(s.ctx, &s.wg, s.Name(), initialDelay, interval, taskName, task, runOnce)
+}
+
+// runTimedTask waits for tunnel.Running before the first run, then repeats on its interval
+// until ctx is done.
+func runTimedTask(ctx context.Context, wg *sync.WaitGroup, owner string, initialDelay, interval time.Duration, taskName string, task func(), runOnce bool) {
+	wg.Add(1)
 	go func() {
-		defer s.wg.Done()
+		defer wg.Done()
 
 		waitTicker := time.NewTicker(100 * time.Millisecond)
 		for tunnel.Status() != tunnel.Running {
 			select {
 			case <-waitTicker.C:
-			case <-s.ctx.Done():
+			case <-ctx.Done():
 				waitTicker.Stop()
 				return
 			}
@@ -2378,7 +2429,7 @@ func (s *Smart) startTimedTask(initialDelay, interval time.Duration, taskName st
 
 		select {
 		case <-time.After(adjustedInitialDelay):
-		case <-s.ctx.Done():
+		case <-ctx.Done():
 			return
 		}
 
@@ -2390,7 +2441,7 @@ func (s *Smart) startTimedTask(initialDelay, interval time.Duration, taskName st
 			log.Debugln("[Smart] Task [%s] completed", taskName)
 			return
 		}
-		log.Debugln("[Smart] Task [%s] for group [%s] started, interval: %s", taskName, s.Name(), adjustedInterval.Round(time.Second).String())
+		log.Debugln("[Smart] Task [%s] for group [%s] started, interval: %s", taskName, owner, adjustedInterval.Round(time.Second).String())
 
 		ticker := time.NewTicker(adjustedInterval)
 		defer ticker.Stop()
@@ -2401,7 +2452,7 @@ func (s *Smart) startTimedTask(initialDelay, interval time.Duration, taskName st
 				if tunnel.Status() == tunnel.Running {
 					task()
 				}
-			case <-s.ctx.Done():
+			case <-ctx.Done():
 				return
 			}
 		}
@@ -2488,7 +2539,7 @@ func (s *Smart) updateNodeRanking() {
 		smart.RankRarelyUsed, categoryCounts[smart.RankRarelyUsed])
 }
 
-func (s *Smart) cleanupOrphanedGroups() {
+func cleanupOrphanedSmartGroups(store *smart.Store, configName string) {
 	allProxies := tunnel.Proxies()
 	existingSmartGroups := make(map[string]bool)
 
@@ -2498,7 +2549,7 @@ func (s *Smart) cleanupOrphanedGroups() {
 		}
 	}
 
-	cachedGroups, err := s.store.GetAllGroupsForConfig(s.configName)
+	cachedGroups, err := store.GetAllGroupsForConfig(configName)
 	if err != nil {
 		return
 	}
@@ -2513,7 +2564,7 @@ func (s *Smart) cleanupOrphanedGroups() {
 	if len(orphanedGroups) > 0 {
 		for _, group := range orphanedGroups {
 			log.Debugln("[Smart] Cleaning up cache data for non-existent policy group [%s]", group)
-			err := s.store.FlushByGroup(group, s.configName)
+			err := store.FlushByGroup(group, configName)
 			if err != nil {
 				log.Warnln("[Smart] Failed to clean up policy group [%s] cache: %v", group, err)
 			}
@@ -2553,19 +2604,20 @@ func (s *Smart) cleanupOrphanedNodeCache() {
 }
 
 func (s *Smart) Close() error {
+	// closeSmart may run more than once for the same group (reload, then shutdown)
+	if !s.closed.CompareAndSwap(false, true) {
+		return nil
+	}
 	if s.cancel != nil {
 		s.cancel()
 	}
 
 	s.wg.Wait()
 
-	if !flushQueueOnce.Swap(true) {
-		s.store.FlushQueue(true)
-	}
+	// every close persists the queued learning, not only the first one in the process
+	s.store.FlushQueue(true)
 
-	lightgbm.CloseAllCollectors()
-
-	smartInitOnce = sync.Once{}
+	releaseGlobals(s.store)
 
 	return nil
 }
