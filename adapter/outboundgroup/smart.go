@@ -2067,8 +2067,10 @@ func (s *Smart) ruleExcluded(target, node string) bool {
 	return failNodes[node] != 0
 }
 
-// closeSameConnection closes the other connections of the target so it keeps a single exit:
-// force drops them all because the node was dropped, otherwise only the ones on another node.
+// closeSameConnection closes other connections of the target. force is used after a node
+// failed for the target: it closes only that node's connections on the failure's network,
+// since a failure on one node says nothing about connections on another node (or about a UDP
+// flow when a TCP dial failed). Without force it closes the connections on other nodes.
 func (s *Smart) closeSameConnection(metadata *C.Metadata, proxyName, target string, force bool) {
 	statistic.DefaultManager.RangeSmartTarget(target, func(id string) bool {
 		if id == metadata.UUID {
@@ -2076,6 +2078,9 @@ func (s *Smart) closeSameConnection(metadata *C.Metadata, proxyName, target stri
 		}
 		tracker := statistic.DefaultManager.Get(id)
 		if tracker == nil {
+			return true
+		}
+		if force && !forcedCloseApplies(tracker, metadata, proxyName) {
 			return true
 		}
 		if !lo.Contains(tracker.Chains(), s.Name()) {
@@ -2089,6 +2094,16 @@ func (s *Smart) closeSameConnection(metadata *C.Metadata, proxyName, target stri
 		}
 		return true
 	})
+}
+
+// forcedCloseApplies reports whether a forced close after proxyName failed should close this
+// connection: only connections through the failing node on the failure's network qualify.
+func forcedCloseApplies(tracker statistic.Tracker, metadata *C.Metadata, proxyName string) bool {
+	if proxyName == "" || !lo.Contains(tracker.Chains(), proxyName) {
+		return false
+	}
+	info := tracker.Info()
+	return info != nil && info.Metadata != nil && info.Metadata.NetWork == metadata.NetWork
 }
 
 // applyNodeAnswer lands one probe answer: reachable clears the host failure and the node's
